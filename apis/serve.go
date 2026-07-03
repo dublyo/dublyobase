@@ -40,6 +40,11 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("GET /admin/api/projects", s.requireAdmin(http.HandlerFunc(s.adminListProjects)))
 	mux.Handle("POST /admin/api/projects", s.requireAdmin(http.HandlerFunc(s.adminCreateProject)))
 	mux.Handle("GET /admin/api/projects/{slug}", s.requireAdmin(http.HandlerFunc(s.adminGetProject)))
+	mux.Handle("GET /api/projects/{slug}/collections", s.requireAdmin(http.HandlerFunc(s.listCollections)))
+	mux.Handle("POST /api/projects/{slug}/collections", s.requireAdmin(http.HandlerFunc(s.createCollection)))
+	mux.Handle("GET /api/projects/{slug}/collections/{name}", s.requireAdmin(http.HandlerFunc(s.getCollection)))
+	mux.Handle("PATCH /api/projects/{slug}/collections/{name}", s.requireAdmin(http.HandlerFunc(s.updateCollection)))
+	mux.Handle("DELETE /api/projects/{slug}/collections/{name}", s.requireAdmin(http.HandlerFunc(s.deleteCollection)))
 	mux.Handle("/", spaHandler(ui.DistFS()))
 
 	return &http.Server{

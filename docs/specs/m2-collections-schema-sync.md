@@ -1,6 +1,6 @@
 # M2 Spec: Collections and Schema Sync
 
-Status: draft for v0.3.0
+Status: implemented in v0.3.0
 Depends on: v0.2.0
 
 M2 turns the M1 control plane into a real PocketBase-style schema builder for Postgres. It adds project-scoped collection metadata, safe physical table creation, field validation, and default-deny RLS. It does not implement the records CRUD API yet; that is M3.

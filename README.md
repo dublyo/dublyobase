@@ -5,8 +5,9 @@ storage, and an admin UI, served from **one Go binary on one port**. It connects
 Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a single
 `<30 MB` container to `ghcr.io/dublyo/dublyobase`. One-click deployable on Dublyo.
 
-> Status: **v0.2.0 / M1 complete.** Control-plane auth and project provisioning are
-> implemented; collections/records/storage are still upcoming. See
+> Status: **v0.3.0 / M2 complete.** Control-plane auth, project provisioning,
+> collections metadata, schema sync, and default-deny RLS are implemented; records,
+> app auth, storage, SMTP, and realtime are still upcoming. See
 > [dublyobase-dev.md](dublyobase-dev.md) for the full roadmap.
 
 ## What makes it different
@@ -54,6 +55,8 @@ clear message rather than failing mysteriously later.
 | `GET /admin/api/me` | Current admin/session |
 | `GET/POST /admin/api/projects` | List/create projects |
 | `GET /admin/api/projects/{slug}` | Project detail |
+| `GET/POST /api/projects/{slug}/collections` | List/create project collections |
+| `GET/PATCH/DELETE /api/projects/{slug}/collections/{name}` | Collection detail/schema sync/delete |
 | `GET /` | Embedded admin UI |
 
 ## License

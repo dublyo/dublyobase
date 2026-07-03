@@ -1,6 +1,8 @@
 package core
 
-// CollectionType distinguishes the three kinds of collections.
+import "encoding/json"
+
+// CollectionType distinguishes the supported collection kinds.
 type CollectionType string
 
 const (
@@ -18,15 +20,17 @@ const (
 //	""   -> public
 //	expr -> compiled rule
 type Collection struct {
-	ID     string         `json:"id"`
-	Name   string         `json:"name"`
-	Type   CollectionType `json:"type"`
-	System bool           `json:"system"`
-	Fields []Field        `json:"fields"`
+	ID        string         `json:"id"`
+	ProjectID string         `json:"projectId"`
+	Name      string         `json:"name"`
+	Type      CollectionType `json:"type"`
+	System    bool           `json:"system"`
+	Fields    []Field        `json:"fields"`
 
-	ListRule   *string `json:"listRule"`
-	ViewRule   *string `json:"viewRule"`
-	CreateRule *string `json:"createRule"`
-	UpdateRule *string `json:"updateRule"`
-	DeleteRule *string `json:"deleteRule"`
+	ListRule   *string         `json:"listRule"`
+	ViewRule   *string         `json:"viewRule"`
+	CreateRule *string         `json:"createRule"`
+	UpdateRule *string         `json:"updateRule"`
+	DeleteRule *string         `json:"deleteRule"`
+	Options    json.RawMessage `json:"options,omitempty"`
 }

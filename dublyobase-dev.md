@@ -5,10 +5,11 @@
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.2.0 — M1 control plane & admin auth complete
-(self-closing setup, opaque hashed admin sessions, protected admin API, project
-schema/role provisioning, audit log, and real Postgres integration tests).
-Next: **M2 (collections & schema sync)**.
+**Status:** v0.3.0 — M2 collections & schema sync complete
+(self-closing setup, opaque hashed admin sessions, protected admin/project APIs,
+project schema/role provisioning, collection metadata, transactional schema sync,
+default-deny RLS, audit log, and real Postgres 16/17/18 integration tests).
+Next: **M3 (records API + rules)**.
 **Repo:** `github.com/dublyo/dublyobase` · **Image:** `ghcr.io/dublyo/dublyobase`
 **Local dev:** `/Users/dribrahimm/0-PostgresProject/dublyobase`
 
@@ -220,9 +221,12 @@ outside the tx.
 unset; CI + release provide `postgres:16-alpine` as a service. Current suite: config
 contract, DSN redaction, middleware (Hijack/Flush passthrough, CORS incl. Vary and
 credentials rules, client IP), health/ready shape + <3s + no-internals, SPA fallback,
-migrate idempotency, **concurrent 2-replica boot**, seed never-overwrites. Every
-milestone adds: happy path + auth-boundary + concurrency test for its feature.
-Security regressions (RLS bypass, unauth control plane) get permanent tests.
+migrate idempotency, **concurrent 2-replica boot**, seed never-overwrites,
+collection create/update/delete lifecycle, identifier/field validation, default-deny
+RLS policy creation, and concurrent collection create conflicts. M2 was verified
+against temporary PostgreSQL 16, 17, and 18 clusters. Every milestone adds: happy
+path + auth-boundary + concurrency test for its feature. Security regressions
+(RLS bypass, unauth control plane) get permanent tests.
 
 **Release process** (per milestone): bump nothing in code (version is injected);
 update `deploy/dublyo.template.yml` pin → commit → `git tag vX.Y.Z` → push tag →
@@ -261,15 +265,14 @@ against a disposable PostgreSQL 16 cluster.
 - **Accept:** unauth `/admin/api/projects` → 401; login → create project → schema+roles
   exist in pg_catalog; second `/setup` → 410; audit rows written; all under tests.
 
-### M2 — Collections & schema sync  →  v0.3.0
-- [ ] Follow `docs/specs/m2-collections-schema-sync.md`
-- [ ] Field registry (12 types) + validation; collections CRUD persisting to `_dbo`
-- [ ] Schema-sync engine (diff → DDL in tx; identifier validation + quoting everywhere)
-- [ ] RLS: enable+force on every table; default deny; policies from rules (v1 subset:
-      `@request.auth.id` comparisons + and/or)
+### M2 — Collections & schema sync — DONE (v0.3.0, 2026-07-03)
+- [x] Follow `docs/specs/m2-collections-schema-sync.md`
+- [x] M2 field registry + validation; collections CRUD persisting to `_dbo.collections`
+- [x] Schema-sync engine (add/rename/drop field DDL in tx; identifier validation + quoting everywhere)
+- [x] RLS: enable+force on every materialized table; default-deny select/insert/update/delete policies
 - **Accept:** create `posts` via API → table + policies visible in `pg_policies`;
-  rename field → column renamed, data intact; forbidden identifiers rejected; tests
-  prove FORCE RLS blocks the table owner without `SET LOCAL ROLE`.
+  rename field → column renamed; forbidden identifiers rejected; unsafe DDL changes
+  return `409 destructive_change`; tests cover PostgreSQL 16, 17, and 18.
 
 ### M3 — Records API + rules  →  v0.4.0
 - [ ] Records CRUD with pagination/sort/filter (fexpr subset → parameterized SQL)

@@ -39,6 +39,16 @@ func writeCoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "project_not_found", "project not found")
 	case errors.Is(err, core.ErrProvisioningConflict):
 		writeError(w, http.StatusConflict, "provisioning_conflict", "project database objects already exist")
+	case errors.Is(err, core.ErrCollectionExists):
+		writeError(w, http.StatusConflict, "collection_exists", "collection already exists")
+	case errors.Is(err, core.ErrCollectionNotFound):
+		writeError(w, http.StatusNotFound, "collection_not_found", "collection not found")
+	case errors.Is(err, core.ErrDestructiveChange):
+		writeError(w, http.StatusConflict, "destructive_change", "destructive schema change requires explicit confirmation")
+	case errors.Is(err, core.ErrNotImplemented):
+		writeError(w, http.StatusNotImplemented, "not_implemented", "feature not implemented")
+	case errors.Is(err, core.ErrSchemaDrift):
+		writeError(w, http.StatusInternalServerError, "schema_drift", "collection metadata and database schema are out of sync")
 	case errors.Is(err, core.ErrValidation):
 		writeValidation(w, err.Error())
 	default:
