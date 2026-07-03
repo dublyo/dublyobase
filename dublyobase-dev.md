@@ -5,10 +5,10 @@
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.1.2 — M0 foundation **+ audit remediation + follow-up hardening**
-(19 v0.1.1 findings fixed; v0.1.2 adds API-prefix fallback hardening, stricter
-config validation, quoted-DSN redaction, repo-local roadmap, and real Postgres
-integration verification). Next: **M1 (control plane & admin auth)**.
+**Status:** v0.2.0 — M1 control plane & admin auth complete
+(self-closing setup, opaque hashed admin sessions, protected admin API, project
+schema/role provisioning, audit log, and real Postgres integration tests).
+Next: **M2 (collections & schema sync)**.
 **Repo:** `github.com/dublyo/dublyobase` · **Image:** `ghcr.io/dublyo/dublyobase`
 **Local dev:** `/Users/dribrahimm/0-PostgresProject/dublyobase`
 
@@ -139,7 +139,7 @@ correct HTTP status (400/401/403/404/409/422/429/500). RLS denials are
 |---|---|
 | Meta | `GET /health` · `GET /ready` (implemented) |
 | Setup | `POST /setup` — creates first admin **only while `_dbo.admins` is empty**, then 410 forever; rate-limited |
-| Admin auth | `POST /admin/api/auth/login` (email+password → JWT) · `POST .../logout` · `GET .../me` |
+| Admin auth | `POST /admin/api/auth/login` (email+password → opaque session token) · `POST .../logout` · `GET .../me` |
 | Control plane | `GET/POST /admin/api/projects` · `GET/PATCH/DELETE /admin/api/projects/{slug}` — **every `/admin/api/*` route behind auth middleware** (postbase's fatal bug: UI-only gating) |
 | Collections | `GET/POST /api/projects/{slug}/collections` · `GET/PATCH/DELETE .../collections/{name}` (admin-auth for writes) |
 | Records | `GET/POST /api/projects/{slug}/collections/{name}/records` · `GET/PATCH/DELETE .../records/{id}` |
@@ -250,14 +250,14 @@ settings and paired admin seed credentials; quoted key/value DSN passwords are
 redacted; the public README links to this repo-local roadmap; full suite passed
 against a disposable PostgreSQL 16 cluster.
 
-### M1 — Control plane & admin auth  →  v0.2.0
-- [ ] Follow `docs/specs/m1-control-plane-admin-auth.md`
-- [ ] `_dbo` migrations: `projects`, `admin_sessions(hash)`, `api_keys(hash)`, `audit_log`
-- [ ] Admin login: bcrypt verify → opaque hashed session token (24h); `GET /admin/api/me`
-- [ ] **Auth middleware on every `/admin/api/*`** (401 without valid token) + audit log
-- [ ] `POST /setup` (self-closing, rate-limited) when no ENV admin
-- [ ] Projects CRUD → `CREATE SCHEMA proj_<slug>` + 3 NOLOGIN roles + grants + revoke-public
-- [ ] Rate limiting (token bucket, in-process) on `/setup` + `/admin/api/auth/*`
+### M1 — Control plane & admin auth — DONE (v0.2.0, 2026-07-03)
+- [x] Follow `docs/specs/m1-control-plane-admin-auth.md`
+- [x] `_dbo` migrations: `projects`, `admin_sessions(hash)`, `api_keys(hash)`, `audit_log`
+- [x] Admin login: bcrypt verify → opaque hashed session token (24h); `GET /admin/api/me`
+- [x] **Auth middleware on every `/admin/api/*`** (401 without valid token) + audit log
+- [x] `POST /setup` (self-closing, rate-limited) when no ENV admin
+- [x] Projects create/list/get → `CREATE SCHEMA proj_<slug>` + 3 NOLOGIN roles + grants + revoke-public
+- [x] Rate limiting (token bucket, in-process) on `/setup` + `/admin/api/auth/*`
 - **Accept:** unauth `/admin/api/projects` → 401; login → create project → schema+roles
   exist in pg_catalog; second `/setup` → 410; audit rows written; all under tests.
 

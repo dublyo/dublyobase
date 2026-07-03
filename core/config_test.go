@@ -104,6 +104,14 @@ func TestLoadConfigInvalidValuesFailLoud(t *testing.T) {
 			env:  map[string]string{"ADMIN_PASSWORD": "secret"},
 			want: "ADMIN_EMAIL",
 		},
+		{
+			name: "admin password too short",
+			env: map[string]string{
+				"ADMIN_EMAIL":    "admin@example.com",
+				"ADMIN_PASSWORD": "short",
+			},
+			want: "ADMIN_PASSWORD",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

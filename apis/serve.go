@@ -17,16 +17,29 @@ import (
 )
 
 type server struct {
-	app *core.App
+	app          *core.App
+	setupLimiter *rateLimiter
+	loginLimiter *rateLimiter
 }
 
 // NewServer builds the HTTP server for an App.
 func NewServer(app *core.App) *http.Server {
-	s := &server{app: app}
+	s := &server{
+		app:          app,
+		setupLimiter: newRateLimiter(5, time.Minute),
+		loginLimiter: newRateLimiter(10, time.Minute),
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /ready", s.ready)
+	mux.Handle("POST /setup", s.limitByIP("setup", s.setupLimiter, http.HandlerFunc(s.setup)))
+	mux.Handle("POST /admin/api/auth/login", s.limitByIP("login", s.loginLimiter, http.HandlerFunc(s.adminLogin)))
+	mux.Handle("POST /admin/api/auth/logout", s.requireAdmin(http.HandlerFunc(s.adminLogout)))
+	mux.Handle("GET /admin/api/me", s.requireAdmin(http.HandlerFunc(s.adminMe)))
+	mux.Handle("GET /admin/api/projects", s.requireAdmin(http.HandlerFunc(s.adminListProjects)))
+	mux.Handle("POST /admin/api/projects", s.requireAdmin(http.HandlerFunc(s.adminCreateProject)))
+	mux.Handle("GET /admin/api/projects/{slug}", s.requireAdmin(http.HandlerFunc(s.adminGetProject)))
 	mux.Handle("/", spaHandler(ui.DistFS()))
 
 	return &http.Server{

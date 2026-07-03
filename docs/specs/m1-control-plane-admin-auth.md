@@ -1,6 +1,6 @@
 # M1 Spec: Control Plane and Admin Auth
 
-Status: draft for v0.2.0
+Status: implemented in v0.2.0
 Depends on: v0.1.2
 
 This spec supersedes the short M1 roadmap note for admin-auth internals: M1 uses opaque, hashed admin session tokens instead of stateless admin JWTs. Stateless app-user access JWTs remain planned for M4.

@@ -152,11 +152,18 @@ func TestReservedAPIPrefixesDoNotServeSPA(t *testing.T) {
 	app := newTestApp(t, deadPool(t))
 	srv := NewServer(app)
 
-	for _, route := range []string{"/api/health", "/api/projects/demo", "/admin/api/projects"} {
+	cases := map[string]int{
+		"/api/health":          http.StatusNotFound,
+		"/api/projects/demo":   http.StatusNotFound,
+		"/admin/api/projects":  http.StatusUnauthorized,
+		"/admin/api/unknown":   http.StatusNotFound,
+		"/admin/api/projects/": http.StatusNotFound,
+	}
+	for route, want := range cases {
 		rec := httptest.NewRecorder()
 		srv.Handler.ServeHTTP(rec, httptest.NewRequest("GET", route, nil))
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("GET %s: want API 404, got %d", route, rec.Code)
+		if rec.Code != want {
+			t.Fatalf("GET %s: want API status %d, got %d", route, want, rec.Code)
 		}
 		if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
 			t.Fatalf("GET %s: API miss must return JSON, got %q", route, rec.Header().Get("Content-Type"))

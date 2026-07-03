@@ -134,6 +134,9 @@ func (c *Config) Validate() error {
 	if (c.AdminEmail == "") != (strings.TrimSpace(c.AdminPassword) == "") {
 		return fmt.Errorf("ADMIN_EMAIL and ADMIN_PASSWORD must be set together")
 	}
+	if c.AdminPassword != "" && len(c.AdminPassword) < minAdminPasswordSize {
+		return fmt.Errorf("ADMIN_PASSWORD must be at least %d characters", minAdminPasswordSize)
+	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warn", "error":
 	default:

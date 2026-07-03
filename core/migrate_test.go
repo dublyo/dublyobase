@@ -123,12 +123,12 @@ func TestSeedAdminNeverOverwrites(t *testing.T) {
 	if err := Migrate(ctx, pool, log); err != nil {
 		t.Fatal(err)
 	}
-	first := &Config{AdminEmail: "a@example.com", AdminPassword: "password-1"}
+	first := &Config{AdminEmail: "a@example.com", AdminPassword: "password-123"}
 	if err := SeedAdmin(ctx, pool, first, log); err != nil {
 		t.Fatal(err)
 	}
 	// Admins exist now; a different env must not add or replace anything.
-	second := &Config{AdminEmail: "b@example.com", AdminPassword: "password-2"}
+	second := &Config{AdminEmail: "b@example.com", AdminPassword: "password-456"}
 	if err := SeedAdmin(ctx, pool, second, log); err != nil {
 		t.Fatal(err)
 	}
