@@ -89,7 +89,7 @@ func (s *server) applyCORS(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Access-Control-Allow-Origin", allowed)
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Checksum-SHA256")
 	w.Header().Set("Access-Control-Max-Age", "300")
 	if allowed != "*" {
 		w.Header().Set("Access-Control-Allow-Credentials", "true")

@@ -67,6 +67,14 @@ func writeCoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "file_not_found", "file not found")
 	case errors.Is(err, core.ErrFileTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds the configured upload limit")
+	case errors.Is(err, core.ErrUploadNotFound):
+		writeError(w, http.StatusNotFound, "upload_not_found", "upload not found")
+	case errors.Is(err, core.ErrUploadExpired):
+		writeError(w, http.StatusGone, "upload_expired", "upload expired")
+	case errors.Is(err, core.ErrUploadConflict):
+		writeError(w, http.StatusConflict, "upload_conflict", "upload session is not open")
+	case errors.Is(err, core.ErrChecksumMismatch):
+		writeError(w, http.StatusUnprocessableEntity, "checksum_mismatch", "checksum does not match uploaded bytes")
 	case errors.Is(err, core.ErrRLSDenied):
 		writeError(w, http.StatusForbidden, "rls_denied", "record access denied by RLS")
 	case errors.Is(err, core.ErrValidation):

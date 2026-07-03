@@ -5,14 +5,14 @@
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.6.0 — M5 file storage complete
+**Status:** v0.6.1 — M5.1 resumable file uploads complete
 (self-closing setup, opaque hashed admin sessions, protected admin/project APIs,
 project schema/role provisioning, collection metadata, transactional schema sync,
 records CRUD, API keys, RLS-backed rules, production SPA fallback hardening,
 system `users` auth collections, email/password signup/login, refresh rotation,
 logout-all token invalidation, reset/verify tokens, local file fields/uploads,
-protected file tokens, thumbnails, delete cleanup, audit log, and real Postgres
-16/17/18 integration tests).
+resumable chunk uploads, protected file tokens, thumbnails, delete cleanup, audit
+log, and real Postgres 16/17/18 integration tests).
 Next: **M6 (email / SMTP)**.
 **Repo:** `github.com/dublyo/dublyobase` · **Image:** `ghcr.io/dublyo/dublyobase`
 **Local dev:** `/Users/dribrahimm/0-PostgresProject/dublyobase`
@@ -118,7 +118,7 @@ BCRYPT_COST    default 10      app-user bcrypt cost (valid bcrypt range)
 AUTH_DEV_TOKENS default false  expose reset/verify dev tokens only for local tests
 STORAGE_TYPE   local|s3   default local
 STORAGE_LOCAL_PATH        default /data/storage
-MAX_UPLOAD_MB  default 64      max multipart upload size
+MAX_UPLOAD_MB  default 64      max multipart upload size and resumable final object size
 S3_ENDPOINT S3_BUCKET S3_ACCESS_KEY S3_SECRET_KEY S3_REGION
 MIGRATE_ON_START    default true    (strict bool; typos exit 1)
 TRUST_PROXY_HEADERS default true
@@ -152,7 +152,7 @@ correct HTTP status (400/401/403/404/409/422/429/500). RLS denials are
 | Collections | `GET/POST /api/projects/{slug}/collections` · `GET/PATCH/DELETE .../collections/{name}` (admin-auth for writes) |
 | Records | `GET/POST /api/projects/{slug}/collections/{name}/records` · `GET/PATCH/DELETE .../records/{id}` |
 | App auth | `POST /api/projects/{slug}/auth/signup` · `/auth/login` · `/auth/refresh` · `/auth/logout` · `/auth/logout-all` · `GET /auth/me` · `/auth/request-password-reset` · `/auth/confirm-password-reset` · `/auth/request-verification` · `/auth/confirm-verification` · OAuth: `GET /api/projects/{slug}/auth/oauth/{provider}` + `/callback` (M7) |
-| Storage | `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}` (multipart `file`, streamed, `?mode=replace\|append`) · `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token` · `GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}?token=...` (+ `?thumb=WxH`) |
+| Storage | `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}` (multipart `file`, streamed, `?mode=replace\|append`) · `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/uploads` · `PUT /api/projects/{slug}/files/uploads/{uploadId}/chunks/{index}` · `POST /api/projects/{slug}/files/uploads/{uploadId}/complete` · `DELETE /api/projects/{slug}/files/uploads/{uploadId}` · `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token` · `GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}?token=...` (+ `?thumb=WxH`) |
 | Realtime | `GET /api/projects/{slug}/realtime` (SSE) · `GET .../realtime/ws` (WebSocket); subscribe topics `collection` or `collection/recordId` (M6) |
 | Webhooks | `GET/POST/DELETE /admin/api/projects/{slug}/hooks` (M8) |
 
@@ -311,8 +311,19 @@ against a disposable PostgreSQL 16 cluster.
       `MAX_UPLOAD_MB` (default 64)
 - [x] File field type wiring; delete cascade; protected files via short-lived file
       token; thumbnails (`?thumb=WxH`, cached)
-- **Accept:** 50 MB upload+download streams (constant memory, verified); ownership
-  UID 1001 on volume; protected file 401s without token; thumb correct.
+- **Accept:** multipart upload+download streams locally; protected file 401s
+  without token; thumb correct. Public large-upload proxy timeouts are handled by
+  M5.1 resumable chunks.
+
+### M5.1 — Resumable file uploads — DONE (v0.6.1, 2026-07-03)
+- [x] Follow `docs/specs/m5.1-resumable-file-uploads.md`
+- [x] Durable `_dbo.file_upload_sessions` + `_dbo.file_upload_chunks`
+- [x] Native chunk protocol: create session, `PUT` chunks, complete, cancel
+- [x] Optional per-chunk and final SHA-256 validation
+- [x] Completion returns the updated record and reuses M5 file metadata/downloads
+- **Accept:** out-of-order chunks complete into a protected file field; checksum
+  mismatch rejects without storing the chunk; cancel removes temp chunks; repeat
+  complete is rejected; full suite green with real Postgres.
 
 ### M6 — Email (SMTP)  →  v0.7.0
 - [ ] Mailer interface: SMTP (mailyak) when `SMTP_HOST` set, else dev console logger

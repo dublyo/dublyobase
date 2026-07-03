@@ -2,6 +2,8 @@ package apis
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -13,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dublyo/dublyobase/core"
@@ -175,6 +178,118 @@ func TestFileUploadLimit(t *testing.T) {
 	}
 }
 
+func TestResumableFileUploadCompleteAndCleanup(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	adminToken := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, adminToken)
+	serviceKey := createAPIKeyForRecords(t, srv.Handler, adminToken, slug, "service")
+	owner := signupAppUserForTest(t, srv.Handler, slug, "owner@example.com")
+
+	createResumableAssetCollection(t, srv.Handler, slug, adminToken)
+	record := createRecordInCollectionForTest(t, srv.Handler, slug, "assets", serviceKey, fmt.Sprintf(`{"title":"Resumable","owner":%q}`, owner.User.ID))
+	recordID := record["id"].(string)
+
+	body := []byte("hello resumable upload")
+	chunkSize := 7
+	session := createUploadSessionForTest(
+		t,
+		srv.Handler,
+		fmt.Sprintf("/api/projects/%s/files/assets/%s/avatar/uploads", slug, recordID),
+		owner.Token,
+		fmt.Sprintf(`{"filename":"note.txt","size":%d,"chunkSize":%d,"mode":"replace","checksumSha256":%q}`, len(body), chunkSize, sha256Hex(body)),
+	)
+	if session.TotalChunks != 4 || session.FileID == "" {
+		t.Fatalf("bad upload session: %+v", session)
+	}
+
+	for _, index := range []int{1, 0, 3, 2} {
+		chunk := bodyChunk(body, chunkSize, index)
+		checksum := ""
+		if index == 1 {
+			checksum = sha256Hex(chunk)
+		}
+		rec := putRaw(srv.Handler, fmt.Sprintf("/api/projects/%s/files/uploads/%s/chunks/%d", slug, session.ID, index), owner.Token, chunk, checksum)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("upload chunk %d: want 200, got %d: %s", index, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/files/uploads/%s/complete", slug, session.ID), owner.Token, `{}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("complete upload: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	meta := singleFileMeta(t, decodeRecordMap(t, rec), "avatar")
+	if meta.ID != session.FileID || meta.Name != "note.txt" || meta.Size != int64(len(body)) {
+		t.Fatalf("bad completed metadata: %+v", meta)
+	}
+	stored, err := os.ReadFile(filepath.Join(app.Config.StorageLocalPath, filepath.FromSlash(meta.Path)))
+	if err != nil {
+		t.Fatalf("read assembled file: %v", err)
+	}
+	if !bytes.Equal(stored, body) {
+		t.Fatalf("assembled file bytes mismatch")
+	}
+	tempDir := filepath.Join(app.Config.StorageLocalPath, "_uploads", slug, session.ID)
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("upload temp dir should be removed, stat err=%v", err)
+	}
+
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/files/uploads/%s/complete", slug, session.ID), owner.Token, `{}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("repeat complete: want 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestResumableFileUploadChecksumMismatchAndCancel(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	adminToken := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, adminToken)
+	serviceKey := createAPIKeyForRecords(t, srv.Handler, adminToken, slug, "service")
+	owner := signupAppUserForTest(t, srv.Handler, slug, "owner@example.com")
+
+	createResumableAssetCollection(t, srv.Handler, slug, adminToken)
+	record := createRecordInCollectionForTest(t, srv.Handler, slug, "assets", serviceKey, fmt.Sprintf(`{"title":"Cancel","owner":%q}`, owner.User.ID))
+	recordID := record["id"].(string)
+
+	body := []byte("abcdef")
+	session := createUploadSessionForTest(
+		t,
+		srv.Handler,
+		fmt.Sprintf("/api/projects/%s/files/assets/%s/avatar/uploads", slug, recordID),
+		owner.Token,
+		fmt.Sprintf(`{"filename":"bad.txt","size":%d,"chunkSize":3}`, len(body)),
+	)
+
+	rec := putRaw(srv.Handler, fmt.Sprintf("/api/projects/%s/files/uploads/%s/chunks/0", slug, session.ID), owner.Token, body[:3], strings.Repeat("0", 64))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("checksum mismatch: want 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	chunkPath := filepath.Join(app.Config.StorageLocalPath, "_uploads", slug, session.ID, "0.part")
+	if _, err := os.Stat(chunkPath); !os.IsNotExist(err) {
+		t.Fatalf("bad checksum chunk should not be stored, stat err=%v", err)
+	}
+
+	rec = putRaw(srv.Handler, fmt.Sprintf("/api/projects/%s/files/uploads/%s/chunks/0", slug, session.ID), owner.Token, body[:3], "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid chunk: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = deleteJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/files/uploads/%s", slug, session.ID), owner.Token, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("cancel upload: want 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+	tempDir := filepath.Join(app.Config.StorageLocalPath, "_uploads", slug, session.ID)
+	if _, err := os.Stat(tempDir); !os.IsNotExist(err) {
+		t.Fatalf("canceled upload temp dir should be removed, stat err=%v", err)
+	}
+
+	rec = putRaw(srv.Handler, fmt.Sprintf("/api/projects/%s/files/uploads/%s/chunks/1", slug, session.ID), owner.Token, body[3:], "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("chunk after cancel: want 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func postMultipartFiles(handler http.Handler, path string, token string, files []multipartTestFile) *httptest.ResponseRecorder {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -200,6 +315,20 @@ func postMultipartFiles(handler http.Handler, path string, token string, files [
 	return rec
 }
 
+func putRaw(handler http.Handler, path string, token string, body []byte, checksum string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("PUT", path, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if checksum != "" {
+		req.Header.Set("X-Checksum-SHA256", checksum)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
 func createFileTokenForTest(t *testing.T, handler http.Handler, path string, token string) string {
 	t.Helper()
 	rec := postJSON(handler, path, token, `{}`)
@@ -216,6 +345,54 @@ func createFileTokenForTest(t *testing.T, handler http.Handler, path string, tok
 		t.Fatalf("file token missing: %s", rec.Body.String())
 	}
 	return out.Token
+}
+
+func createResumableAssetCollection(t *testing.T, handler http.Handler, slug string, adminToken string) {
+	t.Helper()
+	rec := postJSON(handler, fmt.Sprintf("/api/projects/%s/collections", slug), adminToken, `{
+		"name":"assets",
+		"type":"base",
+		"fields":[
+			{"name":"title","type":"text","required":true},
+			{"name":"owner","type":"relation","options":{"collection":"users"}},
+			{"name":"avatar","type":"file"}
+		],
+		"viewRule":"owner = @request.auth.id",
+		"updateRule":"owner = @request.auth.id"
+	}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create resumable collection: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func createUploadSessionForTest(t *testing.T, handler http.Handler, path string, token string, body string) core.FileUploadSession {
+	t.Helper()
+	rec := postJSON(handler, path, token, body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create upload session: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out core.FileUploadSession
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ID == "" || out.FileID == "" {
+		t.Fatalf("upload session missing ids: %s", rec.Body.String())
+	}
+	return out
+}
+
+func bodyChunk(body []byte, chunkSize int, index int) []byte {
+	start := index * chunkSize
+	end := start + chunkSize
+	if end > len(body) {
+		end = len(body)
+	}
+	return body[start:end]
+}
+
+func sha256Hex(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 func createRecordInCollectionForTest(t *testing.T, handler http.Handler, slug string, collection string, token string, body string) map[string]any {

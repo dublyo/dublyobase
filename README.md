@@ -5,10 +5,10 @@ storage, and an admin UI, served from **one Go binary on one port**. It connects
 Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a single
 `<30 MB` container to `ghcr.io/dublyo/dublyobase`. One-click deployable on Dublyo.
 
-> Status: **v0.6.0 / M5 complete.** Control-plane auth, project provisioning,
+> Status: **v0.6.1 / M5.1 complete.** Control-plane auth, project provisioning,
 > collections metadata, schema sync, records CRUD, API keys, RLS-backed rules, and
-> email/password app auth, and local file storage are implemented; SMTP, realtime,
-> and the real admin panel are still upcoming. See
+> email/password app auth, local file storage, and resumable chunk uploads are
+> implemented; SMTP, realtime, and the real admin panel are still upcoming. See
 > [dublyobase-dev.md](dublyobase-dev.md) for the full roadmap.
 
 ## What makes it different
@@ -19,8 +19,9 @@ Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a s
   `FORCE ROW LEVEL SECURITY`; hashed API keys; encrypted secrets. Deny → `403 rls_denied`.
 - **Project-scoped app auth.** Automatic `users` auth collection, bcrypt passwords,
   1h access JWTs, 7d hashed refresh sessions, rotation, logout-all, reset/verify tokens.
-- **Protected local file storage.** Streamed multipart uploads, JSONB file metadata,
-  short-lived file tokens, and cached thumbnails on the `/data/storage` volume.
+- **Protected local file storage.** Streamed multipart uploads, resumable chunks,
+  JSONB file metadata, short-lived file tokens, and cached thumbnails on the
+  `/data/storage` volume.
 - **Realtime over `LISTEN/NOTIFY`** — no Redis. **Collections** model with auto REST + RLS.
 
 ## Quick start (local)
@@ -77,6 +78,10 @@ var → the process exits `1` with a clear message rather than failing mysteriou
 | `GET/POST /api/projects/{slug}/collections/{name}/records` | List/create records |
 | `GET/PATCH/DELETE /api/projects/{slug}/collections/{name}/records/{id}` | Record detail/update/delete |
 | `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}` | Multipart upload using form field `file`; `?mode=replace\|append` |
+| `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/uploads` | Create a resumable upload session |
+| `PUT /api/projects/{slug}/files/uploads/{uploadId}/chunks/{index}` | Upload one raw chunk; optional `X-Checksum-SHA256` |
+| `POST /api/projects/{slug}/files/uploads/{uploadId}/complete` | Assemble chunks and update the record file field |
+| `DELETE /api/projects/{slug}/files/uploads/{uploadId}` | Cancel a resumable upload and remove temp chunks |
 | `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token` | Mint a short-lived protected file token after `view` rules pass |
 | `GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}?token=...` | Download original file; add `thumb=WxH` for cached JPEG thumbnail |
 | `GET /` | Embedded admin UI |
