@@ -66,6 +66,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.StorageType != StorageLocal || cfg.StorageLocalPath != "/data/storage" {
 		t.Fatalf("storage defaults wrong: %+v", cfg)
 	}
+	if cfg.BcryptCost != 10 || cfg.AuthDevTokens {
+		t.Fatalf("app auth defaults wrong: %+v", cfg)
+	}
 }
 
 func TestLoadConfigInvalidValuesFailLoud(t *testing.T) {
@@ -111,6 +114,21 @@ func TestLoadConfigInvalidValuesFailLoud(t *testing.T) {
 				"ADMIN_PASSWORD": "short",
 			},
 			want: "ADMIN_PASSWORD",
+		},
+		{
+			name: "bcrypt cost low",
+			env:  map[string]string{"BCRYPT_COST": "3"},
+			want: "BCRYPT_COST",
+		},
+		{
+			name: "bcrypt cost typo",
+			env:  map[string]string{"BCRYPT_COST": "fast"},
+			want: "BCRYPT_COST",
+		},
+		{
+			name: "auth dev tokens typo",
+			env:  map[string]string{"AUTH_DEV_TOKENS": "sure"},
+			want: "AUTH_DEV_TOKENS",
 		},
 	}
 	for _, tc := range cases {

@@ -70,6 +70,9 @@ func newIntegrationApp(t *testing.T) (*core.App, func()) {
 		CORSOrigins:       []string{"*"},
 		TrustProxyHeaders: true,
 		JWTSecret:         "test-jwt-secret-must-be-at-least-32-bytes",
+		AppURL:            "http://127.0.0.1",
+		BcryptCost:        4,
+		AuthDevTokens:     true,
 	}
 	app := core.NewApp(cfg, pool, testLogger())
 	app.SetReady(true)
@@ -234,6 +237,10 @@ func TestAdminProjectProvisioning(t *testing.T) {
 	assertSchemaExists(t, app.Pool, schemaName)
 	for _, role := range []string{roles.Anon, roles.Authenticated, roles.Service} {
 		assertRoleExists(t, app.Pool, role)
+	}
+	assertCollectionMetadataCount(t, app.Pool, slug, "users", 1)
+	for _, column := range []string{"id", "created", "updated", "email", "email_normalized", "verified", "password_hash", "token_key", "disabled_at", "last_login_at"} {
+		assertColumnExists(t, app.Pool, schemaName, "users", column)
 	}
 	assertAuditExists(t, app.Pool, "project.create", slug)
 }

@@ -32,6 +32,8 @@ services:
       JWT_SECRET: change_me_to_a_32_plus_char_random_secret_value
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: change_me_too
+      BCRYPT_COST: "10"
+      AUTH_DEV_TOKENS: "false"
       STORAGE_TYPE: local
       MIGRATE_ON_START: "true"
       TRUST_PROXY_HEADERS: "true"

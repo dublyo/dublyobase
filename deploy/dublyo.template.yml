@@ -50,7 +50,7 @@ compose: |
         retries: 10
 
     app:
-      image: ghcr.io/dublyo/dublyobase:v0.4.1
+      image: ghcr.io/dublyo/dublyobase:v0.5.0
       restart: unless-stopped
       environment:
         - DATABASE_URL=postgres://dublyobase:${DB_PASSWORD}@db:5432/dublyobase?sslmode=disable
@@ -58,6 +58,8 @@ compose: |
         - JWT_SECRET=${JWT_SECRET}
         - ADMIN_EMAIL=${ADMIN_EMAIL}
         - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+        - BCRYPT_COST=10
+        - AUTH_DEV_TOKENS=false
         - STORAGE_TYPE=local
         - MIGRATE_ON_START=true
         - TRUST_PROXY_HEADERS=true

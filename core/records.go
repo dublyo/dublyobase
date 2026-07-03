@@ -257,6 +257,9 @@ func normalizeListOptions(opts RecordListOptions) RecordListOptions {
 func allRecordColumns(collection *Collection) []string {
 	columns := []string{"id", "created", "updated"}
 	for _, field := range collection.Fields {
+		if isAuthUsersHiddenField(collection, field.Name) {
+			continue
+		}
 		columns = append(columns, field.Name)
 	}
 	return columns
@@ -326,6 +329,9 @@ func orderByClause(collection *Collection, raw string) (string, error) {
 func allowedRecordColumns(collection *Collection) map[string]struct{} {
 	out := map[string]struct{}{"id": {}, "created": {}, "updated": {}}
 	for _, field := range collection.Fields {
+		if isAuthUsersHiddenField(collection, field.Name) {
+			continue
+		}
 		out[field.Name] = struct{}{}
 	}
 	return out
@@ -370,6 +376,9 @@ func normalizeRecordPayload(collection *Collection, raw map[string]json.RawMessa
 		if name == "id" || name == "created" || name == "updated" {
 			return nil, fmt.Errorf("%w: system field %q cannot be written", ErrValidation, name)
 		}
+		if isAuthUsersHiddenField(collection, name) {
+			return nil, fmt.Errorf("%w: auth field %q cannot be written", ErrValidation, name)
+		}
 		field, ok := fields[name]
 		if !ok {
 			return nil, fmt.Errorf("%w: unknown field %q", ErrValidation, name)
@@ -390,6 +399,10 @@ func normalizeRecordPayload(collection *Collection, raw map[string]json.RawMessa
 		sortedValues = append(sortedValues, value)
 	}
 	return &normalizedPayload{Columns: columns, Values: sortedValues}, nil
+}
+
+func isAuthUsersHiddenField(collection *Collection, name string) bool {
+	return collection != nil && collection.Type == CollectionAuth && collection.Name == authUsersCollection && isHiddenAuthColumn(name)
 }
 
 func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {

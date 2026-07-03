@@ -3,7 +3,10 @@ package core
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // StorageType selects the file-storage backend.
@@ -27,6 +30,9 @@ type Config struct {
 
 	AdminEmail    string // ADMIN_EMAIL    (optional; seeds first admin)
 	AdminPassword string // ADMIN_PASSWORD (optional; paired with ADMIN_EMAIL)
+
+	BcryptCost    int  // BCRYPT_COST     (default 10)
+	AuthDevTokens bool // AUTH_DEV_TOKENS (default false; exposes reset/verify tokens for tests/dev)
 
 	StorageType      StorageType // STORAGE_TYPE (local|s3)
 	StorageLocalPath string      // STORAGE_LOCAL_PATH
@@ -65,6 +71,13 @@ func LoadConfig() (*Config, error) {
 		}
 		return v
 	}
+	intVar := func(key string, def int) int {
+		v, err := envInt(key, def)
+		if err != nil {
+			errs = append(errs, err.Error())
+		}
+		return v
+	}
 
 	c := &Config{
 		Host: env("HOST", "0.0.0.0"),
@@ -76,6 +89,9 @@ func LoadConfig() (*Config, error) {
 
 		AdminEmail:    strings.TrimSpace(os.Getenv("ADMIN_EMAIL")),
 		AdminPassword: os.Getenv("ADMIN_PASSWORD"),
+
+		BcryptCost:    intVar("BCRYPT_COST", bcrypt.DefaultCost),
+		AuthDevTokens: boolVar("AUTH_DEV_TOKENS", false),
 
 		StorageType:      StorageType(env("STORAGE_TYPE", "local")),
 		StorageLocalPath: env("STORAGE_LOCAL_PATH", "/data/storage"),
@@ -137,6 +153,9 @@ func (c *Config) Validate() error {
 	if c.AdminPassword != "" && len(c.AdminPassword) < minAdminPasswordSize {
 		return fmt.Errorf("ADMIN_PASSWORD must be at least %d characters", minAdminPasswordSize)
 	}
+	if c.BcryptCost < bcrypt.MinCost || c.BcryptCost > bcrypt.MaxCost {
+		return fmt.Errorf("BCRYPT_COST must be between %d and %d (got %d)", bcrypt.MinCost, bcrypt.MaxCost, c.BcryptCost)
+	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warn", "error":
 	default:
@@ -176,6 +195,18 @@ func envBool(key string, def bool) (bool, error) {
 		return false, nil
 	}
 	return def, fmt.Errorf("%s must be a boolean (true/false), got %q", key, v)
+}
+
+func envInt(key string, def int) (int, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def, fmt.Errorf("%s must be an integer, got %q", key, v)
+	}
+	return n, nil
 }
 
 func splitCSV(v string) []string {

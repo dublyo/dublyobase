@@ -5,12 +5,14 @@
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.4.1 — M3 records API & rules complete
+**Status:** v0.5.0 — M4 app auth complete
 (self-closing setup, opaque hashed admin sessions, protected admin/project APIs,
 project schema/role provisioning, collection metadata, transactional schema sync,
 records CRUD, API keys, RLS-backed rules, production SPA fallback hardening,
-audit log, and real Postgres 16/17/18 integration tests).
-Next: **M4 (app auth)**.
+system `users` auth collections, email/password signup/login, refresh rotation,
+logout-all token invalidation, reset/verify tokens, audit log, and real Postgres
+16/17/18 integration tests).
+Next: **M5 (file storage)**.
 **Repo:** `github.com/dublyo/dublyobase` · **Image:** `ghcr.io/dublyo/dublyobase`
 **Local dev:** `/Users/dribrahimm/0-PostgresProject/dublyobase`
 
@@ -111,6 +113,8 @@ APP_URL        required   https://app.dublyo.xyz — every link/callback/webhook
 JWT_SECRET     required   >=32 chars (trimmed); refuse to start if missing/short
 ADMIN_EMAIL    optional   seed first admin on empty DB (with ADMIN_PASSWORD)
 ADMIN_PASSWORD optional
+BCRYPT_COST    default 10      app-user bcrypt cost (valid bcrypt range)
+AUTH_DEV_TOKENS default false  expose reset/verify dev tokens only for local tests
 STORAGE_TYPE   local|s3   default local
 STORAGE_LOCAL_PATH        default /data/storage
 S3_ENDPOINT S3_BUCKET S3_ACCESS_KEY S3_SECRET_KEY S3_REGION
@@ -145,7 +149,7 @@ correct HTTP status (400/401/403/404/409/422/429/500). RLS denials are
 | Control plane | `GET/POST /admin/api/projects` · `GET/PATCH/DELETE /admin/api/projects/{slug}` — **every `/admin/api/*` route behind auth middleware** (postbase's fatal bug: UI-only gating) |
 | Collections | `GET/POST /api/projects/{slug}/collections` · `GET/PATCH/DELETE .../collections/{name}` (admin-auth for writes) |
 | Records | `GET/POST /api/projects/{slug}/collections/{name}/records` · `GET/PATCH/DELETE .../records/{id}` |
-| App auth | `POST /api/projects/{slug}/auth/signup` · `/auth/login` · `/auth/refresh` · `/auth/logout` · `/auth/request-password-reset` · `/auth/confirm-password-reset` · `/auth/request-verification` · `/auth/confirm-verification` (M4) · OAuth: `GET /api/projects/{slug}/auth/oauth/{provider}` + `/callback` (M7) |
+| App auth | `POST /api/projects/{slug}/auth/signup` · `/auth/login` · `/auth/refresh` · `/auth/logout` · `/auth/logout-all` · `GET /auth/me` · `/auth/request-password-reset` · `/auth/confirm-password-reset` · `/auth/request-verification` · `/auth/confirm-verification` · OAuth: `GET /api/projects/{slug}/auth/oauth/{provider}` + `/callback` (M7) |
 | Storage | `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}` (multipart, streamed) · `GET /api/files/{...path}` (+ `?thumb=WxH`, `?token=` for protected) (M5) |
 | Realtime | `GET /api/projects/{slug}/realtime` (SSE) · `GET .../realtime/ws` (WebSocket); subscribe topics `collection` or `collection/recordId` (M6) |
 | Webhooks | `GET/POST/DELETE /admin/api/projects/{slug}/hooks` (M8) |
@@ -286,15 +290,16 @@ against a disposable PostgreSQL 16 cluster.
   hits Postgres directly to prove policies fire without the app's WHERE); filter
   injection attempts (quoted idents, stacked queries) rejected by tests.
 
-### M4 — App auth (email/password)  →  v0.5.0
-- [ ] Follow `docs/specs/m4-app-auth.md`
-- [ ] `users` auth collection per project (email unique, bcrypt, verified flag)
-- [ ] Tokens: access JWT (1h, per-record `token_key` + `JWT_SECRET`) + refresh (7d,
+### M4 — App auth (email/password) — DONE (v0.5.0, 2026-07-03)
+- [x] Follow `docs/specs/m4-app-auth.md`
+- [x] `users` auth collection per project (email unique, bcrypt, verified flag)
+- [x] Tokens: access JWT (1h, per-record `token_key` + `JWT_SECRET`) + refresh (7d,
       rotating, stored hashed in `_dbo.sessions`); logout-everywhere = rotate `token_key`
-- [ ] signup/login/refresh/logout + reset/verify flows (email via M6 mailer; until
-      then tokens logged at debug in dev)
+- [x] signup/login/refresh/logout + reset/verify flows (email via M6 mailer; until
+      then `AUTH_DEV_TOKENS=true` exposes plaintext tokens only in local/test responses)
 - **Accept:** full lifecycle green; refresh rotation invalidates the old token;
-  `token_key` rotation kills all sessions; bcrypt cost configurable.
+  replay revokes the refresh family; `token_key` rotation kills old access tokens;
+  bcrypt cost configurable; tests cover PostgreSQL 16, 17, and 18.
 
 ### M5 — File storage  →  v0.6.0
 - [ ] Streamed multipart upload → local FS layout `/data/storage/<project>/<collection>/<record>/<field>/`

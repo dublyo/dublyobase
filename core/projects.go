@@ -97,6 +97,9 @@ func ProvisionProject(ctx context.Context, pool *pgxpool.Pool, adminID string, s
 		}
 		return nil, err
 	}
+	if _, err := ensureAuthUsersCollectionTx(ctx, tx, project); err != nil {
+		return nil, err
+	}
 
 	if err := InsertAudit(ctx, tx, AuditEvent{
 		AdminID:    &adminID,

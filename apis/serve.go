@@ -20,6 +20,7 @@ type server struct {
 	app          *core.App
 	setupLimiter *rateLimiter
 	loginLimiter *rateLimiter
+	authLimiter  *rateLimiter
 }
 
 // NewServer builds the HTTP server for an App.
@@ -28,6 +29,7 @@ func NewServer(app *core.App) *http.Server {
 		app:          app,
 		setupLimiter: newRateLimiter(5, time.Minute),
 		loginLimiter: newRateLimiter(10, time.Minute),
+		authLimiter:  newRateLimiter(30, time.Minute),
 	}
 
 	mux := http.NewServeMux()
@@ -43,6 +45,16 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("GET /admin/api/projects/{slug}/api-keys", s.requireAdmin(http.HandlerFunc(s.adminListAPIKeys)))
 	mux.Handle("POST /admin/api/projects/{slug}/api-keys", s.requireAdmin(http.HandlerFunc(s.adminCreateAPIKey)))
 	mux.Handle("DELETE /admin/api/projects/{slug}/api-keys/{id}", s.requireAdmin(http.HandlerFunc(s.adminRevokeAPIKey)))
+	mux.Handle("POST /api/projects/{slug}/auth/signup", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appSignup)))
+	mux.Handle("POST /api/projects/{slug}/auth/login", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogin)))
+	mux.Handle("POST /api/projects/{slug}/auth/refresh", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRefresh)))
+	mux.Handle("POST /api/projects/{slug}/auth/logout", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogout)))
+	mux.Handle("POST /api/projects/{slug}/auth/logout-all", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogoutAll)))
+	mux.Handle("GET /api/projects/{slug}/auth/me", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appMe)))
+	mux.Handle("POST /api/projects/{slug}/auth/request-verification", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRequestVerification)))
+	mux.Handle("POST /api/projects/{slug}/auth/confirm-verification", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appConfirmVerification)))
+	mux.Handle("POST /api/projects/{slug}/auth/request-password-reset", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRequestPasswordReset)))
+	mux.Handle("POST /api/projects/{slug}/auth/confirm-password-reset", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appConfirmPasswordReset)))
 	mux.Handle("GET /api/projects/{slug}/collections", s.requireAdmin(http.HandlerFunc(s.listCollections)))
 	mux.Handle("POST /api/projects/{slug}/collections", s.requireAdmin(http.HandlerFunc(s.createCollection)))
 	mux.Handle("GET /api/projects/{slug}/collections/{name}", s.requireAdmin(http.HandlerFunc(s.getCollection)))

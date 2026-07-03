@@ -27,12 +27,20 @@ func writeCoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
 	case errors.Is(err, core.ErrSessionExpired):
 		writeError(w, http.StatusUnauthorized, "session_expired", "session expired")
+	case errors.Is(err, core.ErrInvalidAuthToken):
+		writeError(w, http.StatusUnauthorized, "invalid_auth_token", "invalid auth token")
 	case errors.Is(err, core.ErrInvalidCredentials):
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
+	case errors.Is(err, core.ErrInvalidRefreshToken):
+		writeError(w, http.StatusUnauthorized, "invalid_refresh_token", "invalid refresh token")
 	case errors.Is(err, core.ErrAdminDisabled):
 		writeError(w, http.StatusForbidden, "admin_disabled", "admin is disabled")
+	case errors.Is(err, core.ErrUserDisabled):
+		writeError(w, http.StatusForbidden, "user_disabled", "user is disabled")
 	case errors.Is(err, core.ErrSetupClosed):
 		writeError(w, http.StatusGone, "setup_closed", "setup is closed")
+	case errors.Is(err, core.ErrUserExists):
+		writeError(w, http.StatusConflict, "user_exists", "user already exists")
 	case errors.Is(err, core.ErrProjectExists):
 		writeError(w, http.StatusConflict, "project_exists", "project already exists")
 	case errors.Is(err, core.ErrProjectNotFound):

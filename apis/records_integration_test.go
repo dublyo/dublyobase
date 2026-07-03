@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/dublyo/dublyobase/core"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -44,8 +42,10 @@ func TestRecordsAPIAndRLS(t *testing.T) {
 		t.Fatalf("list keys: want 200, got %d: %s", keys.Code, keys.Body.String())
 	}
 
-	owner1 := "9c10d5b9-3a23-4f25-91c3-09a40d7e9f7e"
-	owner2 := "64fe8d40-30c6-49a7-8d42-5d056efc9430"
+	user1 := signupAppUserForTest(t, srv.Handler, slug, "owner1@example.com")
+	user2 := signupAppUserForTest(t, srv.Handler, slug, "owner2@example.com")
+	owner1 := user1.User.ID
+	owner2 := user2.User.ID
 	publicRecord := createRecordForTest(t, srv.Handler, slug, serviceKey, fmt.Sprintf(`{"title":"Public","published":true,"owner":%q}`, owner2))
 	privateRecord := createRecordForTest(t, srv.Handler, slug, serviceKey, fmt.Sprintf(`{"title":"Private","owner":%q}`, owner1))
 
@@ -70,8 +70,8 @@ func TestRecordsAPIAndRLS(t *testing.T) {
 		t.Fatalf("anon view private: want 404, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	user1Token := signedAppJWT(t, app, slug, owner1)
-	user2Token := signedAppJWT(t, app, slug, owner2)
+	user1Token := user1.Token
+	user2Token := user2.Token
 	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/posts/records/%s", slug, privateRecord["id"]), user1Token)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("owner view private: want 200, got %d: %s", rec.Code, rec.Body.String())
@@ -155,20 +155,6 @@ func assertRecordListCount(t *testing.T, body []byte, want int) {
 	if len(out.Items) != want || out.TotalItems != want {
 		t.Fatalf("record list count = len:%d total:%d, want %d; body=%s", len(out.Items), out.TotalItems, want, string(body))
 	}
-}
-
-func signedAppJWT(t *testing.T, app *core.App, slug string, subject string) string {
-	t.Helper()
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":     subject,
-		"role":    "authenticated",
-		"project": slug,
-		"exp":     time.Now().Add(time.Hour).Unix(),
-	}).SignedString([]byte(app.Config.JWTSecret))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return token
 }
 
 func assertDirectRoleCount(t *testing.T, pool *pgxpool.Pool, role string, schema string, operation string, claims string, where string, want int) {

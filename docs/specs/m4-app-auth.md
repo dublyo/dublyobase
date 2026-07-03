@@ -1,6 +1,6 @@
 # M4 Spec: App Auth
 
-Status: draft for v0.5.0
+Status: implemented in v0.5.0
 Depends on: v0.4.1
 
 M4 adds project-scoped app-user authentication. M3 already validates signed
@@ -395,4 +395,3 @@ Release validation:
 15. Run local and PostgreSQL 16/17/18 validation.
 16. Commit, push, tag `v0.5.0`, wait for CI/GHCR, then deploy/test through
     Portainer.
-

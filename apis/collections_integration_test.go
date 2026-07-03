@@ -105,7 +105,11 @@ func TestAdminCollectionLifecycle(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &listBody); err != nil {
 		t.Fatal(err)
 	}
-	if len(listBody.Items) != 1 || listBody.Items[0].Name != "posts" {
+	names := map[string]bool{}
+	for _, item := range listBody.Items {
+		names[item.Name] = true
+	}
+	if len(listBody.Items) != 2 || !names["posts"] || !names["users"] {
 		t.Fatalf("unexpected list response: %+v", listBody)
 	}
 

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -27,13 +26,6 @@ type RecordAuth struct {
 	Subject    string
 	Collection string
 	Claims     map[string]any
-}
-
-type appClaims struct {
-	Role       string `json:"role"`
-	Project    string `json:"project"`
-	Collection string `json:"collection,omitempty"`
-	jwt.RegisteredClaims
 }
 
 func ResolveRecordAuth(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, token string, now time.Time) (*RecordAuth, error) {
@@ -67,13 +59,17 @@ func ResolveRecordAuth(ctx context.Context, pool *pgxpool.Pool, cfg *Config, pro
 	}
 	claims, err := parseAppJWT(cfg.JWTSecret, token, now)
 	if err != nil {
-		return nil, err
-	}
-	if claims.Project != project.Slug || claims.Role != string(RecordRoleAuthenticated) {
 		return nil, ErrUnauthorized
 	}
-	if err := ValidateUUID(claims.Subject); err != nil {
+	if !validAppClaimsForProject(claims, project) {
+		return nil, ErrUnauthorized
+	}
+	matches, err := appUserMatchesTokenKey(ctx, pool, project, claims.Subject, claims.TokenKey)
+	if err != nil {
 		return nil, err
+	}
+	if !matches {
+		return nil, ErrUnauthorized
 	}
 	return newRecordAuth(project, RecordRoleAuthenticated, roles.Authenticated, claims.Subject, claims.Collection), nil
 }
@@ -97,33 +93,6 @@ func newRecordAuth(project *Project, role RecordRole, roleName string, subject s
 		Collection: collection,
 		Claims:     claims,
 	}
-}
-
-func parseAppJWT(secret string, token string, now time.Time) (*appClaims, error) {
-	if len(secret) < 32 {
-		return nil, ErrUnauthorized
-	}
-	claims := &appClaims{}
-	parsed, err := jwt.ParseWithClaims(
-		token,
-		claims,
-		func(t *jwt.Token) (any, error) {
-			if t.Method != jwt.SigningMethodHS256 {
-				return nil, fmt.Errorf("unexpected signing method")
-			}
-			return []byte(secret), nil
-		},
-		jwt.WithTimeFunc(func() time.Time { return now.UTC() }),
-		jwt.WithExpirationRequired(),
-		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
-	)
-	if err != nil || !parsed.Valid {
-		return nil, ErrUnauthorized
-	}
-	if claims.Subject == "" || claims.Project == "" || claims.Role == "" {
-		return nil, ErrUnauthorized
-	}
-	return claims, nil
 }
 
 func withRecordTx(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, operation string, fn func(pgx.Tx) error) error {

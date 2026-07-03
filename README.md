@@ -5,9 +5,9 @@ storage, and an admin UI, served from **one Go binary on one port**. It connects
 Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a single
 `<30 MB` container to `ghcr.io/dublyo/dublyobase`. One-click deployable on Dublyo.
 
-> Status: **v0.4.1 / M3 complete.** Control-plane auth, project provisioning,
-> collections metadata, schema sync, records CRUD, API keys, and RLS-backed rules
-> are implemented; app auth, storage, SMTP, and realtime are still upcoming. See
+> Status: **v0.5.0 / M4 complete.** Control-plane auth, project provisioning,
+> collections metadata, schema sync, records CRUD, API keys, RLS-backed rules, and
+> email/password app auth are implemented; storage, SMTP, and realtime are still upcoming. See
 > [dublyobase-dev.md](dublyobase-dev.md) for the full roadmap.
 
 ## What makes it different
@@ -16,6 +16,8 @@ Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a s
   Postgres major (16/17/18) at the infra level; dublyobase just connects.
 - **Security enforced in Postgres.** Per-project roles + `SET LOCAL ROLE` +
   `FORCE ROW LEVEL SECURITY`; hashed API keys; encrypted secrets. Deny → `403 rls_denied`.
+- **Project-scoped app auth.** Automatic `users` auth collection, bcrypt passwords,
+  1h access JWTs, 7d hashed refresh sessions, rotation, logout-all, reset/verify tokens.
 - **Realtime over `LISTEN/NOTIFY`** — no Redis. **Collections** model with auto REST + RLS.
 
 ## Quick start (local)
@@ -40,8 +42,8 @@ go run .            # connects, migrates, seeds admin, serves on :8080
 All configuration is via environment variables (the Dublyo template contract). Required:
 `DATABASE_URL`, `APP_URL`, `JWT_SECRET`. See
 [core/config.go](core/config.go) for the full list (storage, SMTP, CORS, logging,
-pgvector, proxy headers, …). Missing a required var → the process exits `1` with a
-clear message rather than failing mysteriously later.
+pgvector, proxy headers, app-auth bcrypt/dev-token settings, …). Missing a required
+var → the process exits `1` with a clear message rather than failing mysteriously later.
 
 ## Endpoints
 
@@ -57,6 +59,16 @@ clear message rather than failing mysteriously later.
 | `GET /admin/api/projects/{slug}` | Project detail |
 | `GET/POST /admin/api/projects/{slug}/api-keys` | List/create project API keys |
 | `DELETE /admin/api/projects/{slug}/api-keys/{id}` | Revoke project API key |
+| `POST /api/projects/{slug}/auth/signup` | App-user signup; returns access + refresh tokens |
+| `POST /api/projects/{slug}/auth/login` | App-user login |
+| `POST /api/projects/{slug}/auth/refresh` | Rotate refresh token |
+| `POST /api/projects/{slug}/auth/logout` | Revoke current refresh token |
+| `POST /api/projects/{slug}/auth/logout-all` | Rotate user `token_key` and revoke all sessions |
+| `GET /api/projects/{slug}/auth/me` | Current app user |
+| `POST /api/projects/{slug}/auth/request-verification` | Create email verification token |
+| `POST /api/projects/{slug}/auth/confirm-verification` | Confirm verification token |
+| `POST /api/projects/{slug}/auth/request-password-reset` | Create password reset token |
+| `POST /api/projects/{slug}/auth/confirm-password-reset` | Confirm reset token and set password |
 | `GET/POST /api/projects/{slug}/collections` | List/create project collections |
 | `GET/PATCH/DELETE /api/projects/{slug}/collections/{name}` | Collection detail/schema sync/delete |
 | `GET/POST /api/projects/{slug}/collections/{name}/records` | List/create records |
