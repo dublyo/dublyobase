@@ -189,7 +189,7 @@ func ListCollections(ctx context.Context, pool *pgxpool.Pool, projectSlug string
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Collection
+	out := make([]Collection, 0)
 	for rows.Next() {
 		collection, err := scanCollection(rows)
 		if err != nil {

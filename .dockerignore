@@ -1,0 +1,13 @@
+.git
+.github
+.DS_Store
+*.log
+
+/db_data
+/data
+/dublyobase
+
+/ui/admin/node_modules
+/ui/admin/.next
+/ui/admin/out
+/ui/dist

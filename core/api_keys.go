@@ -128,7 +128,7 @@ func ListAPIKeys(ctx context.Context, pool *pgxpool.Pool, projectSlug string) ([
 		return nil, err
 	}
 	defer rows.Close()
-	var out []APIKey
+	out := make([]APIKey, 0)
 	for rows.Next() {
 		key, err := scanAPIKey(rows)
 		if err != nil {

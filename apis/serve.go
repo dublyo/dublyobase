@@ -45,6 +45,7 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("GET /admin/api/projects/{slug}/api-keys", s.requireAdmin(http.HandlerFunc(s.adminListAPIKeys)))
 	mux.Handle("POST /admin/api/projects/{slug}/api-keys", s.requireAdmin(http.HandlerFunc(s.adminCreateAPIKey)))
 	mux.Handle("DELETE /admin/api/projects/{slug}/api-keys/{id}", s.requireAdmin(http.HandlerFunc(s.adminRevokeAPIKey)))
+	mux.Handle("GET /admin/api/audit-log", s.requireAdmin(http.HandlerFunc(s.adminListAuditLog)))
 	mux.Handle("POST /api/projects/{slug}/auth/signup", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appSignup)))
 	mux.Handle("POST /api/projects/{slug}/auth/login", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogin)))
 	mux.Handle("POST /api/projects/{slug}/auth/refresh", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRefresh)))

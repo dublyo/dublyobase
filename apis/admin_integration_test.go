@@ -218,6 +218,20 @@ func TestAdminProjectProvisioning(t *testing.T) {
 		t.Fatalf("unauth projects: want 401, got %d", rec.Code)
 	}
 
+	rec = getJSON(srv.Handler, "/admin/api/projects", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("empty projects: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var emptyProjects struct {
+		Items []core.Project `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &emptyProjects); err != nil {
+		t.Fatal(err)
+	}
+	if emptyProjects.Items == nil {
+		t.Fatalf("empty projects must encode as [] not null: %s", rec.Body.String())
+	}
+
 	slug := fmt.Sprintf("p%d", time.Now().UnixNano()%1_000_000_000)
 	rec = postJSON(srv.Handler, "/admin/api/projects", token, fmt.Sprintf(`{"slug":%q,"name":"Demo"}`, slug))
 	if rec.Code != http.StatusCreated {
@@ -277,6 +291,36 @@ func TestAdminProjectCreateConcurrent(t *testing.T) {
 	}
 	if created != 1 || conflict != 1 {
 		t.Fatalf("concurrent project statuses = %v", codes)
+	}
+}
+
+func TestAdminAuditLogEndpoint(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := fmt.Sprintf("p%d", time.Now().UnixNano()%1_000_000_000)
+
+	rec := postJSON(srv.Handler, "/admin/api/projects", token, fmt.Sprintf(`{"slug":%q,"name":"Audit Demo"}`, slug))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create project: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = getJSON(srv.Handler, "/admin/api/audit-log?project="+slug+"&perPage=5", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("audit log: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items      []core.AuditLogEntry `json:"items"`
+		TotalItems int                  `json:"totalItems"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.TotalItems == 0 || len(body.Items) == 0 {
+		t.Fatalf("audit response missing entries: %s", rec.Body.String())
+	}
+	if body.Items[0].Action == "" || body.Items[0].Data == nil {
+		t.Fatalf("audit entry shape incomplete: %+v", body.Items[0])
 	}
 }
 

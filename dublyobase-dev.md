@@ -5,16 +5,16 @@
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.7.0 — M6 SMTP email complete
+**Status:** v0.8.0 — M7 admin panel complete
 (self-closing setup, opaque hashed admin sessions, protected admin/project APIs,
 project schema/role provisioning, collection metadata, transactional schema sync,
 records CRUD, API keys, RLS-backed rules, production SPA fallback hardening,
 system `users` auth collections, email/password signup/login, refresh rotation,
 logout-all token invalidation, reset/verify tokens, local file fields/uploads,
 resumable chunk uploads, protected file tokens, thumbnails, delete cleanup, audit
-log, SMTP delivery for verify/reset emails, and real Postgres 16/17/18 integration
-tests).
-Next: **M7 (admin panel v1)**.
+log, SMTP delivery for verify/reset emails, embedded Next/Tailwind admin panel,
+and real Postgres 16/17/18 integration tests).
+Next: **M8 (realtime + webhooks)**.
 **Repo:** `github.com/dublyo/dublyobase` · **Image:** `ghcr.io/dublyo/dublyobase`
 **Local dev:** `/Users/dribrahimm/0-PostgresProject/dublyobase`
 
@@ -84,7 +84,7 @@ seeds are conflict-tolerant, realtime is coordinated through `LISTEN/NOTIFY`.
 
 ```
    Internet ── Cloudflare Tunnel ── Traefik (TLS) ──► dublyobase :8080  (one Go binary)
-                                                        │  admin SPA (embed.FS, Svelte)
+                                                        │  admin SPA (embed.FS, Next static export)
                                                         │  REST + WS/SSE + uploads
                                                         │  /health  /ready
                                                         ▼
@@ -100,10 +100,10 @@ seeds are conflict-tolerant, realtime is coordinated through `LISTEN/NOTIFY`.
 **Tenancy = schema-per-project** inside the one database (no `CREATE DATABASE`).
 **Repo layout:** `cmd/` (cobra), `core/` (config, connect, migrate+migrations/,
 seed, logger, app, version, collection, field), `apis/` (serve, middleware, later:
-records/auth/storage/realtime), `ui/` (Svelte SPA → `embed.FS`), `deploy/`,
+records/auth/storage/realtime), `ui/` (static admin SPA → `embed.FS`), `deploy/`,
 workflows. **Stack:** Go 1.25 · cobra · stdlib mux · pgx/v5 · bcrypt ·
-golang-jwt/v5 · fexpr (rules) · stdlib SMTP · **Svelte + Vite** (admin UI —
-decided: PocketBase lineage, smallest embedded bundles).
+golang-jwt/v5 · fexpr (rules) · stdlib SMTP · **Next.js static export + Tailwind**
+(admin UI — no Node runtime in production).
 
 ---
 
@@ -151,9 +151,10 @@ correct HTTP status (400/401/403/404/409/422/429/500). RLS denials are
 | Setup | `POST /setup` — creates first admin **only while `_dbo.admins` is empty**, then 410 forever; rate-limited |
 | Admin auth | `POST /admin/api/auth/login` (email+password → opaque session token) · `POST .../logout` · `GET .../me` |
 | Control plane | `GET/POST /admin/api/projects` · `GET/PATCH/DELETE /admin/api/projects/{slug}` — **every `/admin/api/*` route behind auth middleware** (postbase's fatal bug: UI-only gating) |
+| Audit | `GET /admin/api/audit-log?project=&page=&perPage=` — admin-auth required, newest first, secret-like data redacted |
 | Collections | `GET/POST /api/projects/{slug}/collections` · `GET/PATCH/DELETE .../collections/{name}` (admin-auth for writes) |
 | Records | `GET/POST /api/projects/{slug}/collections/{name}/records` · `GET/PATCH/DELETE .../records/{id}` |
-| App auth | `POST /api/projects/{slug}/auth/signup` · `/auth/login` · `/auth/refresh` · `/auth/logout` · `/auth/logout-all` · `GET /auth/me` · `/auth/request-password-reset` · `/auth/confirm-password-reset` · `/auth/request-verification` · `/auth/confirm-verification` · OAuth: `GET /api/projects/{slug}/auth/oauth/{provider}` + `/callback` (M7) |
+| App auth | `POST /api/projects/{slug}/auth/signup` · `/auth/login` · `/auth/refresh` · `/auth/logout` · `/auth/logout-all` · `GET /auth/me` · `/auth/request-password-reset` · `/auth/confirm-password-reset` · `/auth/request-verification` · `/auth/confirm-verification` · OAuth: `GET /api/projects/{slug}/auth/oauth/{provider}` + `/callback` (later auth milestone) |
 | Storage | `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}` (multipart `file`, streamed, `?mode=replace\|append`) · `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/uploads` · `PUT /api/projects/{slug}/files/uploads/{uploadId}/chunks/{index}` · `POST /api/projects/{slug}/files/uploads/{uploadId}/complete` · `DELETE /api/projects/{slug}/files/uploads/{uploadId}` · `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token` · `GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}?token=...` (+ `?thumb=WxH`) |
 | Realtime | `GET /api/projects/{slug}/realtime` (SSE) · `GET .../realtime/ws` (WebSocket); subscribe topics `collection` or `collection/recordId` (M8) |
 | Webhooks | `GET/POST/DELETE /admin/api/projects/{slug}/hooks` (M8) |
@@ -338,15 +339,15 @@ against a disposable PostgreSQL 16 cluster.
   still returns generic accepted responses; no SMTP configured degrades gracefully.
   Per-project SMTP overrides and email-change flows are later work.
 
-### M7 — OAuth2 + admin panel v1 (Svelte)  →  v0.8.0
-- [ ] OAuth2 code flow (google, github, discord): `authorize` redirect built from
-      `APP_URL`, callback exchanges + links to user (create-or-link by email);
-      provider configs per project (encrypted secrets)
-- [ ] Svelte SPA embedded: login, projects, collections editor, records table
-      (CRUD + filters), users, settings, API keys — talking to the real APIs
-- **Accept:** OAuth login round-trips through `APP_URL=https://…` (tip-13 checklist
-  item); panel can do everything the API can for M1–M4 scope; bundle stays embedded
-  (no runtime npm).
+### M7 — Admin panel v1 — DONE (v0.8.0, 2026-07-03)
+- [x] Follow `docs/specs/m7-admin-panel.md`
+- [x] Embedded Next.js static export + Tailwind UI; no runtime Node service
+- [x] Admin login/setup, projects, collections, records, users, API keys, files,
+      health, and audit logs using the real APIs
+- [x] Add only the minimal backend endpoint required for audit-log listing
+- **Accept:** panel can operate the M1-M6 backend from `/`; deep links survive SPA
+  reloads; bundle stays embedded; desktop/mobile browser smoke passes on Portainer.
+  OAuth provider setup/login moves to a later auth milestone.
 
 ### M8 — Realtime + webhooks  →  v0.9.0
 - [ ] `NOTIFY dbo_events, <json>` triggers on collection tables; one LISTEN conn
@@ -396,7 +397,8 @@ against a disposable PostgreSQL 16 cluster.
 - [x] `/ready` reports `migrating` during boot (listener starts pre-migration)
 - [ ] Realtime WS open 5 min with heartbeat through the tunnel (M8)
 - [ ] 50 MB upload without proxy timeout, constant memory (M5)
-- [ ] OAuth callback with `APP_URL=https://foo.dublyo.xyz` redirects correctly (M7)
+- [ ] OAuth callback with `APP_URL=https://foo.dublyo.xyz` redirects correctly
+      (later auth milestone)
 - [ ] `docker exec app ls -ln /data/storage` shows UID 1001 ownership (verify on deploy)
 - [ ] Deploy the built image to Dublyo/Portainer stack and re-run this list (in progress)
 
@@ -407,7 +409,8 @@ against a disposable PostgreSQL 16 cluster.
 - **2026-07-03** Module/repo `github.com/dublyo/dublyobase`; image `ghcr.io/dublyo/dublyobase`.
 - **2026-07-03** External-Postgres single-container model (13 rules) supersedes the
   bundled-supervisor design; `pgsuper` parked at commit `98a18de`, not planned for v1.
-- **2026-07-03** Admin UI framework: **Svelte** (PocketBase lineage, smallest bundles).
+- **2026-07-03** Admin UI framework: **Next.js static export + Tailwind** embedded
+  into the Go binary; no runtime Node service.
 - **2026-07-03** PG version choice = Dublyo template option (db image tag), with
   `PGDATA` pinned for postgres:18 volume-layout compatibility.
 - **2026-07-03** Webhooks over embedded JS for v1 extensibility.

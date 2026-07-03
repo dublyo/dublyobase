@@ -62,7 +62,7 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 		where = " where " + filter.SQL
 	}
 
-	result := &RecordListResult{Page: opts.Page, PerPage: opts.PerPage}
+	result := &RecordListResult{Items: make([]Record, 0), Page: opts.Page, PerPage: opts.PerPage}
 	err = withRecordTx(ctx, pool, auth, "list", func(tx pgx.Tx) error {
 		var total int
 		countSQL := fmt.Sprintf(`select count(*) from %s%s`, table, where)
@@ -87,6 +87,9 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 		records, err := queryRecords(ctx, tx, query, columns, args...)
 		if err != nil {
 			return err
+		}
+		if records == nil {
+			records = make([]Record, 0)
 		}
 		result.Items = records
 		return nil

@@ -1,5 +1,13 @@
 # syntax=docker/dockerfile:1
 
+# ---- build: static admin UI export ----
+FROM node:22-alpine AS ui-build
+WORKDIR /src/ui/admin
+COPY ui/admin/package.json ui/admin/package-lock.json ./
+RUN npm ci
+COPY ui/admin ./
+RUN npm run build
+
 # ---- build: static Go binary (embeds ui/dist) ----
 FROM golang:1.25-alpine AS build
 ARG VERSION=dev
@@ -7,6 +15,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=ui-build /src/ui/dist ./ui/dist
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
       -ldflags="-s -w -X github.com/dublyo/dublyobase/core.Version=${VERSION}" \
       -o /out/dublyobase .

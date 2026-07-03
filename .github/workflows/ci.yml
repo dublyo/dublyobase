@@ -25,6 +25,17 @@ jobs:
         with:
           go-version: "1.25"
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/admin/package-lock.json
+      - name: install admin UI dependencies
+        run: npm ci --prefix ui/admin
+      - name: typecheck admin UI
+        run: npm run --prefix ui/admin typecheck
+      - name: build admin UI
+        run: npm run --prefix ui/admin build
       - name: go vet
         run: go vet ./...
       - name: build

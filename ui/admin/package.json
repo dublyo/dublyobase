@@ -1,0 +1,28 @@
+{
+  "name": "dublyobase-admin",
+  "private": true,
+  "version": "0.8.0",
+  "scripts": {
+    "build": "next build && node scripts/copy-dist.mjs",
+    "typecheck": "tsc --noEmit",
+    "clean": "node scripts/clean.mjs"
+  },
+  "dependencies": {
+    "@tailwindcss/postcss": "4.3.2",
+    "lucide-react": "1.23.0",
+    "next": "16.2.10",
+    "postcss": "^8.5.16",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "tailwindcss": "4.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.2",
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "postcss": "^8.5.16"
+  }
+}

@@ -5,11 +5,11 @@ storage, and an admin UI, served from **one Go binary on one port**. It connects
 Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a single
 `<30 MB` container to `ghcr.io/dublyo/dublyobase`. One-click deployable on Dublyo.
 
-> Status: **v0.7.0 / M6 complete.** Control-plane auth, project provisioning,
+> Status: **v0.8.0 / M7 complete.** Control-plane auth, project provisioning,
 > collections metadata, schema sync, records CRUD, API keys, RLS-backed rules, and
 > email/password app auth, local file storage, and resumable chunk uploads are
-> implemented, including SMTP delivery for verification/reset emails; realtime and
-> the real admin panel are still upcoming. See
+> implemented, including SMTP delivery for verification/reset emails and an
+> embedded admin panel; realtime is still upcoming. See
 > [dublyobase-dev.md](dublyobase-dev.md) for the full roadmap.
 
 ## What makes it different
@@ -65,6 +65,7 @@ var → the process exits `1` with a clear message rather than failing mysteriou
 | `GET /admin/api/projects/{slug}` | Project detail |
 | `GET/POST /admin/api/projects/{slug}/api-keys` | List/create project API keys |
 | `DELETE /admin/api/projects/{slug}/api-keys/{id}` | Revoke project API key |
+| `GET /admin/api/audit-log` | Newest-first audit log, with secret-like data redacted |
 | `POST /api/projects/{slug}/auth/signup` | App-user signup; returns access + refresh tokens |
 | `POST /api/projects/{slug}/auth/login` | App-user login |
 | `POST /api/projects/{slug}/auth/refresh` | Rotate refresh token |

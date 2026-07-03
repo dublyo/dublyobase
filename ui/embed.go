@@ -1,5 +1,5 @@
-// Package ui embeds the compiled admin SPA into the binary. In later phases
-// `dist/` is produced by the Vite build; for now it holds a placeholder shell.
+// Package ui embeds the compiled admin SPA into the binary. The static export is
+// produced by the admin UI build and copied into dist/ before the Go build.
 package ui
 
 import (

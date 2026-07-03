@@ -1,0 +1,136 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f6f8fb;
+  --foreground: #111827;
+  --muted: #667085;
+  --surface: #ffffff;
+  --surface-2: #f9fafb;
+  --border: #d9e0ea;
+  --brand: #0f172a;
+  --accent: #0f7f8c;
+  --accent-2: #2563eb;
+  --danger: #b42318;
+  --success: #067647;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  letter-spacing: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+::selection {
+  background: #c7eff4;
+  color: #083344;
+}
+
+.app-shell {
+  min-height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(246, 248, 251, 0.96)),
+    var(--background);
+}
+
+.db-sidebar {
+  background: #0c1424;
+  color: #d9e3f0;
+}
+
+.db-panel {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+
+.db-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.db-table th {
+  background: #f8fafc;
+  color: #475467;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  padding: 10px 12px;
+  text-align: left;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+}
+
+.db-table td {
+  border-bottom: 1px solid #e6ebf2;
+  color: #1f2937;
+  font-size: 13px;
+  padding: 10px 12px;
+  vertical-align: middle;
+}
+
+.db-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.code-box {
+  background: #0f172a;
+  color: #e5eefb;
+  border-radius: 6px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow: auto;
+  padding: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
