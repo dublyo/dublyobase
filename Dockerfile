@@ -2,11 +2,14 @@
 
 # ---- build: static Go binary (embeds ui/dist) ----
 FROM golang:1.25-alpine AS build
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/dublyobase .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags="-s -w -X github.com/dublyo/dublyobase/core.Version=${VERSION}" \
+      -o /out/dublyobase .
 
 # ---- runtime: tiny alpine, non-root, one process ----
 FROM alpine:3.20
@@ -19,7 +22,6 @@ COPY --from=build /out/dublyobase /usr/local/bin/dublyobase
 
 USER 1001
 WORKDIR /data
-VOLUME /data
 EXPOSE 8080
 
 ENV HOST=0.0.0.0 \
@@ -31,9 +33,9 @@ ENV HOST=0.0.0.0 \
     LOG_FORMAT=json
 
 # Use 127.0.0.1 (not localhost): busybox wget prefers IPv6 ::1, which fails
-# against an IPv4-only bind.
+# against an IPv4-only bind. Shell form so ${PORT} tracks the env override.
 HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1
+  CMD wget -qO- "http://127.0.0.1:${PORT:-8080}/health" >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["dublyobase"]
 CMD ["serve"]

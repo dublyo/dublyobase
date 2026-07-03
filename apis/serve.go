@@ -5,8 +5,11 @@ package apis
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"net/http"
 	"os"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/dublyo/dublyobase/core"
@@ -24,7 +27,7 @@ func NewServer(app *core.App) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /ready", s.ready)
-	mux.Handle("/", http.FileServer(http.FS(ui.DistFS())))
+	mux.Handle("/", spaHandler(ui.DistFS()))
 
 	return &http.Server{
 		Addr:              app.Config.Addr(),
@@ -33,8 +36,29 @@ func NewServer(app *core.App) *http.Server {
 	}
 }
 
+// spaHandler serves the embedded admin SPA: real files are served as-is;
+// any other path falls back to index.html so client-side routes deep-link.
+func spaHandler(dist fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(dist))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if p != "" {
+			if f, err := dist.Open(p); err == nil {
+				f.Close()
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+		}
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/"
+		fileServer.ServeHTTP(w, r2)
+	})
+}
+
 // health reports liveness of the app and its dependencies. It must answer
 // within ~3s even under load or the container orchestrator will kill us.
+// Detail strings are logged, never returned: this route is public through the
+// proxy, and pg error text leaks hostnames, roles and paths.
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
@@ -43,12 +67,15 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 
 	dbStatus := "ok"
 	if err := s.app.Pool.Ping(ctx); err != nil {
-		dbStatus = "error: " + err.Error()
+		s.app.Log.Warn("health: db ping failed", "err", err)
+		dbStatus = "error"
 		healthy = false
 	}
 
-	storageStatus := s.checkStorage()
-	if storageStatus != "ok" {
+	storageStatus := "ok"
+	if err := s.checkStorage(); err != nil {
+		s.app.Log.Warn("health: storage check failed", "err", err)
+		storageStatus = "error"
 		healthy = false
 	}
 
@@ -73,30 +100,42 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 }
 
-// checkStorage verifies the configured backend is usable.
-func (s *server) checkStorage() string {
+// checkStorage verifies the configured backend is actually usable — for local
+// storage that means proving a write succeeds (a read-only mount must not
+// report ok until the first upload fails).
+func (s *server) checkStorage() error {
 	switch s.app.Config.StorageType {
 	case core.StorageLocal:
 		p := s.app.Config.StorageLocalPath
 		if err := os.MkdirAll(p, 0o750); err != nil {
-			return "error: " + err.Error()
+			return err
 		}
-		// confirm writability
-		fi, err := os.Stat(p)
-		if err != nil || !fi.IsDir() {
-			return "error: storage path not a writable directory"
+		f, err := os.CreateTemp(p, ".healthz-*")
+		if err != nil {
+			return err
 		}
-		return "ok"
+		name := f.Name()
+		f.Close()
+		return os.Remove(name)
 	case core.StorageS3:
 		// A real HEAD-bucket check lands with the storage backend milestone.
 		if s.app.Config.S3Bucket == "" {
-			return "error: S3_BUCKET not set"
+			return errNoBucket
 		}
-		return "ok"
+		return nil
 	default:
-		return "error: unknown storage type"
+		return errUnknownStorage
 	}
 }
+
+var (
+	errNoBucket       = &configError{"S3_BUCKET not set"}
+	errUnknownStorage = &configError{"unknown storage type"}
+)
+
+type configError struct{ msg string }
+
+func (e *configError) Error() string { return e.msg }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")

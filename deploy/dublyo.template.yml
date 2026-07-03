@@ -20,19 +20,27 @@ options:
 
 env_vars:
   - key: DOMAIN
-  - key: JWT_SECRET     # auto-generated (>=32 chars)
-  - key: DB_PASSWORD    # auto-generated
+  - key: JWT_SECRET      # auto-generated (>=32 chars)
+  - key: DB_PASSWORD     # auto-generated
+  - key: ADMIN_EMAIL     # user-provided — first admin login
+  - key: ADMIN_PASSWORD  # auto-generated — first admin password
 
 # Pin an exact semver in production templates — never track :latest, so a broken
 # upstream release cannot propagate to every deployed user.
+#
+# PGDATA is pinned because postgres:18 moved its volume layout; without it the
+# PG_VERSION=18 choice would store data in an anonymous volume and lose it on
+# stack recreate.
 compose: |
   services:
     db:
       image: postgres:${PG_VERSION}-alpine
+      restart: unless-stopped
       environment:
         - POSTGRES_USER=dublyobase
         - POSTGRES_PASSWORD=${DB_PASSWORD}
         - POSTGRES_DB=dublyobase
+        - PGDATA=/var/lib/postgresql/data
       volumes:
         - db_data:/var/lib/postgresql/data
       healthcheck:
@@ -42,11 +50,14 @@ compose: |
         retries: 10
 
     app:
-      image: ghcr.io/dublyo/dublyobase:v0.1.0
+      image: ghcr.io/dublyo/dublyobase:v0.1.1
+      restart: unless-stopped
       environment:
         - DATABASE_URL=postgres://dublyobase:${DB_PASSWORD}@db:5432/dublyobase?sslmode=disable
         - APP_URL=https://${DOMAIN}
         - JWT_SECRET=${JWT_SECRET}
+        - ADMIN_EMAIL=${ADMIN_EMAIL}
+        - ADMIN_PASSWORD=${ADMIN_PASSWORD}
         - STORAGE_TYPE=local
         - MIGRATE_ON_START=true
         - TRUST_PROXY_HEADERS=true

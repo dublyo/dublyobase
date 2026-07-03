@@ -26,7 +26,7 @@ func newServeCmd() *cobra.Command {
 }
 
 func runServe() error {
-	// 1. Load + validate config. Fail loud on missing required vars.
+	// 1. Load + validate config. Fail loud on missing/malformed vars.
 	cfg, err := core.LoadConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "configuration error:", err)
@@ -47,6 +47,10 @@ func runServe() error {
 	// 2. Connect to the external Postgres, retrying transient failures.
 	pool, err := core.Connect(ctx, cfg, log)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			log.Info("shutdown requested during startup")
+			return nil
+		}
 		log.Error("could not connect to database", "err", err)
 		os.Exit(1)
 	}
@@ -54,32 +58,52 @@ func runServe() error {
 
 	app := core.NewApp(cfg, pool, log)
 
-	// 3. Run migrations on boot (idempotent) before serving traffic.
+	// 3. Start listening BEFORE migrations so /health answers and /ready can
+	//    honestly report {status: migrating} during boot — otherwise health
+	//    probes see connection-refused and orchestrators kill a migrating
+	//    container.
+	srv := apis.NewServer(app)
+	serveErr := make(chan error, 1)
+	go func() {
+		log.Info("listening", "addr", cfg.Addr())
+		serveErr <- srv.ListenAndServe()
+	}()
+
+	// 4. Migrate + seed, then flip ready.
 	if cfg.MigrateOnStart {
 		if err := core.Migrate(ctx, pool, log); err != nil {
 			log.Error("migration failed", "err", err)
 			os.Exit(1)
 		}
-		if err := core.SeedAdmin(ctx, pool, cfg, log); err != nil {
+	}
+	if err := core.SeedAdmin(ctx, pool, cfg, log); err != nil {
+		// With migrations disabled the schema may not exist yet; that must
+		// not take the server down, but it must be visible.
+		if cfg.MigrateOnStart {
 			log.Error("admin seed failed", "err", err)
 			os.Exit(1)
 		}
+		log.Warn("admin seed skipped", "err", err)
 	}
 	app.SetReady(true)
+	log.Info("ready")
 
-	// 4. Serve; shut down gracefully on SIGINT/SIGTERM.
-	srv := apis.NewServer(app)
-	go func() {
-		<-ctx.Done()
+	// 5. Wait for shutdown or a server error; drain connections fully before
+	//    closing the pool (Shutdown must be awaited, not fired-and-forgotten).
+	select {
+	case <-ctx.Done():
 		log.Info("shutting down")
 		shutCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-	}()
-
-	log.Info("listening", "addr", cfg.Addr())
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+		if err := srv.Shutdown(shutCtx); err != nil {
+			log.Warn("shutdown incomplete", "err", err)
+		}
+		<-serveErr // ListenAndServe has returned ErrServerClosed
+		return nil
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
 	}
-	return nil
 }

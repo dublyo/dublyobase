@@ -2,7 +2,9 @@ package core
 
 import (
 	"log/slog"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -31,18 +33,33 @@ func NewLogger(cfg *Config) *slog.Logger {
 	return slog.New(handler)
 }
 
-// RedactURL strips the password from a database URL for safe logging.
+var dsnPasswordRe = regexp.MustCompile(`(?i)((?:ssl)?password)\s*=\s*\S+`)
+
+// RedactURL removes credentials from a connection string before logging.
+// It handles URL userinfo passwords, ?password=/&sslpassword= query params,
+// and key/value DSN form ("host=db password=x"). When in doubt it redacts.
 func RedactURL(dsn string) string {
-	// postgres://user:pass@host:port/db  ->  postgres://user:***@host:port/db
-	at := strings.LastIndex(dsn, "@")
-	scheme := strings.Index(dsn, "://")
-	if at == -1 || scheme == -1 {
-		return dsn
+	if u, err := url.Parse(dsn); err == nil && u.Scheme != "" && u.Host != "" {
+		if u.User != nil {
+			if _, has := u.User.Password(); has {
+				u.User = url.UserPassword(u.User.Username(), "xxxxx")
+			}
+		}
+		q := u.Query()
+		changed := false
+		for k := range q {
+			if strings.EqualFold(k, "password") || strings.EqualFold(k, "sslpassword") {
+				q.Set(k, "xxxxx")
+				changed = true
+			}
+		}
+		if changed {
+			u.RawQuery = q.Encode()
+		}
+		s := u.String()
+		// url.UserPassword escapes; make the placeholder predictable
+		return strings.Replace(s, ":xxxxx@", ":***@", 1)
 	}
-	creds := dsn[scheme+3 : at]
-	if colon := strings.Index(creds, ":"); colon != -1 {
-		user := creds[:colon]
-		return dsn[:scheme+3] + user + ":***" + dsn[at:]
-	}
-	return dsn
+	// key/value DSN form (or unparsable): regex-redact password-ish keys
+	return dsnPasswordRe.ReplaceAllString(dsn, "$1=***")
 }

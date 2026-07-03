@@ -3,7 +3,6 @@ package core
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -17,7 +16,7 @@ const (
 
 // Config is the full runtime configuration, loaded exclusively from environment
 // variables. The variable names are a fixed contract with the Dublyo PaaS
-// template — do not rename them without updating the template.
+// template — never rename them; new variables may only be added.
 type Config struct {
 	Host string // HOST (default 0.0.0.0)
 	Port string // PORT (default 8080)
@@ -54,14 +53,26 @@ type Config struct {
 }
 
 // LoadConfig reads configuration from the environment and validates it.
+// Any malformed value fails loud here — a misconfigured deploy must exit at
+// boot with a clear message, not 500 mysteriously later.
 func LoadConfig() (*Config, error) {
+	var errs []string
+
+	boolVar := func(key string, def bool) bool {
+		v, err := envBool(key, def)
+		if err != nil {
+			errs = append(errs, err.Error())
+		}
+		return v
+	}
+
 	c := &Config{
 		Host: env("HOST", "0.0.0.0"),
 		Port: env("PORT", "8080"),
 
 		DatabaseURL: os.Getenv("DATABASE_URL"),
-		AppURL:      os.Getenv("APP_URL"),
-		JWTSecret:   os.Getenv("JWT_SECRET"),
+		AppURL:      strings.TrimSpace(os.Getenv("APP_URL")),
+		JWTSecret:   strings.TrimSpace(os.Getenv("JWT_SECRET")),
 
 		AdminEmail:    os.Getenv("ADMIN_EMAIL"),
 		AdminPassword: os.Getenv("ADMIN_PASSWORD"),
@@ -74,14 +85,14 @@ func LoadConfig() (*Config, error) {
 		S3SecretKey:      os.Getenv("S3_SECRET_KEY"),
 		S3Region:         env("S3_REGION", "us-east-1"),
 
-		MigrateOnStart:    envBool("MIGRATE_ON_START", true),
-		TrustProxyHeaders: envBool("TRUST_PROXY_HEADERS", true),
+		MigrateOnStart:    boolVar("MIGRATE_ON_START", true),
+		TrustProxyHeaders: boolVar("TRUST_PROXY_HEADERS", true),
 		CORSOrigins:       splitCSV(env("CORS_ORIGINS", "*")),
 
 		LogLevel:  env("LOG_LEVEL", "info"),
 		LogFormat: env("LOG_FORMAT", "json"),
 
-		EnablePgvector: envBool("ENABLE_PGVECTOR", false),
+		EnablePgvector: boolVar("ENABLE_PGVECTOR", false),
 
 		SMTPHost:     os.Getenv("SMTP_HOST"),
 		SMTPPort:     env("SMTP_PORT", "587"),
@@ -89,20 +100,26 @@ func LoadConfig() (*Config, error) {
 		SMTPPassword: os.Getenv("SMTP_PASSWORD"),
 		SMTPFrom:     os.Getenv("SMTP_FROM"),
 	}
-	return c, c.Validate()
+
+	if err := c.Validate(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return c, nil
 }
 
-// Validate enforces the required-variable contract. It fails loud so a
-// misconfigured deploy exits immediately instead of 500-ing mysteriously.
+// Validate enforces the required-variable contract.
 func (c *Config) Validate() error {
 	var missing []string
 	if strings.TrimSpace(c.DatabaseURL) == "" {
 		missing = append(missing, "DATABASE_URL")
 	}
-	if strings.TrimSpace(c.JWTSecret) == "" {
+	if c.JWTSecret == "" {
 		missing = append(missing, "JWT_SECRET")
 	}
-	if strings.TrimSpace(c.AppURL) == "" {
+	if c.AppURL == "" {
 		missing = append(missing, "APP_URL")
 	}
 	if len(missing) > 0 {
@@ -129,23 +146,20 @@ func env(key, def string) string {
 	return def
 }
 
-func envBool(key string, def bool) bool {
+// envBool parses a boolean env var strictly: unset → default, unparsable →
+// error (a typo like MIGRATE_ON_START=flase must not silently become true).
+func envBool(key string, def bool) (bool, error) {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
-		return def
+		return def, nil
 	}
-	b, err := strconv.ParseBool(v)
-	if err != nil {
-		// accept yes/no/on/off in addition to strconv's set
-		switch strings.ToLower(v) {
-		case "yes", "on":
-			return true
-		case "no", "off":
-			return false
-		}
-		return def
+	switch strings.ToLower(v) {
+	case "1", "t", "true", "yes", "on":
+		return true, nil
+	case "0", "f", "false", "no", "off":
+		return false, nil
 	}
-	return b
+	return def, fmt.Errorf("%s must be a boolean (true/false), got %q", key, v)
 }
 
 func splitCSV(v string) []string {

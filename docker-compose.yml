@@ -1,12 +1,19 @@
 # Local / self-host stack: Postgres + dublyobase. Two services, no nginx, no Redis.
 # Choose your Postgres major by changing the db image tag (16/17/18-alpine).
+#
+# PGDATA is pinned explicitly because the postgres:18 image moved its volume
+# layout (/var/lib/postgresql, PGDATA=/var/lib/postgresql/18/docker) — without
+# the pin, a db_data:/var/lib/postgresql/data mount on 18 silently stores data
+# in an anonymous volume and loses it on stack recreate.
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: dublyobase
       POSTGRES_PASSWORD: change_me_in_prod
       POSTGRES_DB: dublyobase
+      PGDATA: /var/lib/postgresql/data
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
@@ -18,6 +25,7 @@ services:
   app:
     image: ghcr.io/dublyo/dublyobase:latest
     # build: .   # uncomment to build locally instead of pulling the image
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgres://dublyobase:change_me_in_prod@db:5432/dublyobase?sslmode=disable
       APP_URL: http://localhost:8080

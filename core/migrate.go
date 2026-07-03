@@ -15,15 +15,39 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// migrateLockID is the pg_advisory_lock key serializing boot-time migration
+// across replicas ("dbo" spelled on a phone keypad, if you must know).
+const migrateLockID int64 = 326_326_001
+
 // Migrate applies any embedded migrations not yet recorded, each in its own
 // transaction, in filename order. It is idempotent and safe to run on every
 // boot — which is exactly what MIGRATE_ON_START does, so a fresh deploy never
 // requires an operator to exec in and run migrations by hand.
 //
+// The whole run is serialized with a Postgres advisory lock so that several
+// replicas booting simultaneously (scale-out, rolling deploys) don't race the
+// DDL: latecomers block on the lock, then see every migration already recorded
+// and apply nothing.
+//
 // Migrations must NOT `CREATE DATABASE` (the DB must already exist) and should
 // avoid `CREATE EXTENSION` unless the app role is a superuser.
 func Migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
-	if _, err := pool.Exec(ctx, `
+	// The advisory lock is session-scoped, so hold one dedicated connection
+	// for the duration of the run.
+	lockConn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer lockConn.Release()
+
+	if _, err := lockConn.Exec(ctx, `select pg_advisory_lock($1)`, migrateLockID); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() {
+		_, _ = lockConn.Exec(context.WithoutCancel(ctx), `select pg_advisory_unlock($1)`, migrateLockID)
+	}()
+
+	if _, err := lockConn.Exec(ctx, `
 		create schema if not exists _dbo;
 		create table if not exists _dbo.schema_migrations (
 			version    text primary key,
@@ -43,7 +67,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 		version := path.Base(file)
 
 		var exists bool
-		if err := pool.QueryRow(ctx,
+		if err := lockConn.QueryRow(ctx,
 			`select exists(select 1 from _dbo.schema_migrations where version = $1)`,
 			version,
 		).Scan(&exists); err != nil {
@@ -58,7 +82,7 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 			return err
 		}
 
-		tx, err := pool.Begin(ctx)
+		tx, err := lockConn.Begin(ctx)
 		if err != nil {
 			return err
 		}
