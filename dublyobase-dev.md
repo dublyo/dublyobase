@@ -262,6 +262,7 @@ against a disposable PostgreSQL 16 cluster.
   exist in pg_catalog; second `/setup` → 410; audit rows written; all under tests.
 
 ### M2 — Collections & schema sync  →  v0.3.0
+- [ ] Follow `docs/specs/m2-collections-schema-sync.md`
 - [ ] Field registry (12 types) + validation; collections CRUD persisting to `_dbo`
 - [ ] Schema-sync engine (diff → DDL in tx; identifier validation + quoting everywhere)
 - [ ] RLS: enable+force on every table; default deny; policies from rules (v1 subset:
