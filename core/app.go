@@ -1,25 +1,31 @@
 package core
 
 import (
-	"path/filepath"
+	"log/slog"
+	"sync/atomic"
 
-	"github.com/dublyobase/dublyobase/pgsuper"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// App is the central object wired through the CLI, HTTP handlers and (later)
-// the hook system. It owns the Postgres supervisor and instance settings.
+// App is the central object wired through the CLI and HTTP handlers. It holds
+// the external Postgres pool, the loaded config and the logger. dublyobase is a
+// single stateless process: it connects to a Postgres provided via DATABASE_URL
+// and never manages a database server itself.
 type App struct {
-	Settings   *Settings
-	Supervisor *pgsuper.Supervisor
+	Config *Config
+	Pool   *pgxpool.Pool
+	Log    *slog.Logger
+
+	ready atomic.Bool
 }
 
-// NewApp constructs an App and its supervisor rooted under the data dir.
-func NewApp(settings *Settings) *App {
-	if settings == nil {
-		settings = DefaultSettings()
-	}
-	return &App{
-		Settings:   settings,
-		Supervisor: pgsuper.New(filepath.Join(settings.DataDir, "clusters")),
-	}
+// NewApp constructs an App from an already-connected pool.
+func NewApp(cfg *Config, pool *pgxpool.Pool, log *slog.Logger) *App {
+	return &App{Config: cfg, Pool: pool, Log: log}
 }
+
+// SetReady marks the app ready to serve traffic (after migrations complete).
+func (a *App) SetReady(v bool) { a.ready.Store(v) }
+
+// Ready reports whether startup (incl. migrations) has finished.
+func (a *App) Ready() bool { return a.ready.Load() }

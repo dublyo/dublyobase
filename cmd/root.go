@@ -1,49 +1,31 @@
-// Package cmd implements the dublyobase command-line interface.
+// Package cmd implements the dublyobase command-line interface. Configuration
+// comes entirely from environment variables (see core.Config) — there are no
+// config flags, matching the PaaS template contract.
 package cmd
 
 import (
-	"path/filepath"
+	"fmt"
 
 	"github.com/dublyobase/dublyobase/core"
 	"github.com/spf13/cobra"
-)
-
-var (
-	flagDir  string
-	flagHTTP string
-
-	// app is constructed in PersistentPreRunE and shared by subcommands.
-	app *core.App
 )
 
 // Execute builds and runs the root command.
 func Execute() error {
 	root := &cobra.Command{
 		Use:   "dublyobase",
-		Short: "All-in-one Postgres backend: provision & supervise Postgres 16/17/18, plus auth, files, SMTP, logs and an admin panel.",
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			s := core.DefaultSettings()
-			if flagDir != "" {
-				abs, err := filepath.Abs(flagDir)
-				if err != nil {
-					return err
-				}
-				s.DataDir = abs
-			}
-			if flagHTTP != "" {
-				s.HTTPAddr = flagHTTP
-			}
-			app = core.NewApp(s)
-			return nil
-		},
+		Short: "Postgres-backed BaaS — auth, realtime, storage and an admin UI in one binary.",
 		SilenceUsage: true,
 	}
 
-	root.PersistentFlags().StringVar(&flagDir, "dir", "./db_data",
-		"data directory (Postgres clusters, storage, metadata)")
-	root.PersistentFlags().StringVar(&flagHTTP, "http", "0.0.0.0:8090",
-		"address to serve the API and admin UI on")
+	root.AddCommand(newServeCmd())
+	root.AddCommand(&cobra.Command{
+		Use:   "version",
+		Short: "Print the version and exit",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println("dublyobase", core.Version)
+		},
+	})
 
-	root.AddCommand(newServeCmd(), newClusterCmd())
 	return root.Execute()
 }

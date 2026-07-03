@@ -1,0 +1,40 @@
+# Local / self-host stack: Postgres + dublyobase. Two services, no nginx, no Redis.
+# Choose your Postgres major by changing the db image tag (16/17/18-alpine).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dublyobase
+      POSTGRES_PASSWORD: change_me_in_prod
+      POSTGRES_DB: dublyobase
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dublyobase"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    image: ghcr.io/dublyo/dublyobase:latest
+    # build: .   # uncomment to build locally instead of pulling the image
+    environment:
+      DATABASE_URL: postgres://dublyobase:change_me_in_prod@db:5432/dublyobase?sslmode=disable
+      APP_URL: http://localhost:8080
+      JWT_SECRET: change_me_to_a_32_plus_char_random_secret_value
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: change_me_too
+      STORAGE_TYPE: local
+      MIGRATE_ON_START: "true"
+      TRUST_PROXY_HEADERS: "true"
+    ports:
+      - "8080:8080"
+    volumes:
+      - storage:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db_data:
+  storage:

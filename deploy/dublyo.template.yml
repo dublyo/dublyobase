@@ -1,0 +1,65 @@
+# Dublyo PaaS template — one-click deploy of dublyobase.
+# Two services, no nginx, no Redis. Traefik terminates TLS; the app listens on 8080.
+slug: dublyobase
+name: Dublyobase
+description: Postgres-backed BaaS. Auth, realtime, storage, admin UI — one binary.
+featured: true
+
+resources:
+  min_memory_mb: 512
+  min_cpu_cores: 1
+  recommended_server: cx22
+
+# Let the user pick the Postgres major; it maps to the db service image tag.
+options:
+  - key: PG_VERSION
+    label: PostgreSQL version
+    type: select
+    default: "16"
+    choices: ["16", "17", "18"]
+
+env_vars:
+  - key: DOMAIN
+  - key: JWT_SECRET     # auto-generated (>=32 chars)
+  - key: DB_PASSWORD    # auto-generated
+
+# Pin an exact semver in production templates — never track :latest, so a broken
+# upstream release cannot propagate to every deployed user.
+compose: |
+  services:
+    db:
+      image: postgres:${PG_VERSION}-alpine
+      environment:
+        - POSTGRES_USER=dublyobase
+        - POSTGRES_PASSWORD=${DB_PASSWORD}
+        - POSTGRES_DB=dublyobase
+      volumes:
+        - db_data:/var/lib/postgresql/data
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U dublyobase"]
+        interval: 5s
+        timeout: 3s
+        retries: 10
+
+    app:
+      image: ghcr.io/dublyo/dublyobase:v0.1.0
+      environment:
+        - DATABASE_URL=postgres://dublyobase:${DB_PASSWORD}@db:5432/dublyobase?sslmode=disable
+        - APP_URL=https://${DOMAIN}
+        - JWT_SECRET=${JWT_SECRET}
+        - STORAGE_TYPE=local
+        - MIGRATE_ON_START=true
+        - TRUST_PROXY_HEADERS=true
+      volumes:
+        - storage:/data/storage
+      depends_on:
+        db:
+          condition: service_healthy
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.${STACK_NAME}.rule=Host(`${DOMAIN}`)"
+        - "traefik.http.services.${STACK_NAME}.loadbalancer.server.port=8080"
+
+  volumes:
+    db_data:
+    storage:
