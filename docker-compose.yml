@@ -34,6 +34,11 @@ services:
       ADMIN_PASSWORD: change_me_too
       BCRYPT_COST: "10"
       AUTH_DEV_TOKENS: "false"
+      SMTP_HOST: ""
+      SMTP_PORT: "587"
+      SMTP_USER: ""
+      SMTP_PASSWORD: ""
+      SMTP_FROM: ""
       STORAGE_TYPE: local
       MAX_UPLOAD_MB: "64"
       MIGRATE_ON_START: "true"

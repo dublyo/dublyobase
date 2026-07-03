@@ -1,6 +1,7 @@
 package apis
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -46,6 +47,7 @@ func (s *server) appSignup(w http.ResponseWriter, r *http.Request) {
 		writeCoreError(w, err)
 		return
 	}
+	s.sendAuthTokenEmail(r, result.User.Email, "verify_email")
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -163,6 +165,7 @@ func (s *server) appRequestVerification(w http.ResponseWriter, r *http.Request) 
 		writeCoreError(w, err)
 		return
 	}
+	s.deliverAuthTokenEmail(r.Context(), r.PathValue("slug"), result)
 	writeJSON(w, http.StatusAccepted, result)
 }
 
@@ -207,7 +210,46 @@ func (s *server) appRequestPasswordReset(w http.ResponseWriter, r *http.Request)
 		writeCoreError(w, err)
 		return
 	}
+	s.deliverAuthTokenEmail(r.Context(), r.PathValue("slug"), result)
 	writeJSON(w, http.StatusAccepted, result)
+}
+
+func (s *server) sendAuthTokenEmail(r *http.Request, email string, tokenType string) {
+	var result *core.AuthTokenRequestResult
+	var err error
+	now := time.Now()
+	projectSlug := r.PathValue("slug")
+	switch tokenType {
+	case "verify_email":
+		result, err = core.RequestEmailVerification(r.Context(), s.app.Pool, s.app.Config, projectSlug, email, s.clientIP(r), r.UserAgent(), now)
+	case "password_reset":
+		result, err = core.RequestPasswordReset(r.Context(), s.app.Pool, s.app.Config, projectSlug, email, s.clientIP(r), r.UserAgent(), now)
+	default:
+		err = core.ErrValidation
+	}
+	if err != nil {
+		s.app.Log.Warn("auth email token creation failed", "project", projectSlug, "type", tokenType, "err", err)
+		return
+	}
+	s.deliverAuthTokenEmail(r.Context(), projectSlug, result)
+}
+
+func (s *server) deliverAuthTokenEmail(ctx context.Context, projectSlug string, result *core.AuthTokenRequestResult) {
+	if result == nil || result.Token == "" {
+		return
+	}
+	mailer := s.app.Mailer
+	if mailer == nil {
+		mailer = core.NoopMailer{}
+	}
+	msg, err := core.BuildAuthTokenEmail(s.app.Config, result.Type, projectSlug, result.Email, result.Token)
+	if err != nil {
+		s.app.Log.Warn("auth email build failed", "project", projectSlug, "type", result.Type, "err", err)
+		return
+	}
+	if err := mailer.Send(ctx, msg); err != nil {
+		s.app.Log.Warn("auth email send failed", "project", projectSlug, "type", result.Type, "err", err)
+	}
 }
 
 func (s *server) appConfirmPasswordReset(w http.ResponseWriter, r *http.Request) {

@@ -50,7 +50,7 @@ compose: |
         retries: 10
 
     app:
-      image: ghcr.io/dublyo/dublyobase:v0.6.1
+      image: ghcr.io/dublyo/dublyobase:v0.7.0
       restart: unless-stopped
       environment:
         - DATABASE_URL=postgres://dublyobase:${DB_PASSWORD}@db:5432/dublyobase?sslmode=disable
@@ -60,6 +60,11 @@ compose: |
         - ADMIN_PASSWORD=${ADMIN_PASSWORD}
         - BCRYPT_COST=10
         - AUTH_DEV_TOKENS=false
+        - SMTP_HOST=${SMTP_HOST:-}
+        - SMTP_PORT=${SMTP_PORT:-587}
+        - SMTP_USER=${SMTP_USER:-}
+        - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+        - SMTP_FROM=${SMTP_FROM:-}
         - STORAGE_TYPE=local
         - MAX_UPLOAD_MB=64
         - MIGRATE_ON_START=true

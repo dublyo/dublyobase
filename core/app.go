@@ -15,13 +15,14 @@ type App struct {
 	Config *Config
 	Pool   *pgxpool.Pool
 	Log    *slog.Logger
+	Mailer Mailer
 
 	ready atomic.Bool
 }
 
 // NewApp constructs an App from an already-connected pool.
 func NewApp(cfg *Config, pool *pgxpool.Pool, log *slog.Logger) *App {
-	return &App{Config: cfg, Pool: pool, Log: log}
+	return &App{Config: cfg, Pool: pool, Log: log, Mailer: NewMailer(cfg)}
 }
 
 // SetReady marks the app ready to serve traffic (after migrations complete).

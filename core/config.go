@@ -112,11 +112,11 @@ func LoadConfig() (*Config, error) {
 
 		EnablePgvector: boolVar("ENABLE_PGVECTOR", false),
 
-		SMTPHost:     os.Getenv("SMTP_HOST"),
+		SMTPHost:     strings.TrimSpace(os.Getenv("SMTP_HOST")),
 		SMTPPort:     env("SMTP_PORT", "587"),
-		SMTPUser:     os.Getenv("SMTP_USER"),
+		SMTPUser:     strings.TrimSpace(os.Getenv("SMTP_USER")),
 		SMTPPassword: os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:     os.Getenv("SMTP_FROM"),
+		SMTPFrom:     strings.TrimSpace(os.Getenv("SMTP_FROM")),
 	}
 
 	if err := c.Validate(); err != nil {
@@ -170,6 +170,9 @@ func (c *Config) Validate() error {
 	case "json", "text":
 	default:
 		return fmt.Errorf("LOG_FORMAT must be json or text (got %q)", c.LogFormat)
+	}
+	if err := validateSMTPConfig(c); err != nil {
+		return err
 	}
 	return nil
 }

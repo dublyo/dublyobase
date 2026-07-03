@@ -69,6 +69,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.BcryptCost != 10 || cfg.AuthDevTokens || cfg.MaxUploadMB != 64 {
 		t.Fatalf("app auth defaults wrong: %+v", cfg)
 	}
+	if cfg.SMTPPort != "587" {
+		t.Fatalf("smtp port default wrong: %q", cfg.SMTPPort)
+	}
 }
 
 func TestLoadConfigInvalidValuesFailLoud(t *testing.T) {
@@ -144,6 +147,37 @@ func TestLoadConfigInvalidValuesFailLoud(t *testing.T) {
 			name: "max upload typo",
 			env:  map[string]string{"MAX_UPLOAD_MB": "large"},
 			want: "MAX_UPLOAD_MB",
+		},
+		{
+			name: "smtp host without from",
+			env:  map[string]string{"SMTP_HOST": "smtp.example.com"},
+			want: "SMTP_FROM",
+		},
+		{
+			name: "smtp bad port",
+			env: map[string]string{
+				"SMTP_HOST": "smtp.example.com",
+				"SMTP_FROM": "no-reply@example.com",
+				"SMTP_PORT": "big",
+			},
+			want: "SMTP_PORT",
+		},
+		{
+			name: "smtp bad from",
+			env: map[string]string{
+				"SMTP_HOST": "smtp.example.com",
+				"SMTP_FROM": "not-email",
+			},
+			want: "SMTP_FROM",
+		},
+		{
+			name: "smtp user without password",
+			env: map[string]string{
+				"SMTP_HOST": "smtp.example.com",
+				"SMTP_FROM": "no-reply@example.com",
+				"SMTP_USER": "mailer",
+			},
+			want: "SMTP_USER",
 		},
 	}
 	for _, tc := range cases {

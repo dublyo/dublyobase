@@ -5,10 +5,11 @@ storage, and an admin UI, served from **one Go binary on one port**. It connects
 Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a single
 `<30 MB` container to `ghcr.io/dublyo/dublyobase`. One-click deployable on Dublyo.
 
-> Status: **v0.6.1 / M5.1 complete.** Control-plane auth, project provisioning,
+> Status: **v0.7.0 / M6 complete.** Control-plane auth, project provisioning,
 > collections metadata, schema sync, records CRUD, API keys, RLS-backed rules, and
 > email/password app auth, local file storage, and resumable chunk uploads are
-> implemented; SMTP, realtime, and the real admin panel are still upcoming. See
+> implemented, including SMTP delivery for verification/reset emails; realtime and
+> the real admin panel are still upcoming. See
 > [dublyobase-dev.md](dublyobase-dev.md) for the full roadmap.
 
 ## What makes it different
@@ -18,7 +19,8 @@ Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a s
 - **Security enforced in Postgres.** Per-project roles + `SET LOCAL ROLE` +
   `FORCE ROW LEVEL SECURITY`; hashed API keys; encrypted secrets. Deny → `403 rls_denied`.
 - **Project-scoped app auth.** Automatic `users` auth collection, bcrypt passwords,
-  1h access JWTs, 7d hashed refresh sessions, rotation, logout-all, reset/verify tokens.
+  1h access JWTs, 7d hashed refresh sessions, rotation, logout-all, reset/verify
+  tokens, and optional SMTP delivery.
 - **Protected local file storage.** Streamed multipart uploads, resumable chunks,
   JSONB file metadata, short-lived file tokens, and cached thumbnails on the
   `/data/storage` volume.

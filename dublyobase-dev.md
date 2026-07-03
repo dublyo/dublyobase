@@ -5,15 +5,16 @@
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.6.1 — M5.1 resumable file uploads complete
+**Status:** v0.7.0 — M6 SMTP email complete
 (self-closing setup, opaque hashed admin sessions, protected admin/project APIs,
 project schema/role provisioning, collection metadata, transactional schema sync,
 records CRUD, API keys, RLS-backed rules, production SPA fallback hardening,
 system `users` auth collections, email/password signup/login, refresh rotation,
 logout-all token invalidation, reset/verify tokens, local file fields/uploads,
 resumable chunk uploads, protected file tokens, thumbnails, delete cleanup, audit
-log, and real Postgres 16/17/18 integration tests).
-Next: **M6 (email / SMTP)**.
+log, SMTP delivery for verify/reset emails, and real Postgres 16/17/18 integration
+tests).
+Next: **M7 (admin panel v1)**.
 **Repo:** `github.com/dublyo/dublyobase` · **Image:** `ghcr.io/dublyo/dublyobase`
 **Local dev:** `/Users/dribrahimm/0-PostgresProject/dublyobase`
 
@@ -101,7 +102,7 @@ seeds are conflict-tolerant, realtime is coordinated through `LISTEN/NOTIFY`.
 seed, logger, app, version, collection, field), `apis/` (serve, middleware, later:
 records/auth/storage/realtime), `ui/` (Svelte SPA → `embed.FS`), `deploy/`,
 workflows. **Stack:** Go 1.25 · cobra · stdlib mux · pgx/v5 · bcrypt ·
-golang-jwt/v5 · fexpr (rules) · mailyak (SMTP) · **Svelte + Vite** (admin UI —
+golang-jwt/v5 · fexpr (rules) · stdlib SMTP · **Svelte + Vite** (admin UI —
 decided: PocketBase lineage, smallest embedded bundles).
 
 ---
@@ -126,7 +127,8 @@ CORS_ORIGINS        default *       (comma-separated exact origins)
 LOG_LEVEL  debug|info|warn|error    default info
 LOG_FORMAT json|text                default json
 ENABLE_PGVECTOR default false       (true only if the extension is installed)
-SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASSWORD SMTP_FROM   (email skipped if host unset)
+SMTP_HOST optional; SMTP_PORT default 587; SMTP_FROM required when host is set;
+SMTP_USER/SMTP_PASSWORD optional but must be paired
 HOST default 0.0.0.0    PORT default 8080
 ```
 
@@ -153,7 +155,7 @@ correct HTTP status (400/401/403/404/409/422/429/500). RLS denials are
 | Records | `GET/POST /api/projects/{slug}/collections/{name}/records` · `GET/PATCH/DELETE .../records/{id}` |
 | App auth | `POST /api/projects/{slug}/auth/signup` · `/auth/login` · `/auth/refresh` · `/auth/logout` · `/auth/logout-all` · `GET /auth/me` · `/auth/request-password-reset` · `/auth/confirm-password-reset` · `/auth/request-verification` · `/auth/confirm-verification` · OAuth: `GET /api/projects/{slug}/auth/oauth/{provider}` + `/callback` (M7) |
 | Storage | `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}` (multipart `file`, streamed, `?mode=replace\|append`) · `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/uploads` · `PUT /api/projects/{slug}/files/uploads/{uploadId}/chunks/{index}` · `POST /api/projects/{slug}/files/uploads/{uploadId}/complete` · `DELETE /api/projects/{slug}/files/uploads/{uploadId}` · `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token` · `GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}?token=...` (+ `?thumb=WxH`) |
-| Realtime | `GET /api/projects/{slug}/realtime` (SSE) · `GET .../realtime/ws` (WebSocket); subscribe topics `collection` or `collection/recordId` (M6) |
+| Realtime | `GET /api/projects/{slug}/realtime` (SSE) · `GET .../realtime/ws` (WebSocket); subscribe topics `collection` or `collection/recordId` (M8) |
 | Webhooks | `GET/POST/DELETE /admin/api/projects/{slug}/hooks` (M8) |
 
 **Records list params:** `?page=1&perPage=30` (max 500), `sort=-created,title`,
@@ -180,8 +182,9 @@ Enforce **in Postgres**, not app-layer string checks (postbase's fatal mistake).
 - Collection rules compile to **`CREATE POLICY`** (DB-enforced) — the app's WHERE
   fragment is an optimization, not the boundary.
 - Raw SQL endpoint (if ever exposed) is service-role only. API keys **hashed**
-  (SHA-256) at rest, shown once. SMTP/S3/OAuth secrets **encrypted** (AES-GCM, key
-  derived from `JWT_SECRET` via HKDF). Rate limits on auth + setup routes.
+  (SHA-256) at rest, shown once. M6 SMTP credentials are env-only; future
+  per-project SMTP/S3/OAuth secrets are **encrypted** (AES-GCM, key derived from
+  `JWT_SECRET` via HKDF). Rate limits on auth + setup routes.
 - Identifier rules: project slugs `^[a-z][a-z0-9_]{2,30}$`; collection/field names
   `^[a-z][a-z0-9_]{0,58}$`, reserved prefixes `_dbo`, `pg_`, `information_schema`
   rejected; all DDL identifiers pass this validation **and** are double-quoted.
@@ -233,8 +236,8 @@ collection create/update/delete lifecycle, identifier/field validation, default-
 RLS policy creation, concurrent collection create conflicts, API-key generation,
 record payload validation, rule/filter compiler checks, record CRUD, and direct-role
 RLS integration tests proving app filters are not the data boundary, app-auth
-lifecycle and refresh-replay tests, and protected file upload/download/thumbnail/
-cleanup tests. M3 was verified
+lifecycle and refresh-replay tests, SMTP email delivery/failure tests, and protected
+file upload/download/thumbnail/cleanup tests. M3 was verified
 against temporary PostgreSQL 16, 17, and 18 clusters. Every milestone adds: happy
 path + auth-boundary + concurrency test for its feature. Security regressions
 (RLS bypass, unauth control plane) get permanent tests.
@@ -325,12 +328,15 @@ against a disposable PostgreSQL 16 cluster.
   mismatch rejects without storing the chunk; cancel removes temp chunks; repeat
   complete is rejected; full suite green with real Postgres.
 
-### M6 — Email (SMTP)  →  v0.7.0
-- [ ] Mailer interface: SMTP (mailyak) when `SMTP_HOST` set, else dev console logger
-- [ ] Templates (verify, reset, email-change) using `APP_URL` links; per-project
-      overrides in `_dbo`; SMTP creds encrypted at rest
-- **Accept:** with MailHog in compose: signup → verification email → link verifies;
-  reset flow end-to-end; no SMTP configured → flows degrade gracefully.
+### M6 — Email (SMTP) — DONE (v0.7.0, 2026-07-03)
+- [x] Follow `docs/specs/m6-email-smtp.md`
+- [x] Mailer interface: stdlib SMTP when `SMTP_HOST` is set, no-op when unset
+- [x] Verify/reset templates using `APP_URL` links and copyable token fallback
+- [x] signup/request-verification/request-password-reset send emails without
+      exposing tokens unless `AUTH_DEV_TOKENS=true`
+- **Accept:** injected mailer verifies signup + reset end-to-end; failing mailer
+  still returns generic accepted responses; no SMTP configured degrades gracefully.
+  Per-project SMTP overrides and email-change flows are later work.
 
 ### M7 — OAuth2 + admin panel v1 (Svelte)  →  v0.8.0
 - [ ] OAuth2 code flow (google, github, discord): `authorize` redirect built from

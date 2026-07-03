@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/dublyo/dublyobase/core"
 )
 
 type appAuthTestResult struct {
@@ -103,6 +106,108 @@ func TestAppAuthLifecycle(t *testing.T) {
 	if strings.HasPrefix(storedHash, "dbo_refresh_") {
 		t.Fatal("refresh token plaintext must not be stored")
 	}
+}
+
+func TestAppAuthSendsVerificationAndResetEmails(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	app.Config.AuthDevTokens = false
+	mailer := &recordingMailer{}
+	app.Mailer = mailer
+	srv := NewServer(app)
+	adminToken := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, adminToken)
+
+	_ = signupAppUserForTest(t, srv.Handler, slug, "mail@example.com")
+	if len(mailer.messages) != 1 {
+		t.Fatalf("signup should send one verification email, got %d", len(mailer.messages))
+	}
+	verifyToken := tokenFromMail(t, mailer.messages[0], `dbo_verify_`)
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/confirm-verification", slug), "", fmt.Sprintf(`{"email":"mail@example.com","token":%q}`, verifyToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm mailed verification: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-verification", slug), "", `{"email":"mail@example.com"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("request verification: want 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "devToken") {
+		t.Fatalf("dev token must not be exposed when disabled: %s", rec.Body.String())
+	}
+	if len(mailer.messages) != 2 {
+		t.Fatalf("manual verification should send another email, got %d", len(mailer.messages))
+	}
+
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-password-reset", slug), "", `{"email":"mail@example.com"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("request reset: want 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "devToken") {
+		t.Fatalf("reset dev token must not be exposed when disabled: %s", rec.Body.String())
+	}
+	if len(mailer.messages) != 3 {
+		t.Fatalf("reset should send one email, got %d", len(mailer.messages))
+	}
+	resetToken := tokenFromMail(t, mailer.messages[2], `dbo_reset_`)
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/confirm-password-reset", slug), "", fmt.Sprintf(`{"email":"mail@example.com","token":%q,"password":"new-password-123"}`, resetToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm mailed reset: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAppAuthEmailFailureDoesNotFailRequests(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	app.Config.AuthDevTokens = false
+	app.Mailer = failingMailer{}
+	srv := NewServer(app)
+	adminToken := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, adminToken)
+
+	_ = signupAppUserForTest(t, srv.Handler, slug, "mail-fail@example.com")
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-verification", slug), "", `{"email":"mail-fail@example.com"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("request verification with failing mailer: want 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "devToken") {
+		t.Fatalf("dev token must not leak with failing mailer: %s", rec.Body.String())
+	}
+
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-password-reset", slug), "", `{"email":"mail-fail@example.com"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("request reset with failing mailer: want 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "devToken") {
+		t.Fatalf("reset dev token must not leak with failing mailer: %s", rec.Body.String())
+	}
+}
+
+type recordingMailer struct {
+	messages []core.MailMessage
+}
+
+func (m *recordingMailer) Send(_ context.Context, msg core.MailMessage) error {
+	m.messages = append(m.messages, msg)
+	return nil
+}
+
+type failingMailer struct{}
+
+func (failingMailer) Send(context.Context, core.MailMessage) error {
+	return fmt.Errorf("smtp unavailable")
+}
+
+func tokenFromMail(t *testing.T, msg core.MailMessage, prefix string) string {
+	t.Helper()
+	if msg.To == "" || !strings.Contains(msg.Text, "/auth/") {
+		t.Fatalf("bad auth email message: %+v", msg)
+	}
+	re := regexp.MustCompile(prefix + `[A-Za-z0-9_-]+`)
+	token := re.FindString(msg.Text)
+	if token == "" {
+		t.Fatalf("token with prefix %s missing from email: %s", prefix, msg.Text)
+	}
+	return token
 }
 
 func TestAppAuthUnlocksRecordRulesAndLogoutAllInvalidatesAccess(t *testing.T) {
