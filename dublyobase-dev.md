@@ -251,8 +251,9 @@ redacted; the public README links to this repo-local roadmap; full suite passed
 against a disposable PostgreSQL 16 cluster.
 
 ### M1 — Control plane & admin auth  →  v0.2.0
-- [ ] `_dbo` migrations: `projects`, `api_keys(hash)`, `audit_log`
-- [ ] Admin login: bcrypt verify → HS256 JWT (24h) via `JWT_SECRET`; `GET /admin/api/me`
+- [ ] Follow `docs/specs/m1-control-plane-admin-auth.md`
+- [ ] `_dbo` migrations: `projects`, `admin_sessions(hash)`, `api_keys(hash)`, `audit_log`
+- [ ] Admin login: bcrypt verify → opaque hashed session token (24h); `GET /admin/api/me`
 - [ ] **Auth middleware on every `/admin/api/*`** (401 without valid token) + audit log
 - [ ] `POST /setup` (self-closing, rate-limited) when no ENV admin
 - [ ] Projects CRUD → `CREATE SCHEMA proj_<slug>` + 3 NOLOGIN roles + grants + revoke-public
