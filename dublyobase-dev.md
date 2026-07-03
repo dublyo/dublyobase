@@ -275,7 +275,8 @@ against a disposable PostgreSQL 16 cluster.
   return `409 destructive_change`; tests cover PostgreSQL 16, 17, and 18.
 
 ### M3 — Records API + rules  →  v0.4.0
-- [ ] Records CRUD with pagination/sort/filter (fexpr subset → parameterized SQL)
+- [ ] Follow `docs/specs/m3-records-api-rules.md`
+- [ ] Records CRUD with pagination/sort/filter (M3-safe expression subset → parameterized SQL)
 - [ ] Per-request tx: `SET LOCAL ROLE` + `request.jwt.claims` + `search_path`
 - [ ] `403 rls_denied` mapping; list/view/create/update/delete rule enforcement
 - **Accept:** anon vs authenticated vs service behave per rules **and** per RLS (test
