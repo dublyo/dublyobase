@@ -9,6 +9,7 @@ import (
 )
 
 var dataIdentifierRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,58}$`)
+var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 var reservedDataIdentifiers = map[string]struct{}{
 	"cmax":               {},
@@ -38,6 +39,13 @@ func ValidateDataIdentifier(kind string, name string) error {
 	}
 	if strings.HasPrefix(name, "_dbo") || strings.HasPrefix(name, "pg_") {
 		return fmt.Errorf("%w: %s %q uses a reserved prefix", ErrValidation, kind, name)
+	}
+	return nil
+}
+
+func ValidateUUID(id string) error {
+	if !uuidRe.MatchString(id) {
+		return fmt.Errorf("%w: invalid UUID", ErrValidation)
 	}
 	return nil
 }

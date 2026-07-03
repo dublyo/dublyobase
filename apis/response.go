@@ -49,6 +49,14 @@ func writeCoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotImplemented, "not_implemented", "feature not implemented")
 	case errors.Is(err, core.ErrSchemaDrift):
 		writeError(w, http.StatusInternalServerError, "schema_drift", "collection metadata and database schema are out of sync")
+	case errors.Is(err, core.ErrRecordNotFound):
+		writeError(w, http.StatusNotFound, "record_not_found", "record not found")
+	case errors.Is(err, core.ErrInvalidFilter):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_filter", err.Error())
+	case errors.Is(err, core.ErrInvalidRule):
+		writeError(w, http.StatusUnprocessableEntity, "invalid_rule", err.Error())
+	case errors.Is(err, core.ErrRLSDenied):
+		writeError(w, http.StatusForbidden, "rls_denied", "record access denied by RLS")
 	case errors.Is(err, core.ErrValidation):
 		writeValidation(w, err.Error())
 	default:

@@ -1,0 +1,160 @@
+package core
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type RecordRole string
+
+const (
+	RecordRoleAnon          RecordRole = "anon"
+	RecordRoleAuthenticated RecordRole = "authenticated"
+	RecordRoleService       RecordRole = "service"
+)
+
+type RecordAuth struct {
+	Project    Project
+	Role       RecordRole
+	RoleName   string
+	Subject    string
+	Collection string
+	Claims     map[string]any
+}
+
+type appClaims struct {
+	Role       string `json:"role"`
+	Project    string `json:"project"`
+	Collection string `json:"collection,omitempty"`
+	jwt.RegisteredClaims
+}
+
+func ResolveRecordAuth(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, token string, now time.Time) (*RecordAuth, error) {
+	project, err := GetProject(ctx, pool, projectSlug)
+	if err != nil {
+		return nil, err
+	}
+	_, roles := ProjectNames(project.Slug)
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return newRecordAuth(project, RecordRoleAnon, roles.Anon, "", ""), nil
+	}
+	if strings.HasPrefix(token, adminTokenPrefix) {
+		if _, err := FindAdminByToken(ctx, pool, token, now); err != nil {
+			return nil, err
+		}
+		return newRecordAuth(project, RecordRoleService, roles.Service, "", ""), nil
+	}
+	if strings.HasPrefix(token, apiKeyPrefix(APIKeyAnon)) || strings.HasPrefix(token, apiKeyPrefix(APIKeyService)) {
+		key, err := FindAPIKey(ctx, pool, token)
+		if err != nil {
+			return nil, err
+		}
+		if key.ProjectID != project.ID {
+			return nil, ErrUnauthorized
+		}
+		if key.Type == APIKeyService {
+			return newRecordAuth(project, RecordRoleService, roles.Service, "", ""), nil
+		}
+		return newRecordAuth(project, RecordRoleAnon, roles.Anon, "", ""), nil
+	}
+	claims, err := parseAppJWT(cfg.JWTSecret, token, now)
+	if err != nil {
+		return nil, err
+	}
+	if claims.Project != project.Slug || claims.Role != string(RecordRoleAuthenticated) {
+		return nil, ErrUnauthorized
+	}
+	if err := ValidateUUID(claims.Subject); err != nil {
+		return nil, err
+	}
+	return newRecordAuth(project, RecordRoleAuthenticated, roles.Authenticated, claims.Subject, claims.Collection), nil
+}
+
+func newRecordAuth(project *Project, role RecordRole, roleName string, subject string, collection string) *RecordAuth {
+	claims := map[string]any{
+		"role":    string(role),
+		"project": project.Slug,
+	}
+	if subject != "" {
+		claims["sub"] = subject
+	}
+	if collection != "" {
+		claims["collection"] = collection
+	}
+	return &RecordAuth{
+		Project:    *project,
+		Role:       role,
+		RoleName:   roleName,
+		Subject:    subject,
+		Collection: collection,
+		Claims:     claims,
+	}
+}
+
+func parseAppJWT(secret string, token string, now time.Time) (*appClaims, error) {
+	if len(secret) < 32 {
+		return nil, ErrUnauthorized
+	}
+	claims := &appClaims{}
+	parsed, err := jwt.ParseWithClaims(
+		token,
+		claims,
+		func(t *jwt.Token) (any, error) {
+			if t.Method != jwt.SigningMethodHS256 {
+				return nil, fmt.Errorf("unexpected signing method")
+			}
+			return []byte(secret), nil
+		},
+		jwt.WithTimeFunc(func() time.Time { return now.UTC() }),
+		jwt.WithExpirationRequired(),
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+	)
+	if err != nil || !parsed.Valid {
+		return nil, ErrUnauthorized
+	}
+	if claims.Subject == "" || claims.Project == "" || claims.Role == "" {
+		return nil, ErrUnauthorized
+	}
+	return claims, nil
+}
+
+func withRecordTx(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, operation string, fn func(pgx.Tx) error) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	claimsJSON, err := json.Marshal(auth.Claims)
+	if err != nil {
+		return err
+	}
+	searchPath := auth.Project.SchemaName + ", pg_catalog"
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`set local role %s`, quoteIdent(auth.RoleName))); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `set local statement_timeout = '5s'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `select set_config('request.jwt.claims', $1, true)`, string(claimsJSON)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `select set_config('request.operation', $1, true)`, operation); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `select set_config('search_path', $1, true)`, searchPath); err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}

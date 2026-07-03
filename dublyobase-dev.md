@@ -5,11 +5,12 @@
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.3.0 — M2 collections & schema sync complete
+**Status:** v0.4.0 — M3 records API & rules complete
 (self-closing setup, opaque hashed admin sessions, protected admin/project APIs,
 project schema/role provisioning, collection metadata, transactional schema sync,
-default-deny RLS, audit log, and real Postgres 16/17/18 integration tests).
-Next: **M3 (records API + rules)**.
+records CRUD, API keys, RLS-backed rules, audit log, and real Postgres 16/17/18
+integration tests).
+Next: **M4 (app auth)**.
 **Repo:** `github.com/dublyo/dublyobase` · **Image:** `ghcr.io/dublyo/dublyobase`
 **Local dev:** `/Users/dribrahimm/0-PostgresProject/dublyobase`
 
@@ -223,7 +224,9 @@ contract, DSN redaction, middleware (Hijack/Flush passthrough, CORS incl. Vary a
 credentials rules, client IP), health/ready shape + <3s + no-internals, SPA fallback,
 migrate idempotency, **concurrent 2-replica boot**, seed never-overwrites,
 collection create/update/delete lifecycle, identifier/field validation, default-deny
-RLS policy creation, and concurrent collection create conflicts. M2 was verified
+RLS policy creation, concurrent collection create conflicts, API-key generation,
+record payload validation, rule/filter compiler checks, record CRUD, and direct-role
+RLS integration tests proving app filters are not the data boundary. M3 was verified
 against temporary PostgreSQL 16, 17, and 18 clusters. Every milestone adds: happy
 path + auth-boundary + concurrency test for its feature. Security regressions
 (RLS bypass, unauth control plane) get permanent tests.
@@ -274,11 +277,11 @@ against a disposable PostgreSQL 16 cluster.
   rename field → column renamed; forbidden identifiers rejected; unsafe DDL changes
   return `409 destructive_change`; tests cover PostgreSQL 16, 17, and 18.
 
-### M3 — Records API + rules  →  v0.4.0
-- [ ] Follow `docs/specs/m3-records-api-rules.md`
-- [ ] Records CRUD with pagination/sort/filter (M3-safe expression subset → parameterized SQL)
-- [ ] Per-request tx: `SET LOCAL ROLE` + `request.jwt.claims` + `search_path`
-- [ ] `403 rls_denied` mapping; list/view/create/update/delete rule enforcement
+### M3 — Records API + rules — DONE (v0.4.0, 2026-07-03)
+- [x] Follow `docs/specs/m3-records-api-rules.md`
+- [x] Records CRUD with pagination/sort/filter (M3-safe expression subset → parameterized SQL)
+- [x] Per-request tx: `SET LOCAL ROLE` + `request.jwt.claims` + `search_path`
+- [x] `403 rls_denied` mapping; list/view/create/update/delete rule enforcement
 - **Accept:** anon vs authenticated vs service behave per rules **and** per RLS (test
   hits Postgres directly to prove policies fire without the app's WHERE); filter
   injection attempts (quoted idents, stacked queries) rejected by tests.

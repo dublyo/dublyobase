@@ -1,6 +1,6 @@
 # M3 Spec: Records API and Rules
 
-Status: draft for v0.4.0
+Status: implemented in v0.4.0
 Depends on: v0.3.0
 
 M3 turns M2 collection tables into usable data APIs. It adds records CRUD,

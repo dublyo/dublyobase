@@ -87,7 +87,7 @@ func TestAdminCollectionLifecycle(t *testing.T) {
 	for _, column := range []string{"id", "created", "updated", "title", "published", "meta", "status"} {
 		assertColumnExists(t, app.Pool, schema, "posts", column)
 	}
-	assertRLSDefaultDeny(t, app.Pool, schema, "posts")
+	assertCollectionPolicies(t, app.Pool, schema, "posts")
 	assertCollectionAuditExists(t, app.Pool, "collection.create", slug, "posts")
 
 	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token, createBody)
@@ -130,7 +130,7 @@ func TestAdminCollectionLifecycle(t *testing.T) {
 	assertColumnExists(t, app.Pool, schema, "posts", "payload")
 	assertColumnExists(t, app.Pool, schema, "posts", "body")
 	assertColumnMissing(t, app.Pool, schema, "posts", "meta")
-	assertRLSDefaultDeny(t, app.Pool, schema, "posts")
+	assertCollectionPolicies(t, app.Pool, schema, "posts")
 	assertCollectionAuditExists(t, app.Pool, "collection.update", slug, "posts")
 
 	dropFieldBody := `{
@@ -305,7 +305,7 @@ func assertTableMissing(t *testing.T, pool *pgxpool.Pool, schema string, table s
 	}
 }
 
-func assertRLSDefaultDeny(t *testing.T, pool *pgxpool.Pool, schema string, table string) {
+func assertCollectionPolicies(t *testing.T, pool *pgxpool.Pool, schema string, table string) {
 	t.Helper()
 	var enabled, forced bool
 	if err := pool.QueryRow(context.Background(), `
@@ -327,18 +327,22 @@ func assertRLSDefaultDeny(t *testing.T, pool *pgxpool.Pool, schema string, table
 		from pg_policies
 		where schemaname = $1
 			and tablename = $2
-			and policyname in ($3, $4, $5, $6)`,
+			and policyname in ($3, $4, $5, $6, $7, $8, $9, $10)`,
 		schema,
 		table,
-		table+"_select_deny",
-		table+"_insert_deny",
-		table+"_update_deny",
-		table+"_delete_deny",
+		"dbo_svc_select",
+		"dbo_svc_insert",
+		"dbo_svc_update",
+		"dbo_svc_delete",
+		"dbo_client_select",
+		"dbo_client_insert",
+		"dbo_client_update",
+		"dbo_client_delete",
 	).Scan(&policyCount); err != nil {
 		t.Fatal(err)
 	}
-	if policyCount != 4 {
-		t.Fatalf("default-deny policy count for %s.%s = %d, want 4", schema, table, policyCount)
+	if policyCount != 8 {
+		t.Fatalf("policy count for %s.%s = %d, want 8", schema, table, policyCount)
 	}
 }
 

@@ -69,6 +69,7 @@ func newIntegrationApp(t *testing.T) (*core.App, func()) {
 		StorageLocalPath:  t.TempDir(),
 		CORSOrigins:       []string{"*"},
 		TrustProxyHeaders: true,
+		JWTSecret:         "test-jwt-secret-must-be-at-least-32-bytes",
 	}
 	app := core.NewApp(cfg, pool, testLogger())
 	app.SetReady(true)

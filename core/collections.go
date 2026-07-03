@@ -102,6 +102,9 @@ func CreateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 		DeleteRule: input.DeleteRule,
 		Options:    options,
 	}
+	if err := ValidateCollectionRules(collection); err != nil {
+		return nil, err
+	}
 	if err := tx.QueryRow(ctx, `
 		insert into _dbo.collections
 			(project_id, name, type, fields, list_rule, view_rule, create_rule, update_rule, delete_rule, options)
@@ -128,6 +131,9 @@ func CreateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 		if code := pgErrCode(err); code == "42P07" {
 			return nil, ErrProvisioningConflict
 		}
+		return nil, err
+	}
+	if err := syncCollectionPolicies(ctx, tx, project, collection); err != nil {
 		return nil, err
 	}
 	if err := InsertAudit(ctx, tx, AuditEvent{
@@ -244,16 +250,6 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 			return nil, err
 		}
 	}
-	if input.FieldsSet {
-		next.Fields = normalizeFields(input.Fields)
-		if err := ValidateFields(next.Fields); err != nil {
-			return nil, err
-		}
-		if err := applyFieldDiff(ctx, tx, project.SchemaName, oldName, current.Fields, next.Fields, input.DropMissingFields); err != nil {
-			return nil, err
-		}
-		next.Fields = stripFieldMigrationOptions(next.Fields)
-	}
 	if input.ListRule != nil {
 		next.ListRule = input.ListRule
 	}
@@ -268,6 +264,21 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	}
 	if input.DeleteRule != nil {
 		next.DeleteRule = input.DeleteRule
+	}
+	if input.FieldsSet {
+		next.Fields = normalizeFields(input.Fields)
+		if err := ValidateFields(next.Fields); err != nil {
+			return nil, err
+		}
+		if err := ValidateCollectionRules(&next); err != nil {
+			return nil, err
+		}
+		if err := applyFieldDiff(ctx, tx, project.SchemaName, oldName, current.Fields, next.Fields, input.DropMissingFields); err != nil {
+			return nil, err
+		}
+		next.Fields = stripFieldMigrationOptions(next.Fields)
+	} else if err := ValidateCollectionRules(&next); err != nil {
+		return nil, err
 	}
 	if next.Name != oldName {
 		if _, err := tx.Exec(ctx,
@@ -325,7 +336,7 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	if err != nil {
 		return nil, err
 	}
-	if err := enableDefaultDenyRLS(ctx, tx, project.SchemaName, next.Name); err != nil {
+	if err := syncCollectionPolicies(ctx, tx, project, &next); err != nil {
 		return nil, err
 	}
 	if err := InsertAudit(ctx, tx, AuditEvent{
