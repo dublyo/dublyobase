@@ -6,7 +6,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/dublyobase/dublyobase/core"
+	"github.com/dublyo/dublyobase/core"
 	"github.com/spf13/cobra"
 )
 

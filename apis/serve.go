@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/dublyobase/dublyobase/core"
-	"github.com/dublyobase/dublyobase/ui"
+	"github.com/dublyo/dublyobase/core"
+	"github.com/dublyo/dublyobase/ui"
 )
 
 type server struct {

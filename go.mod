@@ -1,4 +1,4 @@
-module github.com/dublyobase/dublyobase
+module github.com/dublyo/dublyobase
 
 go 1.25.0
 

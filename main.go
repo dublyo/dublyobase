@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/dublyobase/dublyobase/cmd"
+	"github.com/dublyo/dublyobase/cmd"
 )
 
 func main() {
