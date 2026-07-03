@@ -74,7 +74,7 @@ func LoadConfig() (*Config, error) {
 		AppURL:      strings.TrimSpace(os.Getenv("APP_URL")),
 		JWTSecret:   strings.TrimSpace(os.Getenv("JWT_SECRET")),
 
-		AdminEmail:    os.Getenv("ADMIN_EMAIL"),
+		AdminEmail:    strings.TrimSpace(os.Getenv("ADMIN_EMAIL")),
 		AdminPassword: os.Getenv("ADMIN_PASSWORD"),
 
 		StorageType:      StorageType(env("STORAGE_TYPE", "local")),
@@ -130,6 +130,19 @@ func (c *Config) Validate() error {
 	}
 	if c.StorageType != StorageLocal && c.StorageType != StorageS3 {
 		return fmt.Errorf("STORAGE_TYPE must be 'local' or 's3' (got %q)", c.StorageType)
+	}
+	if (c.AdminEmail == "") != (strings.TrimSpace(c.AdminPassword) == "") {
+		return fmt.Errorf("ADMIN_EMAIL and ADMIN_PASSWORD must be set together")
+	}
+	switch strings.ToLower(c.LogLevel) {
+	case "debug", "info", "warn", "error":
+	default:
+		return fmt.Errorf("LOG_LEVEL must be debug, info, warn, or error (got %q)", c.LogLevel)
+	}
+	switch strings.ToLower(c.LogFormat) {
+	case "json", "text":
+	default:
+		return fmt.Errorf("LOG_FORMAT must be json or text (got %q)", c.LogFormat)
 	}
 	return nil
 }

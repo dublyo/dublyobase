@@ -18,6 +18,8 @@ func TestRedactURL(t *testing.T) {
 		{"sslpassword param", "postgres://db/app?sslpassword=s3cret", "s3cret"},
 		{"kv dsn form", "host=db user=app password=s3cret dbname=app", "s3cret"},
 		{"kv dsn sslpassword", "host=db sslpassword=s3cret", "s3cret"},
+		{"kv dsn quoted password", "host=db user=app password='s3 cret' dbname=app", "s3 cret"},
+		{"kv dsn escaped quoted password", `host=db password='s3\'cret' dbname=app`, "s3"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

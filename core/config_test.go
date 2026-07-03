@@ -69,17 +69,52 @@ func TestLoadConfigDefaults(t *testing.T) {
 }
 
 func TestLoadConfigInvalidValuesFailLoud(t *testing.T) {
-	setRequired(t)
-
-	t.Setenv("MIGRATE_ON_START", "flase") // typo must not silently become true
-	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "MIGRATE_ON_START") {
-		t.Fatalf("boolean typo must fail loud naming the var, got: %v", err)
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{
+			name: "boolean typo",
+			env:  map[string]string{"MIGRATE_ON_START": "flase"},
+			want: "MIGRATE_ON_START",
+		},
+		{
+			name: "storage type",
+			env:  map[string]string{"STORAGE_TYPE": "ftp"},
+			want: "STORAGE_TYPE",
+		},
+		{
+			name: "log level",
+			env:  map[string]string{"LOG_LEVEL": "verbose"},
+			want: "LOG_LEVEL",
+		},
+		{
+			name: "log format",
+			env:  map[string]string{"LOG_FORMAT": "pretty"},
+			want: "LOG_FORMAT",
+		},
+		{
+			name: "admin email without password",
+			env:  map[string]string{"ADMIN_EMAIL": "admin@example.com"},
+			want: "ADMIN_EMAIL",
+		},
+		{
+			name: "admin password without email",
+			env:  map[string]string{"ADMIN_PASSWORD": "secret"},
+			want: "ADMIN_EMAIL",
+		},
 	}
-	t.Setenv("MIGRATE_ON_START", "true")
-
-	t.Setenv("STORAGE_TYPE", "ftp")
-	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "STORAGE_TYPE") {
-		t.Fatalf("invalid STORAGE_TYPE must fail loud, got: %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setRequired(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("invalid value must fail loud naming %s, got: %v", tc.want, err)
+			}
+		})
 	}
 }
 

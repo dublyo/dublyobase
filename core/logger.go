@@ -33,7 +33,10 @@ func NewLogger(cfg *Config) *slog.Logger {
 	return slog.New(handler)
 }
 
-var dsnPasswordRe = regexp.MustCompile(`(?i)((?:ssl)?password)\s*=\s*\S+`)
+var (
+	dsnQuotedPasswordRe = regexp.MustCompile(`(?i)((?:ssl)?password)\s*=\s*'([^'\\]|\\.)*'`)
+	dsnPasswordRe       = regexp.MustCompile(`(?i)((?:ssl)?password)\s*=\s*\S+`)
+)
 
 // RedactURL removes credentials from a connection string before logging.
 // It handles URL userinfo passwords, ?password=/&sslpassword= query params,
@@ -60,6 +63,8 @@ func RedactURL(dsn string) string {
 		// url.UserPassword escapes; make the placeholder predictable
 		return strings.Replace(s, ":xxxxx@", ":***@", 1)
 	}
-	// key/value DSN form (or unparsable): regex-redact password-ish keys
-	return dsnPasswordRe.ReplaceAllString(dsn, "$1=***")
+	// key/value DSN form (or unparsable): redact quoted values before the
+	// whitespace-delimited fallback, otherwise "password='a b'" leaks "b'".
+	redacted := dsnQuotedPasswordRe.ReplaceAllString(dsn, "$1=***")
+	return dsnPasswordRe.ReplaceAllString(redacted, "$1=***")
 }

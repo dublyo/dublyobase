@@ -147,3 +147,22 @@ func TestSPAFallback(t *testing.T) {
 		t.Fatalf("embedded index.html missing: %v", err)
 	}
 }
+
+func TestReservedAPIPrefixesDoNotServeSPA(t *testing.T) {
+	app := newTestApp(t, deadPool(t))
+	srv := NewServer(app)
+
+	for _, route := range []string{"/api/health", "/api/projects/demo", "/admin/api/projects"} {
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, httptest.NewRequest("GET", route, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s: want API 404, got %d", route, rec.Code)
+		}
+		if !strings.Contains(rec.Header().Get("Content-Type"), "application/json") {
+			t.Fatalf("GET %s: API miss must return JSON, got %q", route, rec.Header().Get("Content-Type"))
+		}
+		if strings.Contains(rec.Body.String(), "<html") || strings.Contains(rec.Body.String(), "admin panel") {
+			t.Fatalf("GET %s: API miss must not serve the SPA: %s", route, rec.Body.String())
+		}
+	}
+}

@@ -5,7 +5,7 @@ storage, and an admin UI, served from **one Go binary on one port**. It connects
 Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a single
 `<30 MB` container to `ghcr.io/dublyo/dublyobase`. One-click deployable on Dublyo.
 
-> Status: **early development.** See [dublyobase-dev.md](../dublyobase-dev.md) for the
+> Status: **early development.** See [dublyobase-dev.md](dublyobase-dev.md) for the
 > full architecture and milestone roadmap.
 
 ## What makes it different

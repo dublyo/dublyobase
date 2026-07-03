@@ -42,6 +42,13 @@ func spaHandler(dist fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(dist))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if isReservedAPIPath(p) {
+			writeJSON(w, http.StatusNotFound, map[string]any{
+				"error":   "not_found",
+				"message": "route not found",
+			})
+			return
+		}
 		if p != "" {
 			if f, err := dist.Open(p); err == nil {
 				f.Close()
@@ -53,6 +60,11 @@ func spaHandler(dist fs.FS) http.Handler {
 		r2.URL.Path = "/"
 		fileServer.ServeHTTP(w, r2)
 	})
+}
+
+func isReservedAPIPath(p string) bool {
+	return p == "api" || strings.HasPrefix(p, "api/") ||
+		p == "admin/api" || strings.HasPrefix(p, "admin/api/")
 }
 
 // health reports liveness of the app and its dependencies. It must answer
