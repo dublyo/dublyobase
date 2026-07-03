@@ -13,6 +13,8 @@ var (
 	ErrRecordNotFound       = errors.New("record not found")
 	ErrInvalidFilter        = errors.New("invalid filter")
 	ErrInvalidRule          = errors.New("invalid rule")
+	ErrFileNotFound         = errors.New("file not found")
+	ErrFileTooLarge         = errors.New("file too large")
 	ErrRLSDenied            = errors.New("rls denied")
 	ErrSessionExpired       = errors.New("session expired")
 	ErrSetupClosed          = errors.New("setup closed")

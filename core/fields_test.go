@@ -25,6 +25,8 @@ func TestValidateFields(t *testing.T) {
 		{Name: "published", Type: "bool"},
 		{Name: "status", Type: "select", Options: map[string]any{"values": []string{"draft", "live"}}},
 		{Name: "author", Type: "relation", Options: map[string]any{"collection": "users"}},
+		{Name: "avatar", Type: "file"},
+		{Name: "gallery", Type: "file", Options: map[string]any{"multiple": true}},
 	}
 	if err := ValidateFields(valid); err != nil {
 		t.Fatalf("valid fields rejected: %v", err)
@@ -33,7 +35,8 @@ func TestValidateFields(t *testing.T) {
 	cases := map[string][]Field{
 		"duplicate":        {{Name: "title", Type: "text"}, {Name: "title", Type: "number"}},
 		"reserved":         {{Name: "id", Type: "text"}},
-		"unsupported":      {{Name: "title", Type: "file"}},
+		"unsupported":      {{Name: "title", Type: "blob"}},
+		"bad file option":  {{Name: "avatar", Type: "file", Options: map[string]any{"multiple": "yes"}}},
 		"select values":    {{Name: "status", Type: "select", Options: map[string]any{"values": []string{}}}},
 		"relation target":  {{Name: "author", Type: "relation", Options: map[string]any{"collection": "pg_class"}}},
 		"missing relation": {{Name: "author", Type: "relation"}},
@@ -55,6 +58,8 @@ func TestColumnDDL(t *testing.T) {
 		"bool default":   {Field{Name: "published", Type: "bool"}, "boolean not null default false"},
 		"bool required":  {Field{Name: "published", Type: "bool", Required: true}, "boolean not null"},
 		"json default":   {Field{Name: "meta", Type: "json"}, "jsonb not null default '{}'::jsonb"},
+		"file":           {Field{Name: "avatar", Type: "file"}, "jsonb"},
+		"file required":  {Field{Name: "avatar", Type: "file", Required: true}, "jsonb"},
 		"select multi":   {Field{Name: "tags", Type: "select", Options: map[string]any{"multi": true}}, "text[]"},
 		"relation multi": {Field{Name: "owners", Type: "relation", Options: map[string]any{"multi": true}}, "uuid[]"},
 	}
@@ -68,7 +73,7 @@ func TestColumnDDL(t *testing.T) {
 		}
 	}
 
-	got, err := ColumnDDL(Field{Name: "file", Type: "file"})
+	got, err := ColumnDDL(Field{Name: "file", Type: "blob"})
 	if !errors.Is(err, ErrValidation) {
 		t.Fatalf("unsupported field error = %v, DDL = %q", err, got)
 	}

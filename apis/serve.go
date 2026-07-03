@@ -65,6 +65,9 @@ func NewServer(app *core.App) *http.Server {
 	mux.HandleFunc("GET /api/projects/{slug}/collections/{name}/records/{id}", s.getRecord)
 	mux.HandleFunc("PATCH /api/projects/{slug}/collections/{name}/records/{id}", s.updateRecord)
 	mux.HandleFunc("DELETE /api/projects/{slug}/collections/{name}/records/{id}", s.deleteRecord)
+	mux.HandleFunc("POST /api/projects/{slug}/files/{collection}/{recordId}/{field}", s.uploadFiles)
+	mux.HandleFunc("POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token", s.createFileToken)
+	mux.HandleFunc("GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}", s.downloadFile)
 	mux.Handle("/", spaHandler(ui.DistFS()))
 
 	return &http.Server{

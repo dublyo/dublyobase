@@ -66,7 +66,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.StorageType != StorageLocal || cfg.StorageLocalPath != "/data/storage" {
 		t.Fatalf("storage defaults wrong: %+v", cfg)
 	}
-	if cfg.BcryptCost != 10 || cfg.AuthDevTokens {
+	if cfg.BcryptCost != 10 || cfg.AuthDevTokens || cfg.MaxUploadMB != 64 {
 		t.Fatalf("app auth defaults wrong: %+v", cfg)
 	}
 }
@@ -129,6 +129,21 @@ func TestLoadConfigInvalidValuesFailLoud(t *testing.T) {
 			name: "auth dev tokens typo",
 			env:  map[string]string{"AUTH_DEV_TOKENS": "sure"},
 			want: "AUTH_DEV_TOKENS",
+		},
+		{
+			name: "max upload low",
+			env:  map[string]string{"MAX_UPLOAD_MB": "0"},
+			want: "MAX_UPLOAD_MB",
+		},
+		{
+			name: "max upload high",
+			env:  map[string]string{"MAX_UPLOAD_MB": "2048"},
+			want: "MAX_UPLOAD_MB",
+		},
+		{
+			name: "max upload typo",
+			env:  map[string]string{"MAX_UPLOAD_MB": "large"},
+			want: "MAX_UPLOAD_MB",
 		},
 	}
 	for _, tc := range cases {

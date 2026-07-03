@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"net/mail"
@@ -208,23 +207,30 @@ func UpdateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	return out, nil
 }
 
-func DeleteRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) error {
+func DeleteRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
 	if err := ValidateUUID(id); err != nil {
-		return err
+		return nil, err
 	}
 	collection, err := recordCollection(ctx, pool, auth.Project.Slug, collectionName)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	columns := allRecordColumns(collection)
 	table := quoteIdent(auth.Project.SchemaName, collection.Name)
-	return withRecordTx(ctx, pool, auth, "delete", func(tx pgx.Tx) error {
-		var deleted string
-		err := tx.QueryRow(ctx, fmt.Sprintf(`delete from %s where id = $1 returning id`, table), id).Scan(&deleted)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrRecordNotFound
+	var out Record
+	err = withRecordTx(ctx, pool, auth, "delete", func(tx pgx.Tx) error {
+		query := fmt.Sprintf(`delete from %s where id = $1 returning %s`, table, selectList(columns))
+		record, err := queryOneRecord(ctx, tx, query, columns, id)
+		if err != nil {
+			return err
 		}
-		return mapRecordDBError(err)
+		out = record
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func recordCollection(ctx context.Context, pool *pgxpool.Pool, projectSlug string, name string) (*Collection, error) {
@@ -462,6 +468,8 @@ func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {
 			return nil, fmt.Errorf("%w: field %q must be valid JSON", ErrValidation, field.Name)
 		}
 		return string(raw), nil
+	case "file":
+		return nil, fmt.Errorf("%w: field %q must be updated through the file upload API", ErrValidation, field.Name)
 	case "select":
 		return normalizeSelectValue(field, raw)
 	case "relation":
@@ -533,14 +541,14 @@ func fieldRequiredOnCreate(field Field) bool {
 	if !field.Required {
 		return false
 	}
-	return field.Type != "json"
+	return field.Type != "json" && field.Type != "file"
 }
 
 func fieldCanBeNull(field Field) bool {
 	if field.Required {
 		return false
 	}
-	return field.Type != "bool" && field.Type != "json"
+	return field.Type != "bool" && field.Type != "json" && field.Type != "file"
 }
 
 func selectList(columns []string) string {
@@ -568,7 +576,7 @@ func valuePlaceholder(field Field, pos int) string {
 		return p + "::boolean"
 	case "date":
 		return p + "::timestamptz"
-	case "json":
+	case "json", "file":
 		return p + "::jsonb"
 	case "select":
 		if boolOption(field.Options, "multi") {

@@ -17,6 +17,7 @@ var supportedFieldTypes = map[string]struct{}{
 	"bool":     {},
 	"date":     {},
 	"email":    {},
+	"file":     {},
 	"json":     {},
 	"number":   {},
 	"relation": {},
@@ -80,6 +81,12 @@ func validateFieldOptions(field Field) error {
 		if err := ValidateDataIdentifier("relation collection", collection); err != nil {
 			return err
 		}
+	case "file":
+		if _, ok := field.Options["multiple"]; ok {
+			if _, ok := field.Options["multiple"].(bool); !ok {
+				return fmt.Errorf("%w: file field %q options.multiple must be a boolean", ErrValidation, field.Name)
+			}
+		}
 	case "text", "email", "url", "number", "bool", "date", "json":
 	}
 	return nil
@@ -96,7 +103,7 @@ func ColumnDDL(field Field) (string, error) {
 		columnType = "boolean"
 	case "date":
 		columnType = "timestamptz"
-	case "json":
+	case "json", "file":
 		columnType = "jsonb"
 	case "select":
 		if boolOption(field.Options, "multi") {
@@ -121,6 +128,8 @@ func ColumnDDL(field Field) (string, error) {
 		return "boolean not null default false", nil
 	case "json":
 		return "jsonb not null default '{}'::jsonb", nil
+	case "file":
+		return "jsonb", nil
 	}
 	ddl := columnType
 	if field.Required {

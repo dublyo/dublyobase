@@ -81,9 +81,15 @@ func (s *server) deleteRecord(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := core.DeleteRecord(r.Context(), s.app.Pool, auth, r.PathValue("name"), r.PathValue("id")); err != nil {
+	deleted, err := core.DeleteRecord(r.Context(), s.app.Pool, auth, r.PathValue("name"), r.PathValue("id"))
+	if err != nil {
 		writeCoreError(w, err)
 		return
+	}
+	if id, _ := deleted["id"].(string); id != "" {
+		if err := core.RemoveRecordStorage(s.app.Config, auth.Project.Slug, r.PathValue("name"), id); err != nil {
+			s.app.Log.Warn("record file cleanup failed", "project", auth.Project.Slug, "collection", r.PathValue("name"), "record", id, "err", err)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

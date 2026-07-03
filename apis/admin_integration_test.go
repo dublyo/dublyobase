@@ -73,6 +73,7 @@ func newIntegrationApp(t *testing.T) (*core.App, func()) {
 		AppURL:            "http://127.0.0.1",
 		BcryptCost:        4,
 		AuthDevTokens:     true,
+		MaxUploadMB:       64,
 	}
 	app := core.NewApp(cfg, pool, testLogger())
 	app.SetReady(true)

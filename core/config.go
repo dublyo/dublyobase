@@ -33,6 +33,7 @@ type Config struct {
 
 	BcryptCost    int  // BCRYPT_COST     (default 10)
 	AuthDevTokens bool // AUTH_DEV_TOKENS (default false; exposes reset/verify tokens for tests/dev)
+	MaxUploadMB   int  // MAX_UPLOAD_MB   (default 64)
 
 	StorageType      StorageType // STORAGE_TYPE (local|s3)
 	StorageLocalPath string      // STORAGE_LOCAL_PATH
@@ -92,6 +93,7 @@ func LoadConfig() (*Config, error) {
 
 		BcryptCost:    intVar("BCRYPT_COST", bcrypt.DefaultCost),
 		AuthDevTokens: boolVar("AUTH_DEV_TOKENS", false),
+		MaxUploadMB:   intVar("MAX_UPLOAD_MB", 64),
 
 		StorageType:      StorageType(env("STORAGE_TYPE", "local")),
 		StorageLocalPath: env("STORAGE_LOCAL_PATH", "/data/storage"),
@@ -155,6 +157,9 @@ func (c *Config) Validate() error {
 	}
 	if c.BcryptCost < bcrypt.MinCost || c.BcryptCost > bcrypt.MaxCost {
 		return fmt.Errorf("BCRYPT_COST must be between %d and %d (got %d)", bcrypt.MinCost, bcrypt.MaxCost, c.BcryptCost)
+	}
+	if c.MaxUploadMB < 1 || c.MaxUploadMB > 1024 {
+		return fmt.Errorf("MAX_UPLOAD_MB must be between 1 and 1024 (got %d)", c.MaxUploadMB)
 	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warn", "error":

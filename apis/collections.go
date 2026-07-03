@@ -140,5 +140,8 @@ func (s *server) deleteCollection(w http.ResponseWriter, r *http.Request) {
 		writeCoreError(w, err)
 		return
 	}
+	if err := core.RemoveCollectionStorage(s.app.Config, r.PathValue("slug"), r.PathValue("name")); err != nil {
+		s.app.Log.Warn("collection file cleanup failed", "project", r.PathValue("slug"), "collection", r.PathValue("name"), "err", err)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -63,6 +63,10 @@ func writeCoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid_filter", err.Error())
 	case errors.Is(err, core.ErrInvalidRule):
 		writeError(w, http.StatusUnprocessableEntity, "invalid_rule", err.Error())
+	case errors.Is(err, core.ErrFileNotFound):
+		writeError(w, http.StatusNotFound, "file_not_found", "file not found")
+	case errors.Is(err, core.ErrFileTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "file_too_large", "file exceeds the configured upload limit")
 	case errors.Is(err, core.ErrRLSDenied):
 		writeError(w, http.StatusForbidden, "rls_denied", "record access denied by RLS")
 	case errors.Is(err, core.ErrValidation):

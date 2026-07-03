@@ -35,6 +35,7 @@ services:
       BCRYPT_COST: "10"
       AUTH_DEV_TOKENS: "false"
       STORAGE_TYPE: local
+      MAX_UPLOAD_MB: "64"
       MIGRATE_ON_START: "true"
       TRUST_PROXY_HEADERS: "true"
     ports:
