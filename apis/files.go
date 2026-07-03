@@ -6,8 +6,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,7 +17,12 @@ func (s *server) uploadFiles(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	maxBytes := core.MaxUploadBytes(s.app.Config)
+	storageCfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	maxBytes := core.MaxUploadBytes(storageCfg)
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+1024*1024)
 	reader, err := r.MultipartReader()
 	if err != nil {
@@ -34,7 +37,7 @@ func (s *server) uploadFiles(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			core.RemoveStoredFiles(s.app.Config, files)
+			_ = core.RemoveStoredFiles(r.Context(), storageCfg, files)
 			if stringsContainsTooLarge(err.Error()) {
 				writeCoreError(w, core.ErrFileTooLarge)
 				return
@@ -47,7 +50,8 @@ func (s *server) uploadFiles(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		meta, err := core.StoreUploadedFile(
-			s.app.Config,
+			r.Context(),
+			storageCfg,
 			auth.Project.Slug,
 			r.PathValue("collection"),
 			r.PathValue("recordId"),
@@ -57,7 +61,7 @@ func (s *server) uploadFiles(w http.ResponseWriter, r *http.Request) {
 		)
 		part.Close()
 		if err != nil {
-			core.RemoveStoredFiles(s.app.Config, files)
+			_ = core.RemoveStoredFiles(r.Context(), storageCfg, files)
 			if stringsContainsTooLarge(err.Error()) {
 				writeCoreError(w, core.ErrFileTooLarge)
 				return
@@ -83,11 +87,11 @@ func (s *server) uploadFiles(w http.ResponseWriter, r *http.Request) {
 		files,
 	)
 	if err != nil {
-		core.RemoveStoredFiles(s.app.Config, files)
+		_ = core.RemoveStoredFiles(r.Context(), storageCfg, files)
 		writeCoreError(w, err)
 		return
 	}
-	if err := core.RemoveStoredFiles(s.app.Config, removed); err != nil {
+	if err := core.RemoveStoredFiles(r.Context(), storageCfg, removed); err != nil {
 		s.app.Log.Warn("replaced file cleanup failed", "project", auth.Project.Slug, "collection", r.PathValue("collection"), "record", r.PathValue("recordId"), "err", err)
 	}
 	writeJSON(w, http.StatusCreated, record)
@@ -138,40 +142,26 @@ func (s *server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		writeCoreError(w, err)
 		return
 	}
+	storageCfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
 
-	filePath := ""
-	contentType := meta.Mime
-	if thumb := r.URL.Query().Get("thumb"); thumb != "" {
-		filePath, err = core.EnsureThumbnail(s.app.Config, meta, thumb)
-		contentType = "image/jpeg"
-	} else {
-		filePath, err = core.FilePath(s.app.Config, meta)
-	}
+	obj, contentType, err := core.OpenStoredFile(r.Context(), storageCfg, meta, r.URL.Query().Get("thumb"))
 	if err != nil {
 		writeCoreError(w, err)
 		return
 	}
-	f, err := os.Open(filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			writeCoreError(w, core.ErrFileNotFound)
-			return
-		}
-		writeCoreError(w, err)
-		return
-	}
-	defer f.Close()
-	stat, err := f.Stat()
-	if err != nil {
-		writeCoreError(w, err)
-		return
-	}
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
+	defer obj.Body.Close()
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": meta.Name}))
-	http.ServeContent(w, r, filepath.Base(meta.Name), stat.ModTime(), f)
+	if obj.Info.Size >= 0 {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", obj.Info.Size))
+	}
+	if _, err := io.Copy(w, obj.Body); err != nil {
+		s.app.Log.Warn("file download stream failed", "project", claims.Project, "collection", claims.Collection, "record", claims.RecordID, "err", err)
+	}
 }
 
 func stringsContainsTooLarge(s string) bool {

@@ -8,10 +8,12 @@ import {
   Copy,
   Database,
   FileUp,
+  HardDrive,
   KeyRound,
   Layers3,
   ListFilter,
   LogOut,
+  Mail,
   Plus,
   RefreshCw,
   Save,
@@ -35,6 +37,7 @@ import {
   deleteCollection,
   deleteRecord,
   health,
+  getSettings,
   listAPIKeys,
   listAudit,
   listCollections,
@@ -45,11 +48,15 @@ import {
   me,
   revokeAPIKey,
   setup,
+  testSMTPSettings,
+  testStorageSettings,
   updateCollection,
   updateRecord,
+  updateSMTPSettings,
+  updateStorageSettings,
   uploadFile,
 } from "../src/lib/api";
-import type { APIKey, Admin, AuditEntry, Collection, Field, FieldType, Health, Project, RecordItem, RecordList } from "../src/lib/types";
+import type { APIKey, Admin, AuditEntry, Collection, Field, FieldType, Health, InstanceSettings, Project, RecordItem, RecordList } from "../src/lib/types";
 
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const fieldTypes: FieldType[] = ["text", "number", "bool", "date", "email", "url", "select", "json", "relation", "file"];
@@ -67,15 +74,50 @@ const navItems = [
 type View = (typeof navItems)[number]["id"];
 type Notice = { type: "success" | "error"; message: string } | null;
 
-const emptyCollectionDraft = {
+type CollectionDraft = {
+  name: string;
+  type: Collection["type"];
+  fields: Field[];
+  listRule: string;
+  viewRule: string;
+  createRule: string;
+  updateRule: string;
+  deleteRule: string;
+};
+
+const emptyCollectionDraft: CollectionDraft = {
   name: "",
   type: "base" as Collection["type"],
-  fields: '[{"name":"title","type":"text","required":true}]',
+  fields: [{ name: "title", type: "text" as FieldType, required: true, options: {} }],
   listRule: "",
   viewRule: "",
   createRule: "",
   updateRule: "",
   deleteRule: "",
+};
+
+const emptySMTPDraft = {
+  enabled: false,
+  host: "",
+  port: "587",
+  from: "",
+  username: "",
+  password: "",
+  clearPassword: false,
+  testTo: "",
+};
+
+const emptyStorageDraft = {
+  type: "local" as "local" | "s3",
+  endpoint: "",
+  bucket: "",
+  region: "us-east-1",
+  accessKey: "",
+  secretKey: "",
+  clearSecretKey: false,
+  prefix: "",
+  useSSL: true,
+  forcePathStyle: true,
 };
 
 export default function AdminApp() {
@@ -95,17 +137,14 @@ export default function AdminApp() {
   const [apiKeys, setApiKeys] = useState<APIKey[]>([]);
   const [oneTimeKey, setOneTimeKey] = useState<APIKey | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [settings, setSettings] = useState<InstanceSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [projectDraft, setProjectDraft] = useState({ slug: "", name: "" });
   const [collectionDraft, setCollectionDraft] = useState(emptyCollectionDraft);
   const [editingFields, setEditingFields] = useState<Field[]>([]);
-  const [newField, setNewField] = useState<{ name: string; type: FieldType; required: boolean; options: string }>({
-    name: "",
-    type: "text",
-    required: false,
-    options: "{}",
-  });
+  const [smtpDraft, setSMTPDraft] = useState(emptySMTPDraft);
+  const [storageDraft, setStorageDraft] = useState(emptyStorageDraft);
   const [keyDraft, setKeyDraft] = useState({ name: "", type: "service" as "anon" | "service" });
   const [fileDraft, setFileDraft] = useState({ recordId: "", field: "" });
   const [fileResult, setFileResult] = useState<RecordItem | null>(null);
@@ -167,9 +206,12 @@ export default function AdminApp() {
       if (!authToken) return;
       setBusy(true);
       try {
-        const [healthResponse, projectsResponse] = await Promise.all([health(), listProjects(authToken)]);
+        const [healthResponse, projectsResponse, settingsResponse] = await Promise.all([health(), listProjects(authToken), getSettings(authToken)]);
         setHealthState(healthResponse);
         setProjects(projectsResponse.items);
+        setSettings(settingsResponse);
+        setSMTPDraft(settingsToSMTPDraft(settingsResponse));
+        setStorageDraft(settingsToStorageDraft(settingsResponse));
         const projectSlug = preferredProject || projectsResponse.items[0]?.slug || "";
         setSelectedProject(projectSlug);
         if (projectSlug) {
@@ -296,6 +338,7 @@ export default function AdminApp() {
     setAdmin(null);
     setProjects([]);
     setCollections([]);
+    setSettings(null);
   }
 
   async function submitProject(event: React.FormEvent<HTMLFormElement>) {
@@ -319,11 +362,10 @@ export default function AdminApp() {
     if (!token || !selectedProject) return;
     setBusy(true);
     try {
-      const fields = JSON.parse(collectionDraft.fields) as Field[];
       const created = await createCollection(token, selectedProject, {
         name: collectionDraft.name,
         type: collectionDraft.type,
-        fields,
+        fields: collectionDraft.fields.map(cleanField),
         listRule: collectionDraft.listRule,
         viewRule: collectionDraft.viewRule,
         createRule: collectionDraft.createRule,
@@ -345,7 +387,7 @@ export default function AdminApp() {
     if (!token || !selectedProject || !selectedCollectionModel) return;
     setBusy(true);
     try {
-      const updated = await updateCollection(token, selectedProject, selectedCollectionModel.name, { fields: editingFields });
+      const updated = await updateCollection(token, selectedProject, selectedCollectionModel.name, { fields: editingFields.map(cleanField) });
       showNotice("success", `Collection ${updated.name} saved`);
       await loadProjectData(token, selectedProject);
     } catch (error) {
@@ -372,14 +414,12 @@ export default function AdminApp() {
     }
   }
 
-  function addField() {
-    try {
-      const options = JSON.parse(newField.options || "{}") as Record<string, unknown>;
-      setEditingFields((fields) => [...fields, { name: newField.name, type: newField.type, required: newField.required, options }]);
-      setNewField({ name: "", type: "text", required: false, options: "{}" });
-    } catch {
-      showNotice("error", "Field options must be valid JSON");
-    }
+  function addDraftField() {
+    setCollectionDraft((draft) => ({ ...draft, fields: [...draft.fields, newDefaultField()] }));
+  }
+
+  function addEditingField() {
+    setEditingFields((fields) => [...fields, newDefaultField()]);
   }
 
   async function refreshRecords(page = records.page) {
@@ -481,6 +521,88 @@ export default function AdminApp() {
       setFileResult(result);
       showNotice("success", "File uploaded");
       await refreshRecords(records.page);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveSMTPSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    setBusy(true);
+    try {
+      const payload = {
+        enabled: smtpDraft.enabled,
+        host: smtpDraft.host,
+        port: smtpDraft.port,
+        from: smtpDraft.from,
+        username: smtpDraft.username,
+        clearPassword: smtpDraft.clearPassword,
+        ...(smtpDraft.password ? { password: smtpDraft.password } : {}),
+      };
+      const response = await updateSMTPSettings(token, payload);
+      setSettings(response);
+      setSMTPDraft(settingsToSMTPDraft(response));
+      showNotice("success", "SMTP settings saved");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendSMTPTest() {
+    if (!token || !smtpDraft.testTo.trim()) return;
+    setBusy(true);
+    try {
+      await testSMTPSettings(token, smtpDraft.testTo);
+      showNotice("success", "SMTP test sent");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveStorageSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    setBusy(true);
+    try {
+      const response = await updateStorageSettings(token, {
+        type: storageDraft.type,
+        s3: {
+          endpoint: storageDraft.endpoint,
+          bucket: storageDraft.bucket,
+          region: storageDraft.region,
+          accessKey: storageDraft.accessKey,
+          clearSecretKey: storageDraft.clearSecretKey,
+          ...(storageDraft.secretKey ? { secretKey: storageDraft.secretKey } : {}),
+          prefix: storageDraft.prefix,
+          useSSL: storageDraft.useSSL,
+          forcePathStyle: storageDraft.forcePathStyle,
+        },
+      });
+      setSettings(response);
+      setStorageDraft(settingsToStorageDraft(response));
+      showNotice("success", "Storage settings saved");
+      const healthResponse = await health();
+      setHealthState(healthResponse);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runStorageTest() {
+    if (!token) return;
+    setBusy(true);
+    try {
+      await testStorageSettings(token);
+      showNotice("success", "Storage test passed");
     } catch (error) {
       handleError(error);
     } finally {
@@ -615,13 +737,12 @@ export default function AdminApp() {
               collections={collections}
               selected={selectedCollectionModel}
               editingFields={editingFields}
-              newField={newField}
               collectionDraft={collectionDraft}
               setCollectionDraft={setCollectionDraft}
               setSelectedCollection={setSelectedCollection}
               setEditingFields={setEditingFields}
-              setNewField={setNewField}
-              onAddField={addField}
+              onAddDraftField={addDraftField}
+              onAddEditingField={addEditingField}
               onSaveFields={saveFields}
               onCreateCollection={submitCollection}
               onDeleteCollection={removeCollection}
@@ -694,7 +815,22 @@ export default function AdminApp() {
             />
           ) : null}
           {view === "logs" ? <LogsView audit={audit} onRefresh={() => token && selectedProject && listAudit(token, selectedProject).then((r) => setAudit(r.items)).catch(handleError)} /> : null}
-          {view === "settings" ? <SettingsView project={selectedProjectModel} healthState={healthState} appUrl={typeof window !== "undefined" ? window.location.origin : ""} /> : null}
+          {view === "settings" ? (
+            <SettingsView
+              project={selectedProjectModel}
+              healthState={healthState}
+              appUrl={typeof window !== "undefined" ? window.location.origin : ""}
+              settings={settings}
+              smtpDraft={smtpDraft}
+              setSMTPDraft={setSMTPDraft}
+              storageDraft={storageDraft}
+              setStorageDraft={setStorageDraft}
+              onSaveSMTP={saveSMTPSettings}
+              onTestSMTP={sendSMTPTest}
+              onSaveStorage={saveStorageSettings}
+              onTestStorage={runStorageTest}
+            />
+          ) : null}
         </section>
       </main>
     </div>
@@ -872,20 +1008,19 @@ function CollectionsView(props: {
   collections: Collection[];
   selected: Collection | null;
   editingFields: Field[];
-  newField: { name: string; type: FieldType; required: boolean; options: string };
   collectionDraft: typeof emptyCollectionDraft;
-  setCollectionDraft: (draft: typeof emptyCollectionDraft) => void;
+  setCollectionDraft: React.Dispatch<React.SetStateAction<typeof emptyCollectionDraft>>;
   setSelectedCollection: (name: string) => void;
   setEditingFields: React.Dispatch<React.SetStateAction<Field[]>>;
-  setNewField: (field: { name: string; type: FieldType; required: boolean; options: string }) => void;
-  onAddField: () => void;
+  onAddDraftField: () => void;
+  onAddEditingField: () => void;
   onSaveFields: () => void;
   onCreateCollection: (event: React.FormEvent<HTMLFormElement>) => void;
   onDeleteCollection: (collection: Collection) => void;
 }) {
-  const { collections, selected, editingFields, newField, collectionDraft } = props;
+  const { collections, selected, editingFields, collectionDraft } = props;
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
+    <div className="grid gap-4 xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
       <div className="space-y-4">
         <Panel title="Collections" icon={<Layers3 className="h-4 w-4" />}>
           <div className="mb-3 flex items-center gap-2">
@@ -928,8 +1063,11 @@ function CollectionsView(props: {
             </table>
           </div>
         </Panel>
+      </div>
+      <div className="space-y-4">
         <Panel title="Create collection" icon={<Plus className="h-4 w-4" />}>
-          <form onSubmit={props.onCreateCollection} className="grid gap-3 md:grid-cols-2">
+          <form onSubmit={props.onCreateCollection} className="space-y-4">
+            <div className="grid gap-3 md:grid-cols-2">
             <LabeledInput label="Name" value={collectionDraft.name} onChange={(value) => props.setCollectionDraft({ ...collectionDraft, name: value })} placeholder="posts" />
             <label className="text-sm font-medium text-slate-700">
               Type
@@ -938,68 +1076,31 @@ function CollectionsView(props: {
                 <option value="auth">auth</option>
               </select>
             </label>
-            <label className="md:col-span-2 text-sm font-medium text-slate-700">
-              Fields JSON
-              <textarea value={collectionDraft.fields} onChange={(event) => props.setCollectionDraft({ ...collectionDraft, fields: event.target.value })} rows={5} className="mt-1 w-full rounded-md border border-slate-300 p-3 font-mono text-xs" />
-            </label>
+            </div>
+            <FieldRows
+              fields={collectionDraft.fields}
+              collections={collections}
+              onChange={(fields) => props.setCollectionDraft((draft) => ({ ...draft, fields }))}
+              onAdd={props.onAddDraftField}
+            />
+            <RuleInputs
+              listRule={collectionDraft.listRule}
+              viewRule={collectionDraft.viewRule}
+              createRule={collectionDraft.createRule}
+              updateRule={collectionDraft.updateRule}
+              deleteRule={collectionDraft.deleteRule}
+              onChange={(rule, value) => props.setCollectionDraft((draft) => ({ ...draft, [rule]: value }))}
+            />
             <button type="submit" className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
               <Plus className="h-4 w-4" />
               Create collection
             </button>
           </form>
         </Panel>
-      </div>
-      <Panel title={selected ? `Field editor: ${selected.name}` : "Field editor"} icon={<ListFilter className="h-4 w-4" />}>
+        <Panel title={selected ? `Field editor: ${selected.name}` : "Field editor"} icon={<ListFilter className="h-4 w-4" />}>
         {selected ? (
           <div className="space-y-4">
-            <div className="space-y-2">
-              {editingFields.map((field, index) => (
-                <div key={`${field.name}-${index}`} className="grid grid-cols-[minmax(0,1fr)_110px_80px_40px] items-center gap-2 rounded-md border border-slate-200 p-2">
-                  <input aria-label={`Field ${index + 1} name`} value={field.name} onChange={(event) => props.setEditingFields((fields) => fields.map((item, i) => (i === index ? { ...item, name: event.target.value } : item)))} className="h-9 rounded-md border border-slate-300 px-2 text-sm" />
-                  <select aria-label={`Field ${field.name} type`} value={field.type} onChange={(event) => props.setEditingFields((fields) => fields.map((item, i) => (i === index ? { ...item, type: event.target.value as FieldType } : item)))} className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm">
-                    {fieldTypes.map((type) => (
-                      <option key={type} value={type}>
-                        {type}
-                      </option>
-                    ))}
-                  </select>
-                  <label className="flex items-center gap-2 text-xs text-slate-600">
-                    <input type="checkbox" checked={Boolean(field.required)} onChange={(event) => props.setEditingFields((fields) => fields.map((item, i) => (i === index ? { ...item, required: event.target.checked } : item)))} />
-                    Required
-                  </label>
-                  <button type="button" aria-label={`Remove field ${field.name}`} onClick={() => props.setEditingFields((fields) => fields.filter((_, i) => i !== index))} className="grid h-9 w-9 place-items-center rounded-md text-red-700 hover:bg-red-50">
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-              ))}
-            </div>
-            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
-              <div className="grid gap-2">
-                <LabeledInput label="New field name" value={newField.name} onChange={(value) => props.setNewField({ ...newField, name: value })} placeholder="title" />
-                <label className="text-sm font-medium text-slate-700">
-                  Type
-                  <select value={newField.type} onChange={(event) => props.setNewField({ ...newField, type: event.target.value as FieldType })} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
-                    {fieldTypes.map((type) => (
-                      <option key={type} value={type}>
-                        {type}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="text-sm font-medium text-slate-700">
-                  Options JSON
-                  <textarea value={newField.options} onChange={(event) => props.setNewField({ ...newField, options: event.target.value })} rows={3} className="mt-1 w-full rounded-md border border-slate-300 p-2 font-mono text-xs" />
-                </label>
-                <label className="flex items-center gap-2 text-sm text-slate-700">
-                  <input type="checkbox" checked={newField.required} onChange={(event) => props.setNewField({ ...newField, required: event.target.checked })} />
-                  Required field
-                </label>
-                <button type="button" onClick={props.onAddField} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50">
-                  <Plus className="h-4 w-4" />
-                  Add field
-                </button>
-              </div>
-            </div>
+            <FieldRows fields={editingFields} collections={collections} onChange={props.setEditingFields} onAdd={props.onAddEditingField} />
             <button type="button" onClick={props.onSaveFields} className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
               <Save className="h-4 w-4" />
               Save schema
@@ -1008,8 +1109,153 @@ function CollectionsView(props: {
         ) : (
           <EmptyState label="Select a collection" />
         )}
-      </Panel>
+        </Panel>
+      </div>
     </div>
+  );
+}
+
+function FieldRows({
+  fields,
+  collections,
+  onChange,
+  onAdd,
+}: {
+  fields: Field[];
+  collections: Collection[];
+  onChange: (fields: Field[]) => void;
+  onAdd: () => void;
+}) {
+  const update = (index: number, field: Field) => onChange(fields.map((item, i) => (i === index ? field : item)));
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-slate-900">Fields</p>
+        <button type="button" onClick={onAdd} className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50">
+          <Plus className="h-4 w-4" />
+          Add field
+        </button>
+      </div>
+      {fields.length === 0 ? <EmptyState label="No fields yet" /> : null}
+      {fields.map((field, index) => (
+        <div key={`${field.name}-${index}`} className="rounded-md border border-slate-200 bg-white p-3">
+          <div className="grid gap-2 md:grid-cols-[minmax(140px,1fr)_150px_120px_40px] md:items-end">
+            <LabeledInput label="Name" value={field.name} onChange={(value) => update(index, { ...field, name: value })} placeholder="title" />
+            <label className="text-sm font-medium text-slate-700">
+              Type
+              <select value={field.type} onChange={(event) => update(index, fieldWithType(field, event.target.value as FieldType))} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
+                {fieldTypes.map((type) => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+              <input type="checkbox" checked={Boolean(field.required)} onChange={(event) => update(index, { ...field, required: event.target.checked })} />
+              Required
+            </label>
+            <button type="button" aria-label={`Remove field ${field.name || index + 1}`} onClick={() => onChange(fields.filter((_, i) => i !== index))} className="grid h-10 w-10 place-items-center rounded-md text-red-700 hover:bg-red-50">
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </div>
+          <FieldOptionsEditor field={field} collections={collections} onChange={(next) => update(index, next)} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function FieldOptionsEditor({ field, collections, onChange }: { field: Field; collections: Collection[]; onChange: (field: Field) => void }) {
+  if (field.type === "select") {
+    return (
+      <div className="mt-3 grid gap-2 border-t border-slate-100 pt-3 md:grid-cols-[minmax(0,1fr)_140px]">
+        <label className="text-sm font-medium text-slate-700">
+          Values
+          <textarea
+            value={optionValuesText(field.options)}
+            onChange={(event) => onChange(setFieldOption(field, "values", splitOptionValues(event.target.value)))}
+            rows={3}
+            placeholder="draft&#10;published"
+            className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm"
+          />
+        </label>
+        <label className="flex h-10 items-center gap-2 self-end rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+          <input type="checkbox" checked={Boolean(field.options?.multi)} onChange={(event) => onChange(setFieldOption(field, "multi", event.target.checked))} />
+          Multiple
+        </label>
+      </div>
+    );
+  }
+  if (field.type === "relation") {
+    return (
+      <div className="mt-3 grid gap-2 border-t border-slate-100 pt-3 md:grid-cols-[minmax(0,1fr)_140px]">
+        <label className="text-sm font-medium text-slate-700">
+          Target collection
+          <select value={String(field.options?.collection ?? "")} onChange={(event) => onChange(setFieldOption(field, "collection", event.target.value))} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
+            <option value="">Choose collection</option>
+            {collections.map((collection) => (
+              <option key={collection.id} value={collection.name}>
+                {collection.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex h-10 items-center gap-2 self-end rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+          <input type="checkbox" checked={Boolean(field.options?.multi)} onChange={(event) => onChange(setFieldOption(field, "multi", event.target.checked))} />
+          Multiple
+        </label>
+      </div>
+    );
+  }
+  if (field.type === "file") {
+    return (
+      <div className="mt-3 border-t border-slate-100 pt-3">
+        <label className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+          <input type="checkbox" checked={Boolean(field.options?.multiple)} onChange={(event) => onChange(setFieldOption(field, "multiple", event.target.checked))} />
+          Allow multiple files
+        </label>
+      </div>
+    );
+  }
+  return null;
+}
+
+function RuleInputs({
+  listRule,
+  viewRule,
+  createRule,
+  updateRule,
+  deleteRule,
+  onChange,
+}: {
+  listRule: string;
+  viewRule: string;
+  createRule: string;
+  updateRule: string;
+  deleteRule: string;
+  onChange: (rule: "listRule" | "viewRule" | "createRule" | "updateRule" | "deleteRule", value: string) => void;
+}) {
+  return (
+    <details className="rounded-md border border-slate-200 bg-slate-50 p-3">
+      <summary className="cursor-pointer text-sm font-semibold text-slate-900">API rules</summary>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <RuleTextarea label="List rule" value={listRule} onChange={(value) => onChange("listRule", value)} />
+        <RuleTextarea label="View rule" value={viewRule} onChange={(value) => onChange("viewRule", value)} />
+        <RuleTextarea label="Create rule" value={createRule} onChange={(value) => onChange("createRule", value)} />
+        <RuleTextarea label="Update rule" value={updateRule} onChange={(value) => onChange("updateRule", value)} />
+        <RuleTextarea label="Delete rule" value={deleteRule} onChange={(value) => onChange("deleteRule", value)} />
+      </div>
+    </details>
+  );
+}
+
+function RuleTextarea({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="text-sm font-medium text-slate-700">
+      {label}
+      <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={2} placeholder='@request.auth.id != ""' className="mt-1 w-full rounded-md border border-slate-300 p-2 font-mono text-xs" />
+    </label>
   );
 }
 
@@ -1343,7 +1589,33 @@ function LogsView({ audit, onRefresh }: { audit: AuditEntry[]; onRefresh: () => 
   );
 }
 
-function SettingsView({ project, healthState, appUrl }: { project: Project | null; healthState: Health | null; appUrl: string }) {
+function SettingsView({
+  project,
+  healthState,
+  appUrl,
+  settings,
+  smtpDraft,
+  setSMTPDraft,
+  storageDraft,
+  setStorageDraft,
+  onSaveSMTP,
+  onTestSMTP,
+  onSaveStorage,
+  onTestStorage,
+}: {
+  project: Project | null;
+  healthState: Health | null;
+  appUrl: string;
+  settings: InstanceSettings | null;
+  smtpDraft: typeof emptySMTPDraft;
+  setSMTPDraft: React.Dispatch<React.SetStateAction<typeof emptySMTPDraft>>;
+  storageDraft: typeof emptyStorageDraft;
+  setStorageDraft: React.Dispatch<React.SetStateAction<typeof emptyStorageDraft>>;
+  onSaveSMTP: (event: React.FormEvent<HTMLFormElement>) => void;
+  onTestSMTP: () => void;
+  onSaveStorage: (event: React.FormEvent<HTMLFormElement>) => void;
+  onTestStorage: () => void;
+}) {
   return (
     <div className="grid gap-4 xl:grid-cols-2">
       <Panel title="Project settings" icon={<Settings className="h-4 w-4" />}>
@@ -1367,6 +1639,95 @@ function SettingsView({ project, healthState, appUrl }: { project: Project | nul
           <Info label="DB" value={healthState?.db ?? ""} />
           <Info label="Storage" value={healthState?.storage ?? ""} />
         </dl>
+      </Panel>
+      <Panel title="SMTP" icon={<Mail className="h-4 w-4" />}>
+        <form onSubmit={onSaveSMTP} className="space-y-3">
+          <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+            <span className="text-sm font-medium text-slate-800">Email delivery</span>
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input type="checkbox" checked={smtpDraft.enabled} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, enabled: event.target.checked }))} />
+              Enabled
+            </label>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <LabeledInput label="Host" value={smtpDraft.host} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, host: value }))} placeholder="smtp.example.com" />
+            <LabeledInput label="Port" value={smtpDraft.port} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, port: value }))} placeholder="587" />
+            <LabeledInput label="From" value={smtpDraft.from} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, from: value }))} placeholder="Dublyobase <no-reply@example.com>" />
+            <LabeledInput label="Username" value={smtpDraft.username} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, username: value }))} placeholder="mailer" />
+            <label className="text-sm font-medium text-slate-700">
+              Password {settings?.smtp.passwordSet ? <span className="font-normal text-slate-500">(saved)</span> : null}
+              <input type="password" value={smtpDraft.password} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, password: event.target.value, clearPassword: false }))} placeholder={settings?.smtp.passwordSet ? "Leave blank to keep current" : ""} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" />
+            </label>
+            <label className="flex h-10 items-center gap-2 self-end rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+              <input type="checkbox" checked={smtpDraft.clearPassword} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, clearPassword: event.target.checked, password: "" }))} />
+              Clear password
+            </label>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="min-w-64 flex-1 text-sm font-medium text-slate-700">
+              Test recipient
+              <input value={smtpDraft.testTo} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, testTo: event.target.value }))} placeholder="you@example.com" className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" />
+            </label>
+            <button type="button" onClick={onTestSMTP} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50">
+              <Mail className="h-4 w-4" />
+              Send test
+            </button>
+            <button type="submit" className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
+              <Save className="h-4 w-4" />
+              Save SMTP
+            </button>
+          </div>
+        </form>
+      </Panel>
+      <Panel title="Storage provider" icon={<HardDrive className="h-4 w-4" />}>
+        <form onSubmit={onSaveStorage} className="space-y-3">
+          <label className="text-sm font-medium text-slate-700">
+            Provider
+            <select value={storageDraft.type} onChange={(event) => setStorageDraft((draft) => ({ ...draft, type: event.target.value as "local" | "s3" }))} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
+              <option value="local">Local volume</option>
+              <option value="s3">S3-compatible</option>
+            </select>
+          </label>
+          <dl className="grid gap-2 text-sm">
+            <Info label="Source" value={settings?.storage.source ?? ""} />
+            <Info label="Local path" value={settings?.storage.localPath ?? ""} />
+          </dl>
+          {storageDraft.type === "s3" ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              <LabeledInput label="Endpoint" value={storageDraft.endpoint} onChange={(value) => setStorageDraft((draft) => ({ ...draft, endpoint: value }))} placeholder="https://s3.example.com" />
+              <LabeledInput label="Bucket" value={storageDraft.bucket} onChange={(value) => setStorageDraft((draft) => ({ ...draft, bucket: value }))} placeholder="dublyobase" />
+              <LabeledInput label="Region" value={storageDraft.region} onChange={(value) => setStorageDraft((draft) => ({ ...draft, region: value }))} placeholder="auto" />
+              <LabeledInput label="Prefix" value={storageDraft.prefix} onChange={(value) => setStorageDraft((draft) => ({ ...draft, prefix: value }))} placeholder="prod" />
+              <LabeledInput label="Access key" value={storageDraft.accessKey} onChange={(value) => setStorageDraft((draft) => ({ ...draft, accessKey: value }))} />
+              <label className="text-sm font-medium text-slate-700">
+                Secret key {settings?.storage.s3.secretKeySet ? <span className="font-normal text-slate-500">(saved)</span> : null}
+                <input type="password" value={storageDraft.secretKey} onChange={(event) => setStorageDraft((draft) => ({ ...draft, secretKey: event.target.value, clearSecretKey: false }))} placeholder={settings?.storage.s3.secretKeySet ? "Leave blank to keep current" : ""} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" />
+              </label>
+              <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+                <input type="checkbox" checked={storageDraft.useSSL} onChange={(event) => setStorageDraft((draft) => ({ ...draft, useSSL: event.target.checked }))} />
+                HTTPS
+              </label>
+              <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+                <input type="checkbox" checked={storageDraft.forcePathStyle} onChange={(event) => setStorageDraft((draft) => ({ ...draft, forcePathStyle: event.target.checked }))} />
+                Path-style bucket
+              </label>
+              <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+                <input type="checkbox" checked={storageDraft.clearSecretKey} onChange={(event) => setStorageDraft((draft) => ({ ...draft, clearSecretKey: event.target.checked, secretKey: "" }))} />
+                Clear secret key
+              </label>
+            </div>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={onTestStorage} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50">
+              <HardDrive className="h-4 w-4" />
+              Test storage
+            </button>
+            <button type="submit" className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
+              <Save className="h-4 w-4" />
+              Save storage
+            </button>
+          </div>
+        </form>
       </Panel>
     </div>
   );
@@ -1481,6 +1842,101 @@ function stripSystemFields(record: RecordItem): RecordItem {
     }
   }
   return next;
+}
+
+function newDefaultField(): Field {
+  return { name: "", type: "text", required: false, options: {} };
+}
+
+function fieldWithType(field: Field, type: FieldType): Field {
+  return {
+    ...field,
+    type,
+    options: defaultOptionsForType(type, field.options),
+  };
+}
+
+function cleanField(field: Field): Field {
+  const name = field.name.trim();
+  const type = field.type;
+  return {
+    name,
+    type,
+    required: Boolean(field.required),
+    options: defaultOptionsForType(type, field.options),
+  };
+}
+
+function defaultOptionsForType(type: FieldType, options: Record<string, unknown> = {}): Record<string, unknown> {
+  if (type === "select") {
+    return {
+      values: splitOptionValues(optionValuesText(options)),
+      ...(Boolean(options.multi) ? { multi: true } : {}),
+    };
+  }
+  if (type === "relation") {
+    return {
+      collection: typeof options.collection === "string" ? options.collection : "",
+      ...(Boolean(options.multi) ? { multi: true } : {}),
+    };
+  }
+  if (type === "file") {
+    return Boolean(options.multiple) ? { multiple: true } : {};
+  }
+  return {};
+}
+
+function setFieldOption(field: Field, key: string, value: unknown): Field {
+  const options = { ...(field.options ?? {}), [key]: value };
+  return { ...field, options: defaultOptionsForType(field.type, options) };
+}
+
+function optionValuesText(options: Record<string, unknown> = {}) {
+  const values = options.values;
+  if (Array.isArray(values)) {
+    return values.map((value) => String(value)).join("\n");
+  }
+  return "";
+}
+
+function splitOptionValues(raw: string) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of raw.split(/\r?\n|,/)) {
+    const value = line.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+function settingsToSMTPDraft(settings: InstanceSettings): typeof emptySMTPDraft {
+  return {
+    enabled: settings.smtp.enabled,
+    host: settings.smtp.host,
+    port: String(settings.smtp.port || 587),
+    from: settings.smtp.from,
+    username: settings.smtp.username,
+    password: "",
+    clearPassword: false,
+    testTo: "",
+  };
+}
+
+function settingsToStorageDraft(settings: InstanceSettings): typeof emptyStorageDraft {
+  return {
+    type: settings.storage.type,
+    endpoint: settings.storage.s3.endpoint,
+    bucket: settings.storage.s3.bucket,
+    region: settings.storage.s3.region || "us-east-1",
+    accessKey: settings.storage.s3.accessKey,
+    secretKey: "",
+    clearSecretKey: false,
+    prefix: settings.storage.s3.prefix,
+    useSSL: settings.storage.s3.useSSL,
+    forcePathStyle: settings.storage.s3.forcePathStyle,
+  };
 }
 
 function formatDate(value: string) {

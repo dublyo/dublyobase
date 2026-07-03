@@ -27,7 +27,12 @@ func (s *server) createFileUploadSession(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if _, err := core.CleanupExpiredFileUploadSessions(r.Context(), s.app.Pool, s.app.Config, time.Now(), 50); err != nil {
+	storageCfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	if _, err := core.CleanupExpiredFileUploadSessions(r.Context(), s.app.Pool, storageCfg, time.Now(), 50); err != nil {
 		s.app.Log.Warn("expired file upload cleanup failed", "project", auth.Project.Slug, "err", err)
 	}
 	var body createFileUploadSessionRequest
@@ -37,7 +42,7 @@ func (s *server) createFileUploadSession(w http.ResponseWriter, r *http.Request)
 	session, err := core.CreateFileUploadSession(
 		r.Context(),
 		s.app.Pool,
-		s.app.Config,
+		storageCfg,
 		auth,
 		core.CreateFileUploadSessionInput{
 			Collection:     r.PathValue("collection"),
@@ -63,6 +68,11 @@ func (s *server) uploadFileChunk(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	storageCfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
 	index, err := strconv.Atoi(r.PathValue("index"))
 	if err != nil {
 		writeCoreError(w, core.ErrValidation)
@@ -81,7 +91,7 @@ func (s *server) uploadFileChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chunk, err := core.StoreFileUploadChunk(
-		s.app.Config,
+		storageCfg,
 		session,
 		index,
 		r.Header.Get("X-Checksum-SHA256"),
@@ -92,7 +102,7 @@ func (s *server) uploadFileChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := core.RecordFileUploadChunk(r.Context(), s.app.Pool, session, chunk); err != nil {
-		_ = core.RemoveFileUploadChunk(s.app.Config, session, index)
+		_ = core.RemoveFileUploadChunk(storageCfg, session, index)
 		writeCoreError(w, err)
 		return
 	}
@@ -102,6 +112,11 @@ func (s *server) uploadFileChunk(w http.ResponseWriter, r *http.Request) {
 func (s *server) completeFileUploadSession(w http.ResponseWriter, r *http.Request) {
 	auth, ok := s.resolveRecordAuth(w, r)
 	if !ok {
+		return
+	}
+	storageCfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
+	if err != nil {
+		writeCoreError(w, err)
 		return
 	}
 	var body completeFileUploadSessionRequest
@@ -120,7 +135,7 @@ func (s *server) completeFileUploadSession(w http.ResponseWriter, r *http.Reques
 		writeCoreError(w, err)
 		return
 	}
-	meta, err := core.AssembleFileUploadSession(s.app.Config, session, body.ChecksumSHA256)
+	meta, err := core.AssembleFileUploadSession(r.Context(), storageCfg, session, body.ChecksumSHA256)
 	if err != nil {
 		_ = core.ReopenFileUploadSession(r.Context(), s.app.Pool, session.ID)
 		writeCoreError(w, err)
@@ -137,18 +152,18 @@ func (s *server) completeFileUploadSession(w http.ResponseWriter, r *http.Reques
 		[]core.FileMeta{meta},
 	)
 	if err != nil {
-		_ = core.RemoveStoredFiles(s.app.Config, []core.FileMeta{meta})
+		_ = core.RemoveStoredFiles(r.Context(), storageCfg, []core.FileMeta{meta})
 		_ = core.ReopenFileUploadSession(r.Context(), s.app.Pool, session.ID)
 		writeCoreError(w, err)
 		return
 	}
-	if err := core.RemoveStoredFiles(s.app.Config, removed); err != nil {
+	if err := core.RemoveStoredFiles(r.Context(), storageCfg, removed); err != nil {
 		s.app.Log.Warn("replaced file cleanup failed", "project", auth.Project.Slug, "collection", session.Collection, "record", session.RecordID, "err", err)
 	}
 	if err := core.MarkFileUploadSessionCompleted(r.Context(), s.app.Pool, session.ID); err != nil {
 		s.app.Log.Warn("file upload completion mark failed", "project", auth.Project.Slug, "upload", session.ID, "err", err)
 	}
-	if err := core.RemoveFileUploadTemp(s.app.Config, session); err != nil {
+	if err := core.RemoveFileUploadTemp(storageCfg, session); err != nil {
 		s.app.Log.Warn("file upload temp cleanup failed", "project", auth.Project.Slug, "upload", session.ID, "err", err)
 	}
 	writeJSON(w, http.StatusCreated, record)
@@ -159,10 +174,15 @@ func (s *server) cancelFileUploadSession(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	storageCfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
 	if err := core.CancelFileUploadSession(
 		r.Context(),
 		s.app.Pool,
-		s.app.Config,
+		storageCfg,
 		auth,
 		r.PathValue("slug"),
 		r.PathValue("uploadId"),

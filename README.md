@@ -5,11 +5,12 @@ storage, and an admin UI, served from **one Go binary on one port**. It connects
 Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a single
 `<30 MB` container to `ghcr.io/dublyo/dublyobase`. One-click deployable on Dublyo.
 
-> Status: **v0.8.0 / M7 complete.** Control-plane auth, project provisioning,
+> Status: **v0.9.0 / M8 complete.** Control-plane auth, project provisioning,
 > collections metadata, schema sync, records CRUD, API keys, RLS-backed rules, and
 > email/password app auth, local file storage, and resumable chunk uploads are
 > implemented, including SMTP delivery for verification/reset emails and an
-> embedded admin panel; realtime is still upcoming. See
+> embedded admin panel with structured collection controls, runtime SMTP settings,
+> and local or S3-compatible storage settings; realtime is still upcoming. See
 > [dublyobase-dev.md](dublyobase-dev.md) for the full roadmap.
 
 ## What makes it different
@@ -21,9 +22,11 @@ Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a s
 - **Project-scoped app auth.** Automatic `users` auth collection, bcrypt passwords,
   1h access JWTs, 7d hashed refresh sessions, rotation, logout-all, reset/verify
   tokens, and optional SMTP delivery.
-- **Protected local file storage.** Streamed multipart uploads, resumable chunks,
+- **Protected file storage.** Local volume by default, or S3-compatible providers
+  such as R2, Backblaze B2, MinIO, and AWS S3. Streamed multipart uploads,
+  resumable chunks,
   JSONB file metadata, short-lived file tokens, and cached thumbnails on the
-  `/data/storage` volume.
+  active provider.
 - **Realtime over `LISTEN/NOTIFY`** — no Redis. **Collections** model with auto REST + RLS.
 
 ## Quick start (local)
@@ -61,6 +64,11 @@ var → the process exits `1` with a clear message rather than failing mysteriou
 | `POST /admin/api/auth/login` | Admin login, returns an opaque bearer token |
 | `POST /admin/api/auth/logout` | Revoke the current admin session |
 | `GET /admin/api/me` | Current admin/session |
+| `GET /admin/api/settings` | Runtime SMTP/storage settings with secrets masked |
+| `PUT /admin/api/settings/smtp` | Save runtime SMTP settings |
+| `POST /admin/api/settings/smtp/test` | Send an SMTP test email |
+| `PUT /admin/api/settings/storage` | Save local or S3-compatible storage settings |
+| `POST /admin/api/settings/storage/test` | Write/read/delete a storage test object |
 | `GET/POST /admin/api/projects` | List/create projects |
 | `GET /admin/api/projects/{slug}` | Project detail |
 | `GET/POST /admin/api/projects/{slug}/api-keys` | List/create project API keys |

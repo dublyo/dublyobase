@@ -239,10 +239,17 @@ func (s *server) deliverAuthTokenEmail(ctx context.Context, projectSlug string, 
 		return
 	}
 	mailer := s.app.Mailer
+	msgCfg := s.app.Config
 	if mailer == nil {
-		mailer = core.NoopMailer{}
+		effectiveCfg, err := core.EffectiveSMTPConfig(ctx, s.app.Pool, s.app.Config)
+		if err != nil {
+			s.app.Log.Warn("auth email settings load failed", "project", projectSlug, "type", result.Type, "err", err)
+			return
+		}
+		msgCfg = effectiveCfg
+		mailer = core.NewMailer(effectiveCfg)
 	}
-	msg, err := core.BuildAuthTokenEmail(s.app.Config, result.Type, projectSlug, result.Email, result.Token)
+	msg, err := core.BuildAuthTokenEmail(msgCfg, result.Type, projectSlug, result.Email, result.Token)
 	if err != nil {
 		s.app.Log.Warn("auth email build failed", "project", projectSlug, "type", result.Type, "err", err)
 		return

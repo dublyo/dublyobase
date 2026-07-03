@@ -1,4 +1,4 @@
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, Collection, Health, Project, RecordItem, RecordList } from "./types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, Collection, Health, InstanceSettings, Project, RecordItem, RecordList } from "./types";
 
 type RequestOptions = RequestInit & {
   token?: string | null;
@@ -83,7 +83,83 @@ export function me(token: string) {
 }
 
 export function health() {
-  return request<Health>("/health");
+  return requestHealth();
+}
+
+async function requestHealth(): Promise<Health> {
+  const response = await fetch("/health", {
+    headers: { Accept: "application/json" },
+  });
+  const text = await response.text();
+  const body = text ? safeJSON(text) : {};
+  if (!response.ok && response.status !== 503) {
+    const errorBody = body as { error?: string; message?: string };
+    throw new ApiError(response.status, errorBody.error ?? "request_failed", errorBody.message ?? response.statusText);
+  }
+  return body as Health;
+}
+
+export function getSettings(token: string) {
+  return request<InstanceSettings>("/admin/api/settings", { token });
+}
+
+export function updateSMTPSettings(
+  token: string,
+  input: {
+    enabled: boolean;
+    host: string;
+    port: string;
+    from: string;
+    username: string;
+    password?: string;
+    clearPassword?: boolean;
+  },
+) {
+  return request<InstanceSettings>("/admin/api/settings/smtp", {
+    method: "PUT",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function testSMTPSettings(token: string, to: string) {
+  return request<{ status: string }>("/admin/api/settings/smtp/test", {
+    method: "POST",
+    token,
+    body: JSON.stringify({ to }),
+  });
+}
+
+export function updateStorageSettings(
+  token: string,
+  input: {
+    type: "local" | "s3";
+    s3: {
+      endpoint: string;
+      bucket: string;
+      region: string;
+      accessKey: string;
+      secretKey?: string;
+      clearSecretKey?: boolean;
+      prefix: string;
+      useSSL: boolean;
+      forcePathStyle: boolean;
+    };
+  },
+) {
+  return request<InstanceSettings>("/admin/api/settings/storage", {
+    method: "PUT",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function testStorageSettings(token: string) {
+  return request<{ status: string }>("/admin/api/settings/storage/test", {
+    method: "POST",
+    token,
+    body: JSON.stringify({}),
+  });
 }
 
 export function listProjects(token: string) {

@@ -5,7 +5,7 @@
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.8.0 — M7 admin panel complete
+**Status:** v0.9.0 — M8 admin controls and provider settings complete
 (self-closing setup, opaque hashed admin sessions, protected admin/project APIs,
 project schema/role provisioning, collection metadata, transactional schema sync,
 records CRUD, API keys, RLS-backed rules, production SPA fallback hardening,
@@ -14,7 +14,7 @@ logout-all token invalidation, reset/verify tokens, local file fields/uploads,
 resumable chunk uploads, protected file tokens, thumbnails, delete cleanup, audit
 log, SMTP delivery for verify/reset emails, embedded Next/Tailwind admin panel,
 and real Postgres 16/17/18 integration tests).
-Next: **M8 (realtime + webhooks)**.
+Next: **M9 (realtime + webhooks)**.
 **Repo:** `github.com/dublyo/dublyobase` · **Image:** `ghcr.io/dublyo/dublyobase`
 **Local dev:** `/Users/dribrahimm/0-PostgresProject/dublyobase`
 
@@ -132,7 +132,7 @@ SMTP_USER/SMTP_PASSWORD optional but must be paired
 HOST default 0.0.0.0    PORT default 8080
 ```
 
-Planned additions (additive only): `WEBHOOK_TIMEOUT_MS` (M8). Seeding runs
+Planned additions (additive only): `WEBHOOK_TIMEOUT_MS` (M9). Seeding runs
 **independently of** `MIGRATE_ON_START`
 (warns instead of exiting when migrations are off and the schema is absent).
 
@@ -156,8 +156,8 @@ correct HTTP status (400/401/403/404/409/422/429/500). RLS denials are
 | Records | `GET/POST /api/projects/{slug}/collections/{name}/records` · `GET/PATCH/DELETE .../records/{id}` |
 | App auth | `POST /api/projects/{slug}/auth/signup` · `/auth/login` · `/auth/refresh` · `/auth/logout` · `/auth/logout-all` · `GET /auth/me` · `/auth/request-password-reset` · `/auth/confirm-password-reset` · `/auth/request-verification` · `/auth/confirm-verification` · OAuth: `GET /api/projects/{slug}/auth/oauth/{provider}` + `/callback` (later auth milestone) |
 | Storage | `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}` (multipart `file`, streamed, `?mode=replace\|append`) · `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/uploads` · `PUT /api/projects/{slug}/files/uploads/{uploadId}/chunks/{index}` · `POST /api/projects/{slug}/files/uploads/{uploadId}/complete` · `DELETE /api/projects/{slug}/files/uploads/{uploadId}` · `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token` · `GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}?token=...` (+ `?thumb=WxH`) |
-| Realtime | `GET /api/projects/{slug}/realtime` (SSE) · `GET .../realtime/ws` (WebSocket); subscribe topics `collection` or `collection/recordId` (M8) |
-| Webhooks | `GET/POST/DELETE /admin/api/projects/{slug}/hooks` (M8) |
+| Realtime | `GET /api/projects/{slug}/realtime` (SSE) · `GET .../realtime/ws` (WebSocket); subscribe topics `collection` or `collection/recordId` (M9) |
+| Webhooks | `GET/POST/DELETE /admin/api/projects/{slug}/hooks` (M9) |
 
 **Records list params:** `?page=1&perPage=30` (max 500), `sort=-created,title`,
 `filter=<fexpr>` (safe subset: comparison + and/or + parentheses; compiled to
@@ -349,7 +349,22 @@ against a disposable PostgreSQL 16 cluster.
   reloads; bundle stays embedded; desktop/mobile browser smoke passes on Portainer.
   OAuth provider setup/login moves to a later auth milestone.
 
-### M8 — Realtime + webhooks  →  v0.9.0
+### M8 — Admin controls + runtime SMTP/storage settings — DONE (v0.9.0, 2026-07-03)
+- [x] Follow `docs/specs/m8-admin-settings-storage.md`
+- [x] Replace JSON-first collection creation with structured field rows,
+      per-type options, and rule controls
+- [x] Add runtime SMTP settings API and admin panel with masked password state,
+      save, and test email actions
+- [x] Add runtime storage settings API and admin panel for local or
+      S3-compatible providers
+- [x] Add Go storage provider interface with local and S3-compatible drivers
+- [x] Route normal uploads, resumable completion, downloads, thumbnail reads, and
+      cleanup through the active provider
+- **Accept:** admin panel can create collections without raw JSON, SMTP settings
+  are stored with secrets masked, storage can switch between local and S3-compatible
+  providers, and the test suite plus admin UI build are green.
+
+### M9 — Realtime + webhooks  →  v0.10.0
 - [ ] `NOTIFY dbo_events, <json>` triggers on collection tables; one LISTEN conn
       per process; WS (+SSE fallback) endpoint with 30s heartbeat, 90s idle timeout,
       per-subscriber buffer with slow-client drop; subscribe respects list rules
@@ -359,7 +374,7 @@ against a disposable PostgreSQL 16 cluster.
   WS survives 5 min through the tunnel (heartbeats); webhook receives signed payload,
   retry fires on 500.
 
-### M9 — Ops hardening → v1.0.0
+### M10 — Ops hardening → v1.0.0
 - [ ] Backups: `pg_dump` trigger from panel + storage archive download; restore doc
 - [ ] Log retention cron (advisory-lock guarded); request/audit log viewer in panel
 - [ ] pgvector opt-in (`ENABLE_PGVECTOR` gates a `vector` field type; docs: DBA runs
@@ -395,7 +410,7 @@ against a disposable PostgreSQL 16 cluster.
 - [x] Missing/typo'd required ENV → exit 1 with clear message
 - [x] Restart/second replica → no data loss, no re-init, no race (advisory-lock test)
 - [x] `/ready` reports `migrating` during boot (listener starts pre-migration)
-- [ ] Realtime WS open 5 min with heartbeat through the tunnel (M8)
+- [ ] Realtime WS open 5 min with heartbeat through the tunnel (M9)
 - [ ] 50 MB upload without proxy timeout, constant memory (M5)
 - [ ] OAuth callback with `APP_URL=https://foo.dublyo.xyz` redirects correctly
       (later auth milestone)

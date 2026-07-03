@@ -42,6 +42,9 @@ type Config struct {
 	S3AccessKey      string      // S3_ACCESS_KEY
 	S3SecretKey      string      // S3_SECRET_KEY
 	S3Region         string      // S3_REGION
+	S3Prefix         string      // S3_PREFIX
+	S3UseSSL         bool        // S3_USE_SSL (default true)
+	S3ForcePathStyle bool        // S3_FORCE_PATH_STYLE (default true)
 
 	MigrateOnStart    bool     // MIGRATE_ON_START (default true)
 	TrustProxyHeaders bool     // TRUST_PROXY_HEADERS (default true)
@@ -102,6 +105,9 @@ func LoadConfig() (*Config, error) {
 		S3AccessKey:      os.Getenv("S3_ACCESS_KEY"),
 		S3SecretKey:      os.Getenv("S3_SECRET_KEY"),
 		S3Region:         env("S3_REGION", "us-east-1"),
+		S3Prefix:         strings.Trim(strings.TrimSpace(os.Getenv("S3_PREFIX")), "/"),
+		S3UseSSL:         boolVar("S3_USE_SSL", true),
+		S3ForcePathStyle: boolVar("S3_FORCE_PATH_STYLE", true),
 
 		MigrateOnStart:    boolVar("MIGRATE_ON_START", true),
 		TrustProxyHeaders: boolVar("TRUST_PROXY_HEADERS", true),
@@ -148,6 +154,25 @@ func (c *Config) Validate() error {
 	}
 	if c.StorageType != StorageLocal && c.StorageType != StorageS3 {
 		return fmt.Errorf("STORAGE_TYPE must be 'local' or 's3' (got %q)", c.StorageType)
+	}
+	if c.StorageType == StorageS3 {
+		if strings.TrimSpace(c.S3Endpoint) == "" {
+			return fmt.Errorf("S3_ENDPOINT is required when STORAGE_TYPE=s3")
+		}
+		if _, _, err := normalizeS3Endpoint(c.S3Endpoint, c.S3UseSSL); err != nil {
+			return err
+		}
+		if strings.TrimSpace(c.S3Bucket) == "" {
+			return fmt.Errorf("S3_BUCKET is required when STORAGE_TYPE=s3")
+		}
+		if strings.TrimSpace(c.S3AccessKey) == "" || c.S3SecretKey == "" {
+			return fmt.Errorf("S3_ACCESS_KEY and S3_SECRET_KEY are required when STORAGE_TYPE=s3")
+		}
+		for _, segment := range splitCSV(strings.ReplaceAll(c.S3Prefix, "/", ",")) {
+			if !safeStorageSegment(segment) {
+				return fmt.Errorf("S3_PREFIX contains an invalid path segment")
+			}
+		}
 	}
 	if (c.AdminEmail == "") != (strings.TrimSpace(c.AdminPassword) == "") {
 		return fmt.Errorf("ADMIN_EMAIL and ADMIN_PASSWORD must be set together")

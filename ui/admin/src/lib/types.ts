@@ -88,6 +88,39 @@ export type Health = {
   version: string;
 };
 
+export type InstanceSettings = {
+  smtp: SMTPSettings;
+  storage: StorageSettings;
+};
+
+export type SMTPSettings = {
+  enabled: boolean;
+  host: string;
+  port: string;
+  username: string;
+  passwordSet: boolean;
+  from: string;
+  source: string;
+};
+
+export type StorageSettings = {
+  type: "local" | "s3";
+  localPath: string;
+  source: string;
+  s3: S3Settings;
+};
+
+export type S3Settings = {
+  endpoint: string;
+  bucket: string;
+  region: string;
+  accessKey: string;
+  secretKeySet: boolean;
+  prefix: string;
+  useSSL: boolean;
+  forcePathStyle: boolean;
+};
+
 export type ApiEnvelope<T> = {
   items: T[];
   page?: number;

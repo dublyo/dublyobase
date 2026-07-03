@@ -69,9 +69,6 @@ type rowScanner interface {
 }
 
 func CreateFileUploadSession(ctx context.Context, pool *pgxpool.Pool, cfg *Config, auth *RecordAuth, input CreateFileUploadSessionInput, now time.Time) (*FileUploadSession, error) {
-	if cfg.StorageType != StorageLocal {
-		return nil, ErrNotImplemented
-	}
 	if err := ValidateUUID(input.RecordID); err != nil {
 		return nil, err
 	}
@@ -251,9 +248,6 @@ func CancelFileUploadSession(ctx context.Context, pool *pgxpool.Pool, cfg *Confi
 }
 
 func StoreFileUploadChunk(cfg *Config, session *FileUploadSession, index int, checksumHeader string, r io.Reader) (FileUploadChunk, error) {
-	if cfg.StorageType != StorageLocal {
-		return FileUploadChunk{}, ErrNotImplemented
-	}
 	expectedSize, err := session.ExpectedChunkSize(index)
 	if err != nil {
 		return FileUploadChunk{}, err
@@ -335,10 +329,7 @@ func RecordFileUploadChunk(ctx context.Context, pool *pgxpool.Pool, session *Fil
 	return nil
 }
 
-func AssembleFileUploadSession(cfg *Config, session *FileUploadSession, checksumOverride string) (FileMeta, error) {
-	if cfg.StorageType != StorageLocal {
-		return FileMeta{}, ErrNotImplemented
-	}
+func AssembleFileUploadSession(ctx context.Context, cfg *Config, session *FileUploadSession, checksumOverride string) (FileMeta, error) {
 	checksum, err := normalizeSHA256(checksumOverride)
 	if err != nil {
 		return FileMeta{}, err
@@ -350,26 +341,24 @@ func AssembleFileUploadSession(cfg *Config, session *FileUploadSession, checksum
 		checksum = session.ChecksumSHA256
 	}
 
-	rel := filepath.ToSlash(filepath.Join(session.ProjectSlug, session.Collection, session.RecordID, session.Field, session.FileID, "original"))
-	fullPath, err := localStoragePath(cfg, strings.Split(rel, "/")...)
+	store, err := NewObjectStore(cfg)
 	if err != nil {
 		return FileMeta{}, err
 	}
-	dir := filepath.Dir(fullPath)
+	dir, err := fileUploadSessionDir(cfg, session)
+	if err != nil {
+		return FileMeta{}, err
+	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return FileMeta{}, err
 	}
-	tmp := fullPath + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
+	assembledPath := filepath.Join(dir, "assembled.tmp")
+	out, err := os.OpenFile(assembledPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
 	if err != nil {
 		return FileMeta{}, err
 	}
-	removeFinal := true
 	defer func() {
 		out.Close()
-		if removeFinal {
-			_ = removeDirAndEmptyParents(cfg, dir)
-		}
 	}()
 
 	hash := sha256.New()
@@ -403,13 +392,19 @@ func AssembleFileUploadSession(cfg *Config, session *FileUploadSession, checksum
 	if written != session.TotalSize {
 		return FileMeta{}, fmt.Errorf("%w: assembled file size does not match session size", ErrValidation)
 	}
-	if checksum != "" && hex.EncodeToString(hash.Sum(nil)) != checksum {
+	finalChecksum := hex.EncodeToString(hash.Sum(nil))
+	if checksum != "" && finalChecksum != checksum {
 		return FileMeta{}, ErrChecksumMismatch
 	}
-	if err := os.Rename(tmp, fullPath); err != nil {
+	in, err := os.Open(assembledPath)
+	if err != nil {
 		return FileMeta{}, err
 	}
-	removeFinal = false
+	defer in.Close()
+	rel := filepath.ToSlash(filepath.Join(session.ProjectSlug, session.Collection, session.RecordID, session.Field, session.FileID, "original"))
+	if err := store.Put(ctx, rel, in, written, http.DetectContentType(sniff.buf), finalChecksum); err != nil {
+		return FileMeta{}, err
+	}
 
 	return FileMeta{
 		ID:      session.FileID,
@@ -422,9 +417,6 @@ func AssembleFileUploadSession(cfg *Config, session *FileUploadSession, checksum
 }
 
 func RemoveFileUploadTemp(cfg *Config, session *FileUploadSession) error {
-	if cfg.StorageType != StorageLocal {
-		return nil
-	}
 	dir, err := fileUploadSessionDir(cfg, session)
 	if err != nil {
 		return err

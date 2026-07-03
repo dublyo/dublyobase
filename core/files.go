@@ -1,8 +1,11 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -12,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -63,10 +67,7 @@ func MaxUploadBytes(cfg *Config) int64 {
 	return int64(cfg.MaxUploadMB) * 1024 * 1024
 }
 
-func StoreUploadedFile(cfg *Config, projectSlug string, collectionName string, recordID string, fieldName string, filename string, r io.Reader) (FileMeta, error) {
-	if cfg.StorageType != StorageLocal {
-		return FileMeta{}, ErrNotImplemented
-	}
+func StoreUploadedFile(ctx context.Context, cfg *Config, projectSlug string, collectionName string, recordID string, fieldName string, filename string, r io.Reader) (FileMeta, error) {
 	if err := ValidateUUID(recordID); err != nil {
 		return FileMeta{}, err
 	}
@@ -74,52 +75,40 @@ func StoreUploadedFile(cfg *Config, projectSlug string, collectionName string, r
 	if err != nil {
 		return FileMeta{}, err
 	}
-	rel := filepath.ToSlash(filepath.Join(projectSlug, collectionName, recordID, fieldName, fileID, "original"))
-	fullPath, err := localStoragePath(cfg, strings.Split(rel, "/")...)
+	store, err := NewObjectStore(cfg)
 	if err != nil {
-		return FileMeta{}, err
-	}
-	dir := filepath.Dir(fullPath)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return FileMeta{}, err
 	}
 
-	tmp := fullPath + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
+	tmp, err := os.CreateTemp("", "dublyobase-upload-*")
 	if err != nil {
 		return FileMeta{}, err
 	}
-	removeTmp := true
 	defer func() {
-		f.Close()
-		if removeTmp {
-			_ = os.Remove(tmp)
-		}
+		tmp.Close()
+		_ = os.Remove(tmp.Name())
 	}()
 
 	maxBytes := MaxUploadBytes(cfg)
 	sniff := &sniffBuffer{}
+	hash := sha256.New()
 	limited := &io.LimitedReader{R: r, N: maxBytes + 1}
-	size, err := io.Copy(io.MultiWriter(f, sniff), limited)
+	size, err := io.Copy(io.MultiWriter(tmp, sniff, hash), limited)
 	if err != nil {
-		_ = removeDirAndEmptyParents(cfg, dir)
 		return FileMeta{}, err
 	}
-	if err := f.Close(); err != nil {
-		_ = removeDirAndEmptyParents(cfg, dir)
+	if err := tmp.Sync(); err != nil {
 		return FileMeta{}, err
 	}
 	if size > maxBytes {
-		_ = removeDirAndEmptyParents(cfg, dir)
 		return FileMeta{}, ErrFileTooLarge
 	}
-	if err := os.Rename(tmp, fullPath); err != nil {
-		_ = removeDirAndEmptyParents(cfg, dir)
-		return FileMeta{}, err
-	}
-	removeTmp = false
 
 	mime := http.DetectContentType(sniff.buf)
+	rel := filepath.ToSlash(filepath.Join(projectSlug, collectionName, recordID, fieldName, fileID, "original"))
+	if err := store.Put(ctx, rel, tmp, size, mime, hex.EncodeToString(hash.Sum(nil))); err != nil {
+		return FileMeta{}, err
+	}
 	return FileMeta{
 		ID:      fileID,
 		Name:    sanitizeFilename(filename),
@@ -317,6 +306,37 @@ func FilePath(cfg *Config, meta FileMeta) (string, error) {
 	return localStoragePath(cfg, strings.Split(filepath.ToSlash(meta.Path), "/")...)
 }
 
+func OpenStoredFile(ctx context.Context, cfg *Config, meta FileMeta, thumb string) (*StoredObject, string, error) {
+	if meta.Path == "" {
+		return nil, "", ErrFileNotFound
+	}
+	store, err := NewObjectStore(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	contentType := meta.Mime
+	key := meta.Path
+	if thumb != "" {
+		thumbMeta, err := EnsureThumbnail(ctx, cfg, meta, thumb)
+		if err != nil {
+			return nil, "", err
+		}
+		key = thumbMeta.Path
+		contentType = thumbMeta.Mime
+	}
+	obj, err := store.Get(ctx, key)
+	if err != nil {
+		return nil, "", err
+	}
+	if contentType == "" {
+		contentType = obj.Info.ContentType
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return obj, contentType, nil
+}
+
 func ThumbnailPath(cfg *Config, meta FileMeta, thumb string) (string, error) {
 	if _, _, normalized, err := ParseThumbSize(thumb); err != nil {
 		return "", err
@@ -330,57 +350,40 @@ func ThumbnailPath(cfg *Config, meta FileMeta, thumb string) (string, error) {
 	return filepath.Join(filepath.Dir(original), "thumbs", thumb+".jpg"), nil
 }
 
-func EnsureThumbnail(cfg *Config, meta FileMeta, thumb string) (string, error) {
+func EnsureThumbnail(ctx context.Context, cfg *Config, meta FileMeta, thumb string) (FileMeta, error) {
 	w, h, normalized, err := ParseThumbSize(thumb)
 	if err != nil {
-		return "", err
+		return FileMeta{}, err
 	}
-	thumbPath, err := ThumbnailPath(cfg, meta, normalized)
+	store, err := NewObjectStore(cfg)
 	if err != nil {
-		return "", err
+		return FileMeta{}, err
 	}
-	if _, err := os.Stat(thumbPath); err == nil {
-		return thumbPath, nil
+	thumbKey := filepath.ToSlash(path.Join(path.Dir(filepath.ToSlash(meta.Path)), "thumbs", normalized+".jpg"))
+	if obj, err := store.Get(ctx, thumbKey); err == nil {
+		obj.Body.Close()
+		return FileMeta{ID: meta.ID, Name: normalized + ".jpg", Size: obj.Info.Size, Mime: "image/jpeg", Created: meta.Created, Path: thumbKey}, nil
 	}
-	original, err := FilePath(cfg, meta)
+	original, err := store.Get(ctx, meta.Path)
 	if err != nil {
-		return "", err
+		return FileMeta{}, err
 	}
-	srcFile, err := os.Open(original)
+	defer original.Body.Close()
+	src, _, err := image.Decode(original.Body)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", ErrFileNotFound
-		}
-		return "", err
-	}
-	defer srcFile.Close()
-	src, _, err := image.Decode(srcFile)
-	if err != nil {
-		return "", fmt.Errorf("%w: thumbnail source must be an image", ErrValidation)
+		return FileMeta{}, fmt.Errorf("%w: thumbnail source must be an image", ErrValidation)
 	}
 	dst := resizeNearest(src, w, h)
-	if err := os.MkdirAll(filepath.Dir(thumbPath), 0o750); err != nil {
-		return "", err
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 82}); err != nil {
+		return FileMeta{}, err
 	}
-	tmp := thumbPath + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
-	if err != nil {
-		return "", err
+	hash := sha256.Sum256(buf.Bytes())
+	reader := bytes.NewReader(buf.Bytes())
+	if err := store.Put(ctx, thumbKey, reader, int64(buf.Len()), "image/jpeg", hex.EncodeToString(hash[:])); err != nil {
+		return FileMeta{}, err
 	}
-	if err := jpeg.Encode(out, dst, &jpeg.Options{Quality: 82}); err != nil {
-		out.Close()
-		_ = os.Remove(tmp)
-		return "", err
-	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return "", err
-	}
-	if err := os.Rename(tmp, thumbPath); err != nil {
-		_ = os.Remove(tmp)
-		return "", err
-	}
-	return thumbPath, nil
+	return FileMeta{ID: meta.ID, Name: normalized + ".jpg", Size: int64(buf.Len()), Mime: "image/jpeg", Created: time.Now().UTC().Format(time.RFC3339Nano), Path: thumbKey}, nil
 }
 
 func ParseThumbSize(raw string) (int, int, string, error) {
@@ -396,45 +399,39 @@ func ParseThumbSize(raw string) (int, int, string, error) {
 	return w, h, fmt.Sprintf("%dx%d", w, h), nil
 }
 
-func RemoveStoredFiles(cfg *Config, files []FileMeta) error {
-	if cfg.StorageType != StorageLocal {
-		return nil
+func RemoveStoredFiles(ctx context.Context, cfg *Config, files []FileMeta) error {
+	store, err := NewObjectStore(cfg)
+	if err != nil {
+		return err
 	}
 	for _, file := range files {
-		fullPath, err := FilePath(cfg, file)
-		if err != nil {
-			return err
+		if file.Path == "" {
+			continue
 		}
-		if err := removeDirAndEmptyParents(cfg, filepath.Dir(fullPath)); err != nil {
+		if err := store.DeletePrefix(ctx, path.Dir(filepath.ToSlash(file.Path))); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func RemoveRecordStorage(cfg *Config, projectSlug string, collectionName string, recordID string) error {
-	if cfg.StorageType != StorageLocal {
-		return nil
-	}
+func RemoveRecordStorage(ctx context.Context, cfg *Config, projectSlug string, collectionName string, recordID string) error {
 	if err := ValidateUUID(recordID); err != nil {
 		return err
 	}
-	p, err := localStoragePath(cfg, projectSlug, collectionName, recordID)
+	store, err := NewObjectStore(cfg)
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(p)
+	return store.DeletePrefix(ctx, filepath.ToSlash(filepath.Join(projectSlug, collectionName, recordID)))
 }
 
-func RemoveCollectionStorage(cfg *Config, projectSlug string, collectionName string) error {
-	if cfg.StorageType != StorageLocal {
-		return nil
-	}
-	p, err := localStoragePath(cfg, projectSlug, collectionName)
+func RemoveCollectionStorage(ctx context.Context, cfg *Config, projectSlug string, collectionName string) error {
+	store, err := NewObjectStore(cfg)
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(p)
+	return store.DeletePrefix(ctx, filepath.ToSlash(filepath.Join(projectSlug, collectionName)))
 }
 
 func fileField(collection *Collection, fieldName string) (Field, error) {

@@ -115,6 +115,17 @@ func getJSON(handler http.Handler, path string, token string) *httptest.Response
 	return rec
 }
 
+func putJSON(handler http.Handler, path string, token string, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("PUT", path, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
 func setupAdmin(t *testing.T, handler http.Handler, email string) string {
 	t.Helper()
 	rec := postJSON(handler, "/setup", "", fmt.Sprintf(`{"email":%q,"password":"password-123"}`, email))
@@ -321,6 +332,79 @@ func TestAdminAuditLogEndpoint(t *testing.T) {
 	}
 	if body.Items[0].Action == "" || body.Items[0].Data == nil {
 		t.Fatalf("audit entry shape incomplete: %+v", body.Items[0])
+	}
+}
+
+func TestAdminSettingsEndpoints(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+
+	rec := getJSON(srv.Handler, "/admin/api/settings", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "secret-value") {
+		t.Fatalf("settings leaked unexpected secret: %s", rec.Body.String())
+	}
+
+	rec = putJSON(srv.Handler, "/admin/api/settings/smtp", token, `{
+		"enabled": true,
+		"host": "smtp.example.com",
+		"port": "587",
+		"from": "Dublyobase <no-reply@example.com>",
+		"username": "mailer",
+		"password": "smtp-secret-value"
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update smtp: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "smtp-secret-value") || !strings.Contains(rec.Body.String(), `"passwordSet":true`) {
+		t.Fatalf("smtp response must mask secret and show passwordSet: %s", rec.Body.String())
+	}
+
+	rec = putJSON(srv.Handler, "/admin/api/settings/storage", token, `{
+		"type": "s3",
+		"s3": {
+			"endpoint": "https://s3.example.com",
+			"bucket": "dublyobase",
+			"region": "auto",
+			"accessKey": "key-id",
+			"secretKey": "s3-secret-value",
+			"prefix": "prod/uploads",
+			"useSSL": true,
+			"forcePathStyle": true
+		}
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update storage: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "s3-secret-value") || !strings.Contains(rec.Body.String(), `"secretKeySet":true`) {
+		t.Fatalf("storage response must mask secret and show secretKeySet: %s", rec.Body.String())
+	}
+
+	var encryptedCount int
+	if err := app.Pool.QueryRow(context.Background(), `
+		select (
+			data->'smtp'->>'passwordCipher' like 'v1:%'
+			and data->'storage'->'s3'->>'secretKeyCipher' like 'v1:%'
+		)::int
+		from _dbo.instance_settings
+		where id = true`,
+	).Scan(&encryptedCount); err != nil {
+		t.Fatal(err)
+	}
+	if encryptedCount != 1 {
+		t.Fatal("settings secrets must be encrypted in instance_settings")
+	}
+
+	rec = putJSON(srv.Handler, "/admin/api/settings/storage", token, `{"type":"local","s3":{}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("switch storage local: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, "/admin/api/settings/storage/test", token, `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("test local storage: want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
