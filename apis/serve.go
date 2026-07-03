@@ -81,6 +81,10 @@ func spaHandler(dist fs.FS) http.Handler {
 				fileServer.ServeHTTP(w, r)
 				return
 			}
+			if rejectsSPAFallback(p) {
+				http.NotFound(w, r)
+				return
+			}
 		}
 		r2 := r.Clone(r.Context())
 		r2.URL.Path = "/"
@@ -91,6 +95,21 @@ func spaHandler(dist fs.FS) http.Handler {
 func isReservedAPIPath(p string) bool {
 	return p == "api" || strings.HasPrefix(p, "api/") ||
 		p == "admin/api" || strings.HasPrefix(p, "admin/api/")
+}
+
+func rejectsSPAFallback(p string) bool {
+	if path.Ext(p) != "" || strings.HasPrefix(p, ".") || strings.Contains(p, "/.") {
+		return true
+	}
+	first, _, _ := strings.Cut(strings.ToLower(p), "/")
+	switch first {
+	case "actuator", "backup", "backups", "config", "debug", "home", "laravel",
+		"old", "phpmyadmin", "pma", "root", "server-status", "storage",
+		"temp", "tmp", "vendor", "wp-admin", "wp-content", "wp-includes":
+		return true
+	default:
+		return false
+	}
 }
 
 // health reports liveness of the app and its dependencies. It must answer

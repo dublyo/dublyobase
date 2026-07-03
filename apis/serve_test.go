@@ -148,6 +148,30 @@ func TestSPAFallback(t *testing.T) {
 	}
 }
 
+func TestSPAFallbackRejectsProbePaths(t *testing.T) {
+	app := newTestApp(t, deadPool(t))
+	srv := NewServer(app)
+
+	for _, route := range []string{
+		"/.env",
+		"/backup/.env",
+		"/config.yaml",
+		"/missing.js",
+		"/actuator/env",
+		"/debug/default/view",
+		"/wp-admin/setup-config.php",
+	} {
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, httptest.NewRequest("GET", route, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s: want 404, got %d", route, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "dublyobase") {
+			t.Fatalf("GET %s: probe path must not serve the SPA", route)
+		}
+	}
+}
+
 func TestReservedAPIPrefixesDoNotServeSPA(t *testing.T) {
 	app := newTestApp(t, deadPool(t))
 	srv := NewServer(app)

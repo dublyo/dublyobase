@@ -5,11 +5,11 @@
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.4.0 — M3 records API & rules complete
+**Status:** v0.4.1 — M3 records API & rules complete
 (self-closing setup, opaque hashed admin sessions, protected admin/project APIs,
 project schema/role provisioning, collection metadata, transactional schema sync,
-records CRUD, API keys, RLS-backed rules, audit log, and real Postgres 16/17/18
-integration tests).
+records CRUD, API keys, RLS-backed rules, production SPA fallback hardening,
+audit log, and real Postgres 16/17/18 integration tests).
 Next: **M4 (app auth)**.
 **Repo:** `github.com/dublyo/dublyobase` · **Image:** `ghcr.io/dublyo/dublyobase`
 **Local dev:** `/Users/dribrahimm/0-PostgresProject/dublyobase`
