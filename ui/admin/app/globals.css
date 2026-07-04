@@ -1516,30 +1516,23 @@ button:disabled {
 
 .pb-icon-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
   gap: 8px;
 }
 
 .pb-icon-grid button {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 38px;
+  justify-content: center;
+  aspect-ratio: 1;
+  min-height: 40px;
   min-width: 0;
   border: 1px solid var(--surface-alt-3);
   border-radius: var(--radius);
   background: var(--surface-color);
   color: var(--surface-hint);
-  padding: 0 10px;
-  text-align: left;
+  padding: 0;
   font-weight: 700;
-}
-
-.pb-icon-grid button span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .pb-icon-grid button:hover,

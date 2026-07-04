@@ -2200,7 +2200,7 @@ function CollectionIcon({ collection, icon, type }: { collection?: Collection; i
   }
   const fallback = defaultCollectionIcon(resolvedType);
   const Icon = collectionIconMap[resolved.name] ?? (fallback.type === "lucide" ? collectionIconMap[fallback.name] : undefined) ?? Table2;
-  return <Icon className="h-4 w-4" />;
+  return <Icon className="h-4 w-4" aria-hidden="true" />;
 }
 
 function CollectionIconPicker({ icon, onChange }: { icon: CollectionIconOption; onChange: (icon: CollectionIconOption) => void }) {
@@ -2228,9 +2228,8 @@ function CollectionIconPicker({ icon, onChange }: { icon: CollectionIconOption; 
             const Icon = choice.icon;
             const selected = currentName === choice.name;
             return (
-              <button key={choice.name} type="button" className={selected ? "active" : ""} aria-pressed={selected} title={choice.label} onClick={() => onChange({ type: "lucide", name: choice.name })}>
+              <button key={choice.name} type="button" className={selected ? "active" : ""} aria-pressed={selected} aria-label={`Use ${choice.label} icon`} title={choice.label} onClick={() => onChange({ type: "lucide", name: choice.name })}>
                 <Icon className="h-4 w-4" />
-                <span>{choice.label}</span>
               </button>
             );
           })}
@@ -5017,7 +5016,7 @@ function canSearchField(field: Field): boolean {
 
 function FieldTypeGlyph({ type }: { type: FieldType }) {
   const Icon = fieldTypeIcon(type);
-  return <Icon className="h-4 w-4" />;
+  return <Icon className="h-4 w-4" aria-hidden="true" />;
 }
 
 function fieldTypeIcon(type: FieldType): LucideIcon {
