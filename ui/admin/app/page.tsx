@@ -4,9 +4,13 @@ import {
   Activity,
   AlertCircle,
   Archive,
-  ChevronRight,
+  Check,
+  ChevronDown,
+  Code2,
   Copy,
   Database,
+  Eye,
+  EyeOff,
   FileUp,
   HardDrive,
   KeyRound,
@@ -14,6 +18,7 @@ import {
   ListFilter,
   LogOut,
   Mail,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Save,
@@ -24,7 +29,7 @@ import {
   Table2,
   Trash2,
   UploadCloud,
-  Users,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -61,18 +66,22 @@ import type { APIKey, Admin, AuditEntry, Collection, Field, FieldType, Health, I
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const fieldTypes: FieldType[] = ["text", "number", "bool", "date", "email", "url", "select", "json", "relation", "file"];
 const navItems = [
-  { id: "overview", label: "Overview", icon: Activity },
   { id: "collections", label: "Collections", icon: Layers3 },
-  { id: "records", label: "Records", icon: Table2 },
-  { id: "users", label: "Users", icon: Users },
-  { id: "apiKeys", label: "API Keys", icon: KeyRound },
-  { id: "files", label: "Files", icon: FileUp },
   { id: "logs", label: "Logs", icon: Archive },
   { id: "settings", label: "Settings", icon: Settings },
 ] as const;
+const settingsItems = [
+  { id: "application", label: "Application", group: "System" },
+  { id: "mail", label: "Mail settings", group: "System" },
+  { id: "storage", label: "Files storage", group: "System" },
+  { id: "apiKeys", label: "API keys", group: "Project" },
+  { id: "files", label: "File uploads", group: "Project" },
+] as const;
 
 type View = (typeof navItems)[number]["id"];
+type SettingsSection = (typeof settingsItems)[number]["id"];
 type Notice = { type: "success" | "error"; message: string } | null;
+type CollectionModalMode = "create" | "settings" | null;
 
 type CollectionDraft = {
   name: string;
@@ -85,15 +94,21 @@ type CollectionDraft = {
   deleteRule: string;
 };
 
-const emptyCollectionDraft: CollectionDraft = {
-  name: "",
-  type: "base" as Collection["type"],
-  fields: [{ name: "title", type: "text" as FieldType, required: true, options: {} }],
+type RuleDraft = Pick<CollectionDraft, "listRule" | "viewRule" | "createRule" | "updateRule" | "deleteRule">;
+
+const emptyRules: RuleDraft = {
   listRule: "",
   viewRule: "",
   createRule: "",
   updateRule: "",
   deleteRule: "",
+};
+
+const emptyCollectionDraft: CollectionDraft = {
+  name: "",
+  type: "base",
+  fields: [{ name: "title", type: "text", required: true, options: {} }],
+  ...emptyRules,
 };
 
 const emptySMTPDraft = {
@@ -124,25 +139,30 @@ export default function AdminApp() {
   const [token, setToken] = useState<string | null>(null);
   const [admin, setAdmin] = useState<Admin | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
-  const [view, setView] = useState<View>("overview");
+  const [view, setView] = useState<View>("collections");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("application");
   const [healthState, setHealthState] = useState<Health | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [selectedProject, setSelectedProject] = useState<string>("");
+  const [selectedProject, setSelectedProject] = useState("");
   const [collections, setCollections] = useState<Collection[]>([]);
-  const [selectedCollection, setSelectedCollection] = useState<string>("");
+  const [selectedCollection, setSelectedCollection] = useState("");
   const [records, setRecords] = useState<RecordList>({ items: [], page: 1, perPage: 30, totalItems: 0 });
   const [recordFilter, setRecordFilter] = useState("");
   const [recordJSON, setRecordJSON] = useState("{}");
   const [selectedRecordId, setSelectedRecordId] = useState("");
+  const [recordEditorOpen, setRecordEditorOpen] = useState(false);
+  const [apiPreviewOpen, setAPIPreviewOpen] = useState(false);
   const [apiKeys, setApiKeys] = useState<APIKey[]>([]);
   const [oneTimeKey, setOneTimeKey] = useState<APIKey | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
-  const [settings, setSettings] = useState<InstanceSettings | null>(null);
+  const [settings, setSettingsState] = useState<InstanceSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [projectDraft, setProjectDraft] = useState({ slug: "", name: "" });
   const [collectionDraft, setCollectionDraft] = useState(emptyCollectionDraft);
+  const [collectionModal, setCollectionModal] = useState<CollectionModalMode>(null);
   const [editingFields, setEditingFields] = useState<Field[]>([]);
+  const [editingRules, setEditingRules] = useState<RuleDraft>(emptyRules);
   const [smtpDraft, setSMTPDraft] = useState(emptySMTPDraft);
   const [storageDraft, setStorageDraft] = useState(emptyStorageDraft);
   const [keyDraft, setKeyDraft] = useState({ name: "", type: "service" as "anon" | "service" });
@@ -179,7 +199,7 @@ export default function AdminApp() {
   );
 
   const loadProjectData = useCallback(
-    async (authToken: string, projectSlug: string) => {
+    async (authToken: string, projectSlug: string, preferredCollection = "") => {
       if (!projectSlug) return;
       const [collectionResponse, keysResponse, auditResponse] = await Promise.all([
         listCollections(authToken, projectSlug),
@@ -189,7 +209,9 @@ export default function AdminApp() {
       setCollections(collectionResponse.items);
       setApiKeys(keysResponse.items);
       setAudit(auditResponse.items);
-      const nextCollection = selectedCollection || collectionResponse.items[0]?.name || "";
+      const targetCollection = preferredCollection || selectedCollection;
+      const currentExists = collectionResponse.items.some((collection) => collection.name === targetCollection);
+      const nextCollection = currentExists ? targetCollection : collectionResponse.items[0]?.name || "";
       setSelectedCollection(nextCollection);
       if (nextCollection) {
         const recordsResponse = await listRecords(authToken, projectSlug, nextCollection, 1, recordFilter);
@@ -209,7 +231,7 @@ export default function AdminApp() {
         const [healthResponse, projectsResponse, settingsResponse] = await Promise.all([health(), listProjects(authToken), getSettings(authToken)]);
         setHealthState(healthResponse);
         setProjects(projectsResponse.items);
-        setSettings(settingsResponse);
+        setSettingsState(settingsResponse);
         setSMTPDraft(settingsToSMTPDraft(settingsResponse));
         setStorageDraft(settingsToStorageDraft(settingsResponse));
         const projectSlug = preferredProject || projectsResponse.items[0]?.slug || "";
@@ -256,41 +278,55 @@ export default function AdminApp() {
     let cancelled = false;
     listRecords(token, selectedProject, selectedCollection, 1, recordFilter)
       .then((response) => {
-        if (!cancelled) {
-          setRecords(response);
-        }
+        if (!cancelled) setRecords(response);
       })
       .catch((error) => {
-        if (!cancelled) {
-          handleError(error);
-        }
+        if (!cancelled) handleError(error);
       });
     return () => {
       cancelled = true;
     };
-  }, [handleError, selectedCollection, selectedProject, token]);
+  }, [handleError, recordFilter, selectedCollection, selectedProject, token]);
 
   useEffect(() => {
-    if (selectedCollectionModel) {
-      setEditingFields(selectedCollectionModel.fields.map((field) => ({ ...field, options: field.options ?? {} })));
-      setSelectedRecordId("");
-      setRecordJSON("{}");
-      setFileDraft((draft) => ({ ...draft, field: selectedCollectionModel.fields.find((field) => field.type === "file")?.name ?? "" }));
-    } else {
+    if (!selectedCollectionModel) {
       setEditingFields([]);
+      setEditingRules(emptyRules);
+      return;
     }
+    setEditingFields(selectedCollectionModel.fields.map((field) => ({ ...field, options: field.options ?? {} })));
+    setEditingRules({
+      listRule: selectedCollectionModel.listRule ?? "",
+      viewRule: selectedCollectionModel.viewRule ?? "",
+      createRule: selectedCollectionModel.createRule ?? "",
+      updateRule: selectedCollectionModel.updateRule ?? "",
+      deleteRule: selectedCollectionModel.deleteRule ?? "",
+    });
+    setSelectedRecordId("");
+    setRecordJSON("{}");
+    setFileDraft((draft) => ({ ...draft, field: selectedCollectionModel.fields.find((field) => field.type === "file")?.name ?? "" }));
   }, [selectedCollectionModel]);
 
   useEffect(() => {
-    const hashView = window.location.hash.replace("#", "");
-    if (navItems.some((item) => item.id === hashView)) {
-      setView(hashView as View);
+    const hash = window.location.hash.replace("#", "");
+    const [primary, secondary] = hash.split("/");
+    if (navItems.some((item) => item.id === primary)) {
+      setView(primary as View);
+    }
+    if (primary === "settings" && settingsItems.some((item) => item.id === secondary)) {
+      setSettingsSection(secondary as SettingsSection);
     }
   }, []);
 
   function changeView(next: View) {
     setView(next);
     window.history.replaceState(null, "", `#${next}`);
+  }
+
+  function changeSettings(next: SettingsSection) {
+    setView("settings");
+    setSettingsSection(next);
+    window.history.replaceState(null, "", `#settings/${next}`);
   }
 
   async function submitLogin(event: React.FormEvent<HTMLFormElement>) {
@@ -302,7 +338,6 @@ export default function AdminApp() {
       sessionStorage.setItem(TOKEN_KEY, response.token);
       setToken(response.token);
       setAdmin(response.admin);
-      showNotice("success", "Logged in");
       await refreshAll(response.token);
     } catch (error) {
       handleError(error);
@@ -330,7 +365,7 @@ export default function AdminApp() {
       try {
         await logout(token);
       } catch {
-        // Logout should always clear local state; the server may already have expired the session.
+        // Local state must be cleared even if the server already expired the session.
       }
     }
     sessionStorage.removeItem(TOKEN_KEY);
@@ -338,7 +373,7 @@ export default function AdminApp() {
     setAdmin(null);
     setProjects([]);
     setCollections([]);
-    setSettings(null);
+    setSettingsState(null);
   }
 
   async function submitProject(event: React.FormEvent<HTMLFormElement>) {
@@ -372,10 +407,11 @@ export default function AdminApp() {
         updateRule: collectionDraft.updateRule,
         deleteRule: collectionDraft.deleteRule,
       });
-      showNotice("success", `Collection ${created.name} created`);
       setCollectionDraft(emptyCollectionDraft);
+      setCollectionModal(null);
       setSelectedCollection(created.name);
-      await loadProjectData(token, selectedProject);
+      showNotice("success", `Collection ${created.name} created`);
+      await loadProjectData(token, selectedProject, created.name);
     } catch (error) {
       handleError(error);
     } finally {
@@ -383,12 +419,16 @@ export default function AdminApp() {
     }
   }
 
-  async function saveFields() {
+  async function saveCollectionSettings() {
     if (!token || !selectedProject || !selectedCollectionModel) return;
     setBusy(true);
     try {
-      const updated = await updateCollection(token, selectedProject, selectedCollectionModel.name, { fields: editingFields.map(cleanField) });
+      const updated = await updateCollection(token, selectedProject, selectedCollectionModel.name, {
+        fields: editingFields.map(cleanField),
+        ...editingRules,
+      });
       showNotice("success", `Collection ${updated.name} saved`);
+      setCollectionModal(null);
       await loadProjectData(token, selectedProject);
     } catch (error) {
       handleError(error);
@@ -449,6 +489,7 @@ export default function AdminApp() {
       }
       setRecordJSON("{}");
       setSelectedRecordId("");
+      setRecordEditorOpen(false);
       await refreshRecords(1);
     } catch (error) {
       handleError(error);
@@ -543,7 +584,7 @@ export default function AdminApp() {
         ...(smtpDraft.password ? { password: smtpDraft.password } : {}),
       };
       const response = await updateSMTPSettings(token, payload);
-      setSettings(response);
+      setSettingsState(response);
       setSMTPDraft(settingsToSMTPDraft(response));
       showNotice("success", "SMTP settings saved");
     } catch (error) {
@@ -585,7 +626,7 @@ export default function AdminApp() {
           forcePathStyle: storageDraft.forcePathStyle,
         },
       });
-      setSettings(response);
+      setSettingsState(response);
       setStorageDraft(settingsToStorageDraft(response));
       showNotice("success", "Storage settings saved");
       const healthResponse = await health();
@@ -621,11 +662,9 @@ export default function AdminApp() {
 
   if (checkingSession) {
     return (
-      <main className="grid min-h-screen place-items-center bg-[#0c1424] text-white">
-        <div className="flex items-center gap-3 text-sm">
-          <RefreshCw className="h-4 w-4 animate-spin" />
-          Loading admin session
-        </div>
+      <main className="pb-loading">
+        <RefreshCw className="h-4 w-4 animate-spin" />
+        Loading admin session
       </main>
     );
   }
@@ -635,205 +674,190 @@ export default function AdminApp() {
   }
 
   return (
-    <div className="app-shell grid min-h-screen grid-cols-1 lg:grid-cols-[250px_minmax(0,1fr)]">
-      <aside className="db-sidebar flex min-h-[unset] flex-col lg:min-h-screen">
-        <div className="flex h-16 items-center gap-3 border-b border-white/10 px-5">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-cyan-400/15 text-cyan-200">
-            <Database className="h-5 w-5" />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-white">dublyobase</p>
-            <p className="text-xs text-slate-400">Postgres control plane</p>
-          </div>
-        </div>
-        <nav className="flex gap-1 overflow-x-auto px-3 py-3 lg:flex-1 lg:flex-col lg:overflow-visible" aria-label="Primary">
+    <main className="pb-app">
+      <header className="pb-app-header accent-surface">
+        <button type="button" className="pb-logo" onClick={() => changeView("collections")} aria-label="Open collections">
+          <Database className="h-4 w-4" />
+        </button>
+        <nav className="pb-main-nav" aria-label="Primary">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const active = view === item.id;
             return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => changeView(item.id)}
-                className={`flex min-w-fit items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition ${
-                  active ? "bg-white text-slate-950" : "text-slate-300 hover:bg-white/10 hover:text-white"
-                }`}
-              >
+              <button key={item.id} type="button" onClick={() => changeView(item.id)} className={`pb-header-link ${view === item.id ? "active" : ""}`}>
                 <Icon className="h-4 w-4" />
                 {item.label}
               </button>
             );
           })}
         </nav>
-        <div className="hidden border-t border-white/10 p-4 text-xs text-slate-400 lg:block">
-          <p>{admin.email}</p>
-          <button type="button" onClick={signOut} className="mt-3 flex items-center gap-2 rounded-md px-2 py-1.5 text-slate-200 hover:bg-white/10">
-            <LogOut className="h-4 w-4" />
-            Log out
-          </button>
+        <div className="pb-header-spacer" />
+        <select
+          aria-label="Select project"
+          value={selectedProject}
+          onChange={(event) => {
+            const slug = event.target.value;
+            setSelectedProject(slug);
+            if (token) loadProjectData(token, slug).catch(handleError);
+          }}
+          className="pb-project-select"
+        >
+          <option value="">No project</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.slug}>
+              {project.name}
+            </option>
+          ))}
+        </select>
+        <StatusPill label="DB" value={healthState?.db ?? "checking"} ok={healthState?.db === "ok"} />
+        <StatusPill label="Storage" value={healthState?.storage ?? "checking"} ok={healthState?.storage === "ok"} />
+        <button type="button" onClick={() => refreshAll()} className="pb-header-link" aria-label="Refresh">
+          <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
+        </button>
+        <button type="button" onClick={signOut} className="pb-header-link logged-user" title="Log out">
+          <span className="truncate">{admin.email}</span>
+          <LogOut className="h-4 w-4" />
+        </button>
+      </header>
+
+      {notice ? (
+        <div className={`pb-toast ${notice.type === "error" ? "danger" : "success"}`}>
+          {notice.type === "error" ? <AlertCircle className="h-4 w-4" /> : <Check className="h-4 w-4" />}
+          {notice.message}
         </div>
-      </aside>
+      ) : null}
 
-      <main className="min-w-0">
-        <header className="sticky top-0 z-10 flex min-h-16 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur md:px-6">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
-            <select
-              aria-label="Select project"
-              value={selectedProject}
-              onChange={(event) => {
-                const slug = event.target.value;
-                setSelectedProject(slug);
-                if (token) loadProjectData(token, slug).catch(handleError);
-              }}
-              className="h-10 min-w-56 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-900"
-            >
-              <option value="">No project</option>
-              {projects.map((project) => (
-                <option key={project.id} value={project.slug}>
-                  {project.name} ({project.slug})
-                </option>
-              ))}
-            </select>
-            <StatusChip label="DB" value={healthState?.db ?? "checking"} ok={healthState?.db === "ok"} />
-            <StatusChip label="Storage" value={healthState?.storage ?? "checking"} ok={healthState?.storage === "ok"} />
-            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
-              {healthState?.version ?? "version unknown"}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={() => refreshAll()} className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50">
-              <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
-              Refresh
-            </button>
-            <button type="button" onClick={signOut} className="inline-flex h-10 items-center gap-2 rounded-md bg-slate-900 px-3 text-sm font-medium text-white hover:bg-slate-800 lg:hidden">
-              <LogOut className="h-4 w-4" />
-              Log out
-            </button>
-          </div>
-        </header>
+      {view === "collections" ? (
+        <CollectionsWorkspace
+          project={selectedProject}
+          collections={collections}
+          selectedCollection={selectedCollectionModel}
+          selectedCollectionName={selectedCollection}
+          records={records}
+          recordFilter={recordFilter}
+          setRecordFilter={setRecordFilter}
+          onSelectCollection={setSelectedCollection}
+          onRefresh={() => refreshRecords(1)}
+          onOpenCreateCollection={() => setCollectionModal("create")}
+          onOpenCollectionSettings={() => selectedCollectionModel && setCollectionModal("settings")}
+          onOpenAPIPreview={() => selectedCollectionModel && setAPIPreviewOpen(true)}
+          onOpenNewRecord={() => {
+            setSelectedRecordId("");
+            setRecordJSON("{}");
+            setRecordEditorOpen(true);
+          }}
+          onEditRecord={(record) => {
+            setSelectedRecordId(String(record.id ?? ""));
+            setRecordJSON(JSON.stringify(stripSystemFields(record), null, 2));
+            setRecordEditorOpen(true);
+          }}
+          onDeleteRecord={removeRecord}
+          onDeleteCollection={removeCollection}
+          version={healthState?.version ?? "unknown"}
+        />
+      ) : null}
 
-        {notice ? (
-          <div className={`mx-4 mt-4 rounded-md border px-4 py-3 text-sm md:mx-6 ${notice.type === "error" ? "border-red-200 bg-red-50 text-red-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>
-            {notice.message}
-          </div>
-        ) : null}
+      {view === "logs" ? <LogsView audit={audit} onRefresh={() => token && selectedProject && listAudit(token, selectedProject).then((r) => setAudit(r.items)).catch(handleError)} version={healthState?.version ?? "unknown"} /> : null}
 
-        <section className="p-4 md:p-6">
-          {view === "overview" ? (
-            <Overview
-              project={selectedProjectModel}
-              projects={projects}
-              collections={collections}
-              records={records}
-              apiKeys={apiKeys}
-              audit={audit}
-              projectDraft={projectDraft}
-              setProjectDraft={setProjectDraft}
-              onSubmitProject={submitProject}
-            />
-          ) : null}
-          {view === "collections" ? (
-            <CollectionsView
-              collections={collections}
-              selected={selectedCollectionModel}
-              editingFields={editingFields}
-              collectionDraft={collectionDraft}
-              setCollectionDraft={setCollectionDraft}
-              setSelectedCollection={setSelectedCollection}
-              setEditingFields={setEditingFields}
-              onAddDraftField={addDraftField}
-              onAddEditingField={addEditingField}
-              onSaveFields={saveFields}
-              onCreateCollection={submitCollection}
-              onDeleteCollection={removeCollection}
-            />
-          ) : null}
-          {view === "records" ? (
-            <RecordsView
-              collections={collections}
-              selectedCollection={selectedCollectionModel}
-              selectedCollectionName={selectedCollection}
-              setSelectedCollection={setSelectedCollection}
-              records={records}
-              recordFilter={recordFilter}
-              setRecordFilter={setRecordFilter}
-              recordJSON={recordJSON}
-              setRecordJSON={setRecordJSON}
-              selectedRecordId={selectedRecordId}
-              setSelectedRecordId={setSelectedRecordId}
-              onRefresh={() => refreshRecords(1)}
-              onSaveRecord={saveRecord}
-              onDeleteRecord={removeRecord}
-            />
-          ) : null}
-          {view === "users" ? (
-            <UsersView
-              usersCollection={collections.find((collection) => collection.name === "users") ?? null}
-              records={selectedCollection === "users" ? records : { items: [], page: 1, perPage: 30, totalItems: 0 }}
-              onOpenUsers={() => {
-                setSelectedCollection("users");
-                changeView("records");
-              }}
-            />
-          ) : null}
-          {view === "apiKeys" ? (
-            <APIKeysView
-              keys={apiKeys}
-              oneTimeKey={oneTimeKey}
-              keyDraft={keyDraft}
-              setKeyDraft={setKeyDraft}
-              onCreate={submitAPIKey}
-              onRevoke={revokeKey}
-              onCopy={copyText}
-              onDismissSecret={() => setOneTimeKey(null)}
-            />
-          ) : null}
-          {view === "files" ? (
-            <FilesView
-              collections={collections}
-              selectedCollection={selectedCollectionModel}
-              selectedCollectionName={selectedCollection}
-              setSelectedCollection={setSelectedCollection}
-              fileFields={fileFields}
-              fileDraft={fileDraft}
-              setFileDraft={setFileDraft}
-              fileResult={fileResult}
-              records={records}
-              token={token}
-              project={selectedProject}
-              onSubmitUpload={submitUpload}
-              onCreateFileToken={async (recordId, field, fileId) => {
-                try {
-                  const response = await createFileToken(token, selectedProject, selectedCollectionModel?.name ?? "", recordId, field, fileId);
-                  showNotice("success", `File token expires ${formatDate(response.expiresAt)}`);
-                  return response.token;
-                } catch (error) {
-                  handleError(error);
-                  return "";
-                }
-              }}
-            />
-          ) : null}
-          {view === "logs" ? <LogsView audit={audit} onRefresh={() => token && selectedProject && listAudit(token, selectedProject).then((r) => setAudit(r.items)).catch(handleError)} /> : null}
-          {view === "settings" ? (
-            <SettingsView
-              project={selectedProjectModel}
-              healthState={healthState}
-              appUrl={typeof window !== "undefined" ? window.location.origin : ""}
-              settings={settings}
-              smtpDraft={smtpDraft}
-              setSMTPDraft={setSMTPDraft}
-              storageDraft={storageDraft}
-              setStorageDraft={setStorageDraft}
-              onSaveSMTP={saveSMTPSettings}
-              onTestSMTP={sendSMTPTest}
-              onSaveStorage={saveStorageSettings}
-              onTestStorage={runStorageTest}
-            />
-          ) : null}
-        </section>
-      </main>
-    </div>
+      {view === "settings" ? (
+        <SettingsWorkspace
+          section={settingsSection}
+          onChangeSection={changeSettings}
+          project={selectedProjectModel}
+          projects={projects}
+          projectDraft={projectDraft}
+          setProjectDraft={setProjectDraft}
+          onSubmitProject={submitProject}
+          healthState={healthState}
+          appUrl={typeof window !== "undefined" ? window.location.origin : ""}
+          settings={settings}
+          smtpDraft={smtpDraft}
+          setSMTPDraft={setSMTPDraft}
+          storageDraft={storageDraft}
+          setStorageDraft={setStorageDraft}
+          onSaveSMTP={saveSMTPSettings}
+          onTestSMTP={sendSMTPTest}
+          onSaveStorage={saveStorageSettings}
+          onTestStorage={runStorageTest}
+          apiKeys={apiKeys}
+          oneTimeKey={oneTimeKey}
+          keyDraft={keyDraft}
+          setKeyDraft={setKeyDraft}
+          onCreateKey={submitAPIKey}
+          onRevokeKey={revokeKey}
+          onCopy={copyText}
+          onDismissSecret={() => setOneTimeKey(null)}
+          collections={collections}
+          selectedCollection={selectedCollectionModel}
+          selectedCollectionName={selectedCollection}
+          setSelectedCollection={setSelectedCollection}
+          fileFields={fileFields}
+          fileDraft={fileDraft}
+          setFileDraft={setFileDraft}
+          fileResult={fileResult}
+          records={records}
+          token={token}
+          projectSlug={selectedProject}
+          onSubmitUpload={submitUpload}
+          version={healthState?.version ?? "unknown"}
+          onCreateFileToken={async (recordId, field, fileId) => {
+            try {
+              const response = await createFileToken(token, selectedProject, selectedCollectionModel?.name ?? "", recordId, field, fileId);
+              showNotice("success", `File token expires ${formatDate(response.expiresAt)}`);
+              return response.token;
+            } catch (error) {
+              handleError(error);
+              return "";
+            }
+          }}
+        />
+      ) : null}
+
+      {collectionModal === "create" ? (
+        <CollectionModal
+          mode="create"
+          collections={collections}
+          draft={collectionDraft}
+          setDraft={setCollectionDraft}
+          fields={collectionDraft.fields}
+          setFields={(fields) => setCollectionDraft((draft) => ({ ...draft, fields }))}
+          rules={collectionDraft}
+          setRules={(rules) => setCollectionDraft((draft) => ({ ...draft, ...rules }))}
+          onAddField={addDraftField}
+          onClose={() => setCollectionModal(null)}
+          onSubmit={submitCollection}
+        />
+      ) : null}
+
+      {collectionModal === "settings" && selectedCollectionModel ? (
+        <CollectionModal
+          mode="settings"
+          collection={selectedCollectionModel}
+          collections={collections}
+          fields={editingFields}
+          setFields={setEditingFields}
+          rules={editingRules}
+          setRules={setEditingRules}
+          onAddField={addEditingField}
+          onClose={() => setCollectionModal(null)}
+          onSave={saveCollectionSettings}
+        />
+      ) : null}
+
+      {recordEditorOpen && selectedCollectionModel ? (
+        <RecordModal
+          collection={selectedCollectionModel}
+          selectedRecordId={selectedRecordId}
+          recordJSON={recordJSON}
+          setRecordJSON={setRecordJSON}
+          onClose={() => setRecordEditorOpen(false)}
+          onSave={saveRecord}
+        />
+      ) : null}
+
+      {apiPreviewOpen && selectedCollectionModel ? (
+        <APIPreviewModal project={selectedProject} collection={selectedCollectionModel} onClose={() => setAPIPreviewOpen(false)} onCopy={copyText} />
+      ) : null}
+    </main>
   );
 }
 
@@ -850,267 +874,384 @@ function AuthScreen({
   onLogin: (event: React.FormEvent<HTMLFormElement>) => void;
   onSetup: (event: React.FormEvent<HTMLFormElement>) => void;
 }) {
+  const [showPassword, setShowPassword] = useState(false);
   return (
-    <main className="grid min-h-screen bg-[#0c1424] text-slate-950 lg:grid-cols-[minmax(360px,480px)_minmax(0,1fr)]">
-      <section className="flex min-h-screen flex-col justify-center bg-white px-6 py-10 sm:px-10">
-        <div className="mb-10 flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-md bg-slate-950 text-cyan-200">
-            <Database className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-xl font-semibold">dublyobase</h1>
-            <p className="text-sm text-slate-500">Admin panel</p>
-          </div>
+    <main className="pb-login-screen">
+      <section className="pb-login-card" aria-labelledby="login-title">
+        <div className="pb-login-logo">
+          <Database className="h-6 w-6" />
         </div>
+        <h1 id="login-title">Superuser login</h1>
         {notice ? (
-          <div className={`mb-4 rounded-md border px-4 py-3 text-sm ${notice.type === "error" ? "border-red-200 bg-red-50 text-red-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"}`}>
+          <div className={`pb-inline-alert ${notice.type === "error" ? "danger" : "success"}`}>
             {notice.message}
           </div>
         ) : null}
-        <form onSubmit={onLogin} className="space-y-4">
-          <div>
-            <label htmlFor="email" className="text-sm font-medium text-slate-700">
-              Admin email
-            </label>
-            <input id="email" name="email" type="email" autoComplete="username" required className="mt-1 h-11 w-full rounded-md border border-slate-300 px-3 text-sm" />
-          </div>
-          <div>
-            <label htmlFor="password" className="text-sm font-medium text-slate-700">
-              Password
-            </label>
-            <input id="password" name="password" type="password" autoComplete="current-password" required className="mt-1 h-11 w-full rounded-md border border-slate-300 px-3 text-sm" />
-          </div>
-          <button type="submit" disabled={busy} className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-slate-950 px-4 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60">
-            <ShieldCheck className="h-4 w-4" />
-            Log in
+        <form onSubmit={onLogin} className="pb-form-stack">
+          <label className="pb-field">
+            <span>Email</span>
+            <input id="login_identity" name="email" type="email" autoComplete="username" required />
+          </label>
+          <label className="pb-field password-field">
+            <span>Password</span>
+            <input id="login_pass" name="password" type={showPassword ? "text" : "password"} autoComplete="current-password" required />
+            <button type="button" className="pb-icon-btn password-toggle" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"}>
+              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </label>
+          <button type="button" className="pb-link-hint">
+            Forgotten password
+          </button>
+          <button type="submit" disabled={busy} className="pb-btn primary lg block">
+            {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+            Login
           </button>
         </form>
-        <details className="mt-8 rounded-md border border-slate-200 bg-slate-50 p-4">
-          <summary className="cursor-pointer text-sm font-medium text-slate-800">Create first admin if setup is open</summary>
-          <form onSubmit={onSetup} className="mt-4 space-y-3">
-            <div>
-              <label htmlFor="setupEmail" className="text-sm font-medium text-slate-700">
-                Email
-              </label>
-              <input id="setupEmail" name="setupEmail" type="email" autoComplete="username" required className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm" />
-            </div>
-            <div>
-              <label htmlFor="setupPassword" className="text-sm font-medium text-slate-700">
-                Password
-              </label>
-              <input id="setupPassword" name="setupPassword" type="password" autoComplete="new-password" minLength={12} required className="mt-1 h-10 w-full rounded-md border border-slate-300 px-3 text-sm" />
-            </div>
-            <button type="submit" disabled={busy} className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50">
+        <details className="pb-setup-details">
+          <summary>Create first admin if setup is open</summary>
+          <form onSubmit={onSetup} className="pb-form-stack compact">
+            <label className="pb-field">
+              <span>Email</span>
+              <input id="setupEmail" name="setupEmail" type="email" autoComplete="username" required />
+            </label>
+            <label className="pb-field">
+              <span>Password</span>
+              <input id="setupPassword" name="setupPassword" type="password" autoComplete="new-password" minLength={12} required />
+            </label>
+            <button type="submit" disabled={busy} className="pb-btn secondary">
               <Plus className="h-4 w-4" />
               Create admin
             </button>
           </form>
         </details>
-      </section>
-      <section className="hidden min-h-screen p-8 text-white lg:block">
-        <div className="mx-auto flex h-full max-w-3xl flex-col justify-center">
-          <div className="rounded-lg border border-white/10 bg-white/5 p-6 shadow-2xl">
-            <div className="mb-6 flex items-center justify-between border-b border-white/10 pb-4">
-              <div>
-                <p className="text-sm text-cyan-200">Status</p>
-                <p className="text-2xl font-semibold">Postgres control plane</p>
-              </div>
-              <Server className="h-8 w-8 text-cyan-200" />
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <Metric label="DB" value={healthState?.db ?? "checking"} />
-              <Metric label="Storage" value={healthState?.storage ?? "checking"} />
-              <Metric label="Version" value={healthState?.version ?? "unknown"} />
-            </div>
-          </div>
+        <div className="pb-login-status">
+          <span>DB {healthState?.db ?? "checking"}</span>
+          <span>Storage {healthState?.storage ?? "checking"}</span>
+          <span>{healthState?.version ?? "unknown"}</span>
         </div>
       </section>
     </main>
   );
 }
 
-function Overview({
+function CollectionsWorkspace({
   project,
-  projects,
   collections,
+  selectedCollection,
+  selectedCollectionName,
   records,
-  apiKeys,
-  audit,
-  projectDraft,
-  setProjectDraft,
-  onSubmitProject,
+  recordFilter,
+  setRecordFilter,
+  onSelectCollection,
+  onRefresh,
+  onOpenCreateCollection,
+  onOpenCollectionSettings,
+  onOpenAPIPreview,
+  onOpenNewRecord,
+  onEditRecord,
+  onDeleteRecord,
+  onDeleteCollection,
+  version,
 }: {
-  project: Project | null;
-  projects: Project[];
+  project: string;
   collections: Collection[];
+  selectedCollection: Collection | null;
+  selectedCollectionName: string;
   records: RecordList;
-  apiKeys: APIKey[];
-  audit: AuditEntry[];
-  projectDraft: { slug: string; name: string };
-  setProjectDraft: (draft: { slug: string; name: string }) => void;
-  onSubmitProject: (event: React.FormEvent<HTMLFormElement>) => void;
+  recordFilter: string;
+  setRecordFilter: (value: string) => void;
+  onSelectCollection: (name: string) => void;
+  onRefresh: () => void;
+  onOpenCreateCollection: () => void;
+  onOpenCollectionSettings: () => void;
+  onOpenAPIPreview: () => void;
+  onOpenNewRecord: () => void;
+  onEditRecord: (record: RecordItem) => void;
+  onDeleteRecord: (record: RecordItem) => void;
+  onDeleteCollection: (collection: Collection) => void;
+  version: string;
 }) {
+  const columns = selectedCollection ? Array.from(new Set(["id", ...selectedCollection.fields.map((field) => field.name), "created", "updated"])) : ["id"];
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-semibold text-slate-950">Project workspace</h2>
-          <p className="mt-1 text-sm text-slate-600">{project ? `${project.name} uses schema ${project.schemaName}` : "Create or select a project to start."}</p>
-        </div>
-        <form onSubmit={onSubmitProject} className="db-panel flex flex-wrap items-end gap-3 p-3">
-          <LabeledInput label="Slug" value={projectDraft.slug} onChange={(value) => setProjectDraft({ ...projectDraft, slug: value })} placeholder="myapp" />
-          <LabeledInput label="Name" value={projectDraft.name} onChange={(value) => setProjectDraft({ ...projectDraft, name: value })} placeholder="My app" />
-          <button type="submit" className="inline-flex h-10 items-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
-            <Plus className="h-4 w-4" />
-            Create project
+    <section className="pb-page">
+      <CollectionSidebar collections={collections} selected={selectedCollectionName} onSelect={onSelectCollection} onNewCollection={onOpenCreateCollection} />
+      <div className="pb-page-content full-height">
+        <header className="pb-page-header flex-nowrap">
+          <nav className="pb-breadcrumbs" aria-label="Breadcrumb">
+            <span>Collections</span>
+            {selectedCollection ? <span title={selectedCollection.name}>{selectedCollection.name}</span> : null}
+          </nav>
+          <div className="pb-header-secondary-btns">
+            <button type="button" className="pb-btn circle transparent secondary" onClick={onOpenCollectionSettings} disabled={!selectedCollection} aria-label="Collection settings">
+              <Settings className="h-4 w-4" />
+            </button>
+            <button type="button" className="pb-btn circle transparent secondary" onClick={onRefresh} disabled={!selectedCollection} aria-label="Refresh records">
+              <RefreshCw className="h-4 w-4" />
+            </button>
+            {selectedCollection && !selectedCollection.system ? (
+              <button type="button" className="pb-btn circle transparent danger" onClick={() => onDeleteCollection(selectedCollection)} aria-label="Delete collection">
+                <Trash2 className="h-4 w-4" />
+              </button>
+            ) : null}
+          </div>
+          <div className="pb-header-primary-btns">
+            <button type="button" className="pb-btn outline api-preview-btn" onClick={onOpenAPIPreview} disabled={!selectedCollection}>
+              <Code2 className="h-4 w-4" />
+              <span>API preview</span>
+            </button>
+            <button type="button" className="pb-btn primary new-record-btn" onClick={onOpenNewRecord} disabled={!selectedCollection}>
+              <Plus className="h-4 w-4" />
+              <span>New record</span>
+            </button>
+          </div>
+        </header>
+
+        <form
+          className="pb-searchbar"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onRefresh();
+          }}
+        >
+          <button type="button" className="pb-btn sm pill secondary transparent" title="Search history">
+            <Search className="h-4 w-4" />
+          </button>
+          <input value={recordFilter} onChange={(event) => setRecordFilter(event.target.value)} placeholder='Search records, for example title = "hello"' />
+          <button type="submit" className="pb-btn sm secondary">
+            Load
           </button>
         </form>
+
+        <div className="pb-table-wrap">
+          <table className="pb-records-table">
+            <thead>
+              <tr>
+                <th className="col-bulk" />
+                {columns.map((column) => (
+                  <th key={column}>{column}</th>
+                ))}
+                <th className="col-meta">
+                  <MoreHorizontal className="h-4 w-4" />
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {records.items.map((record, index) => (
+                <tr key={String(record.id ?? index)} onDoubleClick={() => onEditRecord(record)}>
+                  <td className="col-bulk">
+                    <input type="checkbox" aria-label={`Select record ${String(record.id ?? index)}`} />
+                  </td>
+                  {columns.map((column) => (
+                    <td key={column} className="truncate-cell">
+                      {renderValue(record[column])}
+                    </td>
+                  ))}
+                  <td className="row-actions">
+                    <button type="button" className="pb-btn sm transparent secondary" onClick={() => onEditRecord(record)}>
+                      Edit
+                    </button>
+                    <button type="button" className="pb-btn sm transparent danger" onClick={() => onDeleteRecord(record)}>
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {records.items.length === 0 ? (
+                <tr>
+                  <td colSpan={columns.length + 2} className="pb-empty-cell">
+                    <EmptyState label={selectedCollection ? "No records found." : project ? "Select a collection." : "Create or select a project."} action={selectedCollection ? "New record" : undefined} onAction={selectedCollection ? onOpenNewRecord : undefined} />
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+
+        <PageFooter left={selectedCollection ? `Total: ${records.totalItems}` : "No collection selected"} version={version} />
       </div>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricPanel label="Projects" value={projects.length} helper="Active control-plane projects" />
-        <MetricPanel label="Collections" value={collections.length} helper="Schema-managed tables" />
-        <MetricPanel label="Visible records" value={records.totalItems} helper="Current collection page" />
-        <MetricPanel label="API keys" value={apiKeys.length} helper="Created for this project" />
-      </div>
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.8fr)]">
-        <Panel title="Collections" icon={<Layers3 className="h-4 w-4" />}>
-          <CompactTable
-            headers={["Name", "Type", "Fields", "Rules"]}
-            rows={collections.slice(0, 6).map((collection) => [
-              collection.name,
-              collection.type,
-              String(collection.fields.length),
-              [collection.listRule, collection.viewRule, collection.createRule, collection.updateRule, collection.deleteRule].filter((rule) => rule !== null).length + " configured",
-            ])}
-            empty="No collections yet"
-          />
-        </Panel>
-        <Panel title="Recent audit" icon={<Archive className="h-4 w-4" />}>
-          <div className="space-y-3">
-            {audit.slice(0, 7).map((entry) => (
-              <div key={entry.id} className="flex items-start gap-3 border-b border-slate-100 pb-3 last:border-0 last:pb-0">
-                <span className="status-dot mt-1.5 bg-cyan-600" />
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-slate-900">{entry.action}</p>
-                  <p className="text-xs text-slate-500">{formatDate(entry.createdAt)}</p>
-                </div>
-              </div>
-            ))}
-            {audit.length === 0 ? <EmptyState label="No audit entries yet" /> : null}
-          </div>
-        </Panel>
-      </div>
-    </div>
+    </section>
   );
 }
 
-function CollectionsView(props: {
+function CollectionSidebar({
+  collections,
+  selected,
+  onSelect,
+  onNewCollection,
+}: {
   collections: Collection[];
-  selected: Collection | null;
-  editingFields: Field[];
-  collectionDraft: typeof emptyCollectionDraft;
-  setCollectionDraft: React.Dispatch<React.SetStateAction<typeof emptyCollectionDraft>>;
-  setSelectedCollection: (name: string) => void;
-  setEditingFields: React.Dispatch<React.SetStateAction<Field[]>>;
-  onAddDraftField: () => void;
-  onAddEditingField: () => void;
-  onSaveFields: () => void;
-  onCreateCollection: (event: React.FormEvent<HTMLFormElement>) => void;
-  onDeleteCollection: (collection: Collection) => void;
+  selected: string;
+  onSelect: (name: string) => void;
+  onNewCollection: () => void;
 }) {
-  const { collections, selected, editingFields, collectionDraft } = props;
+  const [search, setSearch] = useState("");
+  const filtered = useMemo(() => {
+    const query = search.replaceAll(" ", "").toLowerCase();
+    if (!query) return collections;
+    return collections.filter((collection) => (collection.name + collection.type).toLowerCase().includes(query));
+  }, [collections, search]);
+  const regular = filtered.filter((collection) => !collection.system);
+  const system = filtered.filter((collection) => collection.system);
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
-      <div className="space-y-4">
-        <Panel title="Collections" icon={<Layers3 className="h-4 w-4" />}>
-          <div className="mb-3 flex items-center gap-2">
-            <Search className="h-4 w-4 text-slate-400" />
-            <span className="text-sm text-slate-500">{collections.length} collections</span>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="db-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>Fields</th>
-                  <th>System</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {collections.map((collection) => (
-                  <tr key={collection.id} className={selected?.name === collection.name ? "bg-cyan-50/60" : ""}>
-                    <td>
-                      <button type="button" onClick={() => props.setSelectedCollection(collection.name)} className="font-medium text-slate-950 hover:text-cyan-700">
-                        {collection.name}
-                      </button>
-                    </td>
-                    <td>{collection.type}</td>
-                    <td>{collection.fields.length}</td>
-                    <td>{collection.system ? "yes" : "no"}</td>
-                    <td className="text-right">
-                      {!collection.system ? (
-                        <button type="button" onClick={() => props.onDeleteCollection(collection)} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50">
-                          <Trash2 className="h-3.5 w-3.5" />
-                          Delete
-                        </button>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Panel>
+    <aside className="pb-sidebar collections-sidebar">
+      <div className="pb-sidebar-search">
+        <Search className="h-4 w-4" />
+        <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search collections..." />
+        {search ? (
+          <button type="button" className="pb-icon-btn" onClick={() => setSearch("")} aria-label="Clear search">
+            <X className="h-4 w-4" />
+          </button>
+        ) : null}
       </div>
-      <div className="space-y-4">
-        <Panel title="Create collection" icon={<Plus className="h-4 w-4" />}>
-          <form onSubmit={props.onCreateCollection} className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-2">
-            <LabeledInput label="Name" value={collectionDraft.name} onChange={(value) => props.setCollectionDraft({ ...collectionDraft, name: value })} placeholder="posts" />
-            <label className="text-sm font-medium text-slate-700">
-              Type
-              <select value={collectionDraft.type} onChange={(event) => props.setCollectionDraft({ ...collectionDraft, type: event.target.value as Collection["type"] })} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
-                <option value="base">base</option>
-                <option value="auth">auth</option>
-              </select>
-            </label>
+      <nav className="pb-sidebar-content collections-list" aria-label="Collections">
+        <CollectionGroup label="Collections" collections={regular} selected={selected} onSelect={onSelect} />
+        <CollectionGroup label="System" collections={system} selected={selected} onSelect={onSelect} collapsed={!search} />
+        {filtered.length === 0 ? <div className="pb-sidebar-empty">No collections found.</div> : null}
+      </nav>
+      <div className="pb-sidebar-action">
+        <button type="button" className="pb-btn outline block" onClick={onNewCollection}>
+          <Plus className="h-4 w-4" />
+          New collection
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function CollectionGroup({
+  label,
+  collections,
+  selected,
+  onSelect,
+  collapsed,
+}: {
+  label: string;
+  collections: Collection[];
+  selected: string;
+  onSelect: (name: string) => void;
+  collapsed?: boolean;
+}) {
+  if (collections.length === 0) return null;
+  return (
+    <details className="pb-nav-group" open={!collapsed}>
+      <summary>{label}</summary>
+      {collections.map((collection) => (
+        <button key={collection.id} type="button" title={collection.name} className={`pb-nav-item ${selected === collection.name ? "active" : ""}`} onClick={() => onSelect(collection.name)}>
+          <CollectionIcon type={collection.type} />
+          <span className="txt">{collection.name}</span>
+          {collection.type === "auth" ? <ShieldCheck className="h-3.5 w-3.5 hint" /> : null}
+        </button>
+      ))}
+    </details>
+  );
+}
+
+function CollectionIcon({ type }: { type: Collection["type"] }) {
+  if (type === "auth") return <ShieldCheck className="h-4 w-4" />;
+  if (type === "view") return <Eye className="h-4 w-4" />;
+  return <Table2 className="h-4 w-4" />;
+}
+
+function CollectionModal({
+  mode,
+  collection,
+  collections,
+  draft,
+  setDraft,
+  fields,
+  setFields,
+  rules,
+  setRules,
+  onAddField,
+  onClose,
+  onSubmit,
+  onSave,
+}: {
+  mode: "create" | "settings";
+  collection?: Collection;
+  collections: Collection[];
+  draft?: CollectionDraft;
+  setDraft?: React.Dispatch<React.SetStateAction<CollectionDraft>>;
+  fields: Field[];
+  setFields: (fields: Field[]) => void;
+  rules: RuleDraft;
+  setRules: (rules: RuleDraft) => void;
+  onAddField: () => void;
+  onClose: () => void;
+  onSubmit?: (event: React.FormEvent<HTMLFormElement>) => void;
+  onSave?: () => void;
+}) {
+  const [tab, setTab] = useState<"fields" | "rules">("fields");
+  const title = mode === "create" ? "Create collection" : "Collection settings";
+  return (
+    <div className="pb-modal-layer" role="presentation">
+      <form
+        className="pb-modal collection-upsert-modal"
+        onSubmit={(event) => {
+          if (mode === "create" && onSubmit) {
+            onSubmit(event);
+            return;
+          }
+          event.preventDefault();
+          onSave?.();
+        }}
+      >
+        <header className="pb-modal-header">
+          <h2>{title}</h2>
+          <button type="button" className="pb-icon-btn" onClick={onClose} aria-label="Close">
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+
+        <div className="pb-modal-content">
+          {mode === "create" && draft && setDraft ? (
+            <div className="pb-collection-topline">
+              <label className="pb-field">
+                <span>Name</span>
+                <input value={draft.name} onChange={(event) => setDraft((next) => ({ ...next, name: event.target.value }))} placeholder="e.g. posts" required />
+              </label>
+              <label className="pb-field compact-select">
+                <span>Type</span>
+                <select value={draft.type} onChange={(event) => setDraft((next) => ({ ...next, type: event.target.value as Collection["type"] }))}>
+                  <option value="base">Base</option>
+                  <option value="auth">Auth</option>
+                </select>
+              </label>
             </div>
-            <FieldRows
-              fields={collectionDraft.fields}
-              collections={collections}
-              onChange={(fields) => props.setCollectionDraft((draft) => ({ ...draft, fields }))}
-              onAdd={props.onAddDraftField}
-            />
-            <RuleInputs
-              listRule={collectionDraft.listRule}
-              viewRule={collectionDraft.viewRule}
-              createRule={collectionDraft.createRule}
-              updateRule={collectionDraft.updateRule}
-              deleteRule={collectionDraft.deleteRule}
-              onChange={(rule, value) => props.setCollectionDraft((draft) => ({ ...draft, [rule]: value }))}
-            />
-            <button type="submit" className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
-              <Plus className="h-4 w-4" />
-              Create collection
+          ) : null}
+
+          {mode === "settings" && collection ? (
+            <div className="pb-collection-title">
+              <CollectionIcon type={collection.type} />
+              <div>
+                <p>{collection.name}</p>
+                <span>{collection.type} collection</span>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="pb-tabs" role="tablist" aria-label="Collection editor">
+            <button type="button" role="tab" aria-selected={tab === "fields"} className={`pb-tab-item ${tab === "fields" ? "active" : ""}`} onClick={() => setTab("fields")}>
+              Fields
             </button>
-          </form>
-        </Panel>
-        <Panel title={selected ? `Field editor: ${selected.name}` : "Field editor"} icon={<ListFilter className="h-4 w-4" />}>
-        {selected ? (
-          <div className="space-y-4">
-            <FieldRows fields={editingFields} collections={collections} onChange={props.setEditingFields} onAdd={props.onAddEditingField} />
-            <button type="button" onClick={props.onSaveFields} className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
-              <Save className="h-4 w-4" />
-              Save schema
+            <button type="button" role="tab" aria-selected={tab === "rules"} className={`pb-tab-item ${tab === "rules" ? "active" : ""}`} onClick={() => setTab("rules")}>
+              API rules
             </button>
           </div>
-        ) : (
-          <EmptyState label="Select a collection" />
-        )}
-        </Panel>
-      </div>
+
+          {tab === "fields" ? <FieldRows fields={fields} collections={collections} onChange={setFields} onAdd={onAddField} /> : null}
+          {tab === "rules" ? <RuleInputs rules={rules} onChange={setRules} /> : null}
+        </div>
+
+        <footer className="pb-modal-footer">
+          <button type="button" className="pb-btn transparent" onClick={onClose}>
+            Close
+          </button>
+          <button type="submit" className="pb-btn primary expanded-lg">
+            {mode === "create" ? "Create" : "Save changes"}
+          </button>
+        </footer>
+      </form>
     </div>
   );
 }
@@ -1128,22 +1269,14 @@ function FieldRows({
 }) {
   const update = (index: number, field: Field) => onChange(fields.map((item, i) => (i === index ? field : item)));
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm font-semibold text-slate-900">Fields</p>
-        <button type="button" onClick={onAdd} className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50">
-          <Plus className="h-4 w-4" />
-          Add field
-        </button>
-      </div>
+    <div className="pb-fields-editor">
       {fields.length === 0 ? <EmptyState label="No fields yet" /> : null}
       {fields.map((field, index) => (
-        <div key={`${field.name}-${index}`} className="rounded-md border border-slate-200 bg-white p-3">
-          <div className="grid gap-2 md:grid-cols-[minmax(140px,1fr)_150px_120px_40px] md:items-end">
-            <LabeledInput label="Name" value={field.name} onChange={(value) => update(index, { ...field, name: value })} placeholder="title" />
-            <label className="text-sm font-medium text-slate-700">
-              Type
-              <select value={field.type} onChange={(event) => update(index, fieldWithType(field, event.target.value as FieldType))} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
+        <div key={`${field.name}-${index}`} className="pb-field-row">
+          <div className="pb-field-row-main">
+            <label className="pb-field-type">
+              <span className="sr-only">Type</span>
+              <select value={field.type} onChange={(event) => update(index, fieldWithType(field, event.target.value as FieldType))}>
                 {fieldTypes.map((type) => (
                   <option key={type} value={type}>
                     {type}
@@ -1151,17 +1284,22 @@ function FieldRows({
                 ))}
               </select>
             </label>
-            <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+            <input value={field.name} onChange={(event) => update(index, { ...field, name: event.target.value })} placeholder="Field name*" />
+            <label className="pb-checkline sm">
               <input type="checkbox" checked={Boolean(field.required)} onChange={(event) => update(index, { ...field, required: event.target.checked })} />
               Required
             </label>
-            <button type="button" aria-label={`Remove field ${field.name || index + 1}`} onClick={() => onChange(fields.filter((_, i) => i !== index))} className="grid h-10 w-10 place-items-center rounded-md text-red-700 hover:bg-red-50">
+            <button type="button" aria-label={`Remove field ${field.name || index + 1}`} className="pb-btn sm circle transparent danger" onClick={() => onChange(fields.filter((_, i) => i !== index))}>
               <Trash2 className="h-4 w-4" />
             </button>
           </div>
           <FieldOptionsEditor field={field} collections={collections} onChange={(next) => update(index, next)} />
         </div>
       ))}
+      <button type="button" className="pb-btn outline block" onClick={onAdd}>
+        <Plus className="h-4 w-4" />
+        New field
+      </button>
     </div>
   );
 }
@@ -1169,18 +1307,12 @@ function FieldRows({
 function FieldOptionsEditor({ field, collections, onChange }: { field: Field; collections: Collection[]; onChange: (field: Field) => void }) {
   if (field.type === "select") {
     return (
-      <div className="mt-3 grid gap-2 border-t border-slate-100 pt-3 md:grid-cols-[minmax(0,1fr)_140px]">
-        <label className="text-sm font-medium text-slate-700">
-          Values
-          <textarea
-            value={optionValuesText(field.options)}
-            onChange={(event) => onChange(setFieldOption(field, "values", splitOptionValues(event.target.value)))}
-            rows={3}
-            placeholder="draft&#10;published"
-            className="mt-1 w-full rounded-md border border-slate-300 p-2 text-sm"
-          />
+      <div className="pb-field-options two">
+        <label className="pb-field">
+          <span>Values</span>
+          <textarea value={optionValuesText(field.options)} onChange={(event) => onChange(setFieldOption(field, "values", splitOptionValues(event.target.value)))} rows={3} placeholder={"draft\npublished"} />
         </label>
-        <label className="flex h-10 items-center gap-2 self-end rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+        <label className="pb-checkline">
           <input type="checkbox" checked={Boolean(field.options?.multi)} onChange={(event) => onChange(setFieldOption(field, "multi", event.target.checked))} />
           Multiple
         </label>
@@ -1189,10 +1321,10 @@ function FieldOptionsEditor({ field, collections, onChange }: { field: Field; co
   }
   if (field.type === "relation") {
     return (
-      <div className="mt-3 grid gap-2 border-t border-slate-100 pt-3 md:grid-cols-[minmax(0,1fr)_140px]">
-        <label className="text-sm font-medium text-slate-700">
-          Target collection
-          <select value={String(field.options?.collection ?? "")} onChange={(event) => onChange(setFieldOption(field, "collection", event.target.value))} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
+      <div className="pb-field-options two">
+        <label className="pb-field">
+          <span>Target collection</span>
+          <select value={String(field.options?.collection ?? "")} onChange={(event) => onChange(setFieldOption(field, "collection", event.target.value))}>
             <option value="">Choose collection</option>
             {collections.map((collection) => (
               <option key={collection.id} value={collection.name}>
@@ -1201,7 +1333,7 @@ function FieldOptionsEditor({ field, collections, onChange }: { field: Field; co
             ))}
           </select>
         </label>
-        <label className="flex h-10 items-center gap-2 self-end rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+        <label className="pb-checkline">
           <input type="checkbox" checked={Boolean(field.options?.multi)} onChange={(event) => onChange(setFieldOption(field, "multi", event.target.checked))} />
           Multiple
         </label>
@@ -1210,8 +1342,8 @@ function FieldOptionsEditor({ field, collections, onChange }: { field: Field; co
   }
   if (field.type === "file") {
     return (
-      <div className="mt-3 border-t border-slate-100 pt-3">
-        <label className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
+      <div className="pb-field-options">
+        <label className="pb-checkline">
           <input type="checkbox" checked={Boolean(field.options?.multiple)} onChange={(event) => onChange(setFieldOption(field, "multiple", event.target.checked))} />
           Allow multiple files
         </label>
@@ -1221,235 +1353,518 @@ function FieldOptionsEditor({ field, collections, onChange }: { field: Field; co
   return null;
 }
 
-function RuleInputs({
-  listRule,
-  viewRule,
-  createRule,
-  updateRule,
-  deleteRule,
-  onChange,
-}: {
-  listRule: string;
-  viewRule: string;
-  createRule: string;
-  updateRule: string;
-  deleteRule: string;
-  onChange: (rule: "listRule" | "viewRule" | "createRule" | "updateRule" | "deleteRule", value: string) => void;
-}) {
+function RuleInputs({ rules, onChange }: { rules: RuleDraft; onChange: (rules: RuleDraft) => void }) {
+  const update = (key: keyof RuleDraft, value: string) => onChange({ ...rules, [key]: value });
   return (
-    <details className="rounded-md border border-slate-200 bg-slate-50 p-3">
-      <summary className="cursor-pointer text-sm font-semibold text-slate-900">API rules</summary>
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <RuleTextarea label="List rule" value={listRule} onChange={(value) => onChange("listRule", value)} />
-        <RuleTextarea label="View rule" value={viewRule} onChange={(value) => onChange("viewRule", value)} />
-        <RuleTextarea label="Create rule" value={createRule} onChange={(value) => onChange("createRule", value)} />
-        <RuleTextarea label="Update rule" value={updateRule} onChange={(value) => onChange("updateRule", value)} />
-        <RuleTextarea label="Delete rule" value={deleteRule} onChange={(value) => onChange("deleteRule", value)} />
-      </div>
-    </details>
+    <div className="pb-rules-grid">
+      <RuleTextarea label="List rule" value={rules.listRule} onChange={(value) => update("listRule", value)} />
+      <RuleTextarea label="View rule" value={rules.viewRule} onChange={(value) => update("viewRule", value)} />
+      <RuleTextarea label="Create rule" value={rules.createRule} onChange={(value) => update("createRule", value)} />
+      <RuleTextarea label="Update rule" value={rules.updateRule} onChange={(value) => update("updateRule", value)} />
+      <RuleTextarea label="Delete rule" value={rules.deleteRule} onChange={(value) => update("deleteRule", value)} />
+    </div>
   );
 }
 
 function RuleTextarea({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
-    <label className="text-sm font-medium text-slate-700">
-      {label}
-      <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={2} placeholder='@request.auth.id != ""' className="mt-1 w-full rounded-md border border-slate-300 p-2 font-mono text-xs" />
+    <label className="pb-field">
+      <span>{label}</span>
+      <textarea value={value} onChange={(event) => onChange(event.target.value)} rows={4} placeholder='@request.auth.id != ""' className="mono" />
     </label>
   );
 }
 
-function RecordsView(props: {
-  collections: Collection[];
-  selectedCollection: Collection | null;
-  selectedCollectionName: string;
-  setSelectedCollection: (name: string) => void;
-  records: RecordList;
-  recordFilter: string;
-  setRecordFilter: (value: string) => void;
+function RecordModal({
+  collection,
+  selectedRecordId,
+  recordJSON,
+  setRecordJSON,
+  onClose,
+  onSave,
+}: {
+  collection: Collection;
+  selectedRecordId: string;
   recordJSON: string;
   setRecordJSON: (value: string) => void;
-  selectedRecordId: string;
-  setSelectedRecordId: (value: string) => void;
-  onRefresh: () => void;
-  onSaveRecord: () => void;
-  onDeleteRecord: (record: RecordItem) => void;
+  onClose: () => void;
+  onSave: () => void;
 }) {
-  const columns = props.selectedCollection ? ["id", "created", "updated", ...props.selectedCollection.fields.slice(0, 5).map((field) => field.name)] : ["id"];
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
-      <Panel title="Records" icon={<Table2 className="h-4 w-4" />}>
-        <div className="mb-3 flex flex-wrap items-end gap-3">
-          <label className="text-sm font-medium text-slate-700">
-            Collection
-            <select value={props.selectedCollectionName} onChange={(event) => props.setSelectedCollection(event.target.value)} className="mt-1 h-10 min-w-48 rounded-md border border-slate-300 bg-white px-3 text-sm">
-              {props.collections.map((collection) => (
-                <option key={collection.id} value={collection.name}>
-                  {collection.name}
-                </option>
-              ))}
-            </select>
+    <div className="pb-modal-layer" role="presentation">
+      <section className="pb-modal record-upsert-modal" role="dialog" aria-modal="true" aria-labelledby="record-modal-title">
+        <header className="pb-modal-header">
+          <h2 id="record-modal-title">{selectedRecordId ? "Edit record" : "New record"}</h2>
+          <button type="button" className="pb-icon-btn" onClick={onClose} aria-label="Close">
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+        <div className="pb-modal-content">
+          <div className="pb-collection-title">
+            <CollectionIcon type={collection.type} />
+            <div>
+              <p>{collection.name}</p>
+              <span>{selectedRecordId || "new record"}</span>
+            </div>
+          </div>
+          <label className="pb-field">
+            <span>JSON</span>
+            <textarea value={recordJSON} onChange={(event) => setRecordJSON(event.target.value)} rows={20} className="mono json-editor" />
           </label>
-          <LabeledInput label="Filter" value={props.recordFilter} onChange={props.setRecordFilter} placeholder='title = "hello"' />
-          <button type="button" onClick={props.onRefresh} className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50">
-            <RefreshCw className="h-4 w-4" />
-            Load
+        </div>
+        <footer className="pb-modal-footer">
+          <button type="button" className="pb-btn transparent" onClick={onClose}>
+            Close
           </button>
-        </div>
-        <div className="overflow-auto">
-          <table className="db-table min-w-[760px]">
-            <thead>
-              <tr>
-                {columns.map((column) => (
-                  <th key={column}>{column}</th>
-                ))}
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {props.records.items.map((record, index) => (
-                <tr key={String(record.id ?? index)}>
-                  {columns.map((column) => (
-                    <td key={column} className="max-w-52 truncate">
-                      {renderValue(record[column])}
-                    </td>
-                  ))}
-                  <td className="text-right">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        props.setSelectedRecordId(String(record.id ?? ""));
-                        props.setRecordJSON(JSON.stringify(stripSystemFields(record), null, 2));
-                      }}
-                      className="mr-1 rounded-md px-2 py-1 text-xs font-medium text-cyan-700 hover:bg-cyan-50"
-                    >
-                      Edit
-                    </button>
-                    <button type="button" onClick={() => props.onDeleteRecord(record)} className="rounded-md px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50">
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {props.records.items.length === 0 ? <EmptyState label="No records returned" /> : null}
-        </div>
-      </Panel>
-      <Panel title={props.selectedRecordId ? "Edit record" : "Create record"} icon={<Save className="h-4 w-4" />}>
-        <textarea value={props.recordJSON} onChange={(event) => props.setRecordJSON(event.target.value)} rows={18} className="w-full rounded-md border border-slate-300 p-3 font-mono text-xs" />
-        <div className="mt-3 flex gap-2">
-          <button type="button" onClick={props.onSaveRecord} className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
-            <Save className="h-4 w-4" />
-            {props.selectedRecordId ? "Save record" : "Create record"}
+          <button type="button" className="pb-btn primary expanded-lg" onClick={onSave}>
+            Save
           </button>
-          {props.selectedRecordId ? (
-            <button type="button" onClick={() => { props.setSelectedRecordId(""); props.setRecordJSON("{}"); }} className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50">
-              New
-            </button>
-          ) : null}
-        </div>
-      </Panel>
+        </footer>
+      </section>
     </div>
   );
 }
 
-function UsersView({ usersCollection, records, onOpenUsers }: { usersCollection: Collection | null; records: RecordList; onOpenUsers: () => void }) {
+function APIPreviewModal({ project, collection, onClose, onCopy }: { project: string; collection: Collection; onClose: () => void; onCopy: (text: string) => void }) {
+  const basePath = `/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection.name)}`;
+  const sample = `GET ${basePath}/records\nPOST ${basePath}/records\nPATCH ${basePath}/records/{id}\nDELETE ${basePath}/records/{id}`;
   return (
-    <Panel title="Users" icon={<Users className="h-4 w-4" />}>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <p className="text-sm text-slate-600">{usersCollection ? `${usersCollection.fields.length} fields in system users collection` : "The users collection is created per project."}</p>
-        <button type="button" onClick={onOpenUsers} className="inline-flex h-10 items-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
-          <ChevronRight className="h-4 w-4" />
-          Open users records
-        </button>
+    <div className="pb-modal-layer" role="presentation">
+      <section className="pb-modal api-preview-modal" role="dialog" aria-modal="true" aria-labelledby="api-preview-title">
+        <header className="pb-modal-header">
+          <h2 id="api-preview-title">API preview</h2>
+          <button type="button" className="pb-icon-btn" onClick={onClose} aria-label="Close">
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+        <div className="pb-modal-content">
+          <div className="pb-collection-title">
+            <CollectionIcon type={collection.type} />
+            <div>
+              <p>{collection.name}</p>
+              <span>{collection.fields.length} fields</span>
+            </div>
+          </div>
+          <pre className="pb-code-box">{sample}</pre>
+          <button type="button" className="pb-btn secondary" onClick={() => onCopy(sample)}>
+            <Copy className="h-4 w-4" />
+            Copy
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function LogsView({ audit, onRefresh, version }: { audit: AuditEntry[]; onRefresh: () => void; version: string }) {
+  return (
+    <section className="pb-page single">
+      <div className="pb-page-content full-height">
+        <header className="pb-page-header">
+          <nav className="pb-breadcrumbs" aria-label="Breadcrumb">
+            <span>Logs</span>
+          </nav>
+          <div className="pb-header-primary-btns">
+            <button type="button" onClick={onRefresh} className="pb-btn outline">
+              <RefreshCw className="h-4 w-4" />
+              Refresh
+            </button>
+          </div>
+        </header>
+        <div className="pb-table-wrap">
+          <table className="pb-records-table">
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>Target</th>
+                <th>IP</th>
+                <th>Created</th>
+                <th>Data</th>
+              </tr>
+            </thead>
+            <tbody>
+              {audit.map((entry) => (
+                <tr key={entry.id}>
+                  <td>{entry.action}</td>
+                  <td>
+                    {entry.targetType} {entry.targetId}
+                  </td>
+                  <td>{entry.ip || "-"}</td>
+                  <td>{formatDate(entry.createdAt)}</td>
+                  <td className="truncate-cell">{JSON.stringify(entry.data)}</td>
+                </tr>
+              ))}
+              {audit.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="pb-empty-cell">
+                    <EmptyState label="No audit entries yet." />
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+        <PageFooter left={`Total: ${audit.length}`} version={version} />
       </div>
-      <CompactTable
-        headers={["ID", "Email", "Verified", "Created"]}
-        rows={records.items.map((record) => [String(record.id ?? ""), String(record.email ?? ""), String(record.verified ?? ""), String(record.created ?? "")])}
-        empty="Open users records to load rows"
-      />
-    </Panel>
+    </section>
+  );
+}
+
+function SettingsWorkspace(props: {
+  section: SettingsSection;
+  onChangeSection: (section: SettingsSection) => void;
+  project: Project | null;
+  projects: Project[];
+  projectDraft: { slug: string; name: string };
+  setProjectDraft: (draft: { slug: string; name: string }) => void;
+  onSubmitProject: (event: React.FormEvent<HTMLFormElement>) => void;
+  healthState: Health | null;
+  appUrl: string;
+  settings: InstanceSettings | null;
+  smtpDraft: typeof emptySMTPDraft;
+  setSMTPDraft: React.Dispatch<React.SetStateAction<typeof emptySMTPDraft>>;
+  storageDraft: typeof emptyStorageDraft;
+  setStorageDraft: React.Dispatch<React.SetStateAction<typeof emptyStorageDraft>>;
+  onSaveSMTP: (event: React.FormEvent<HTMLFormElement>) => void;
+  onTestSMTP: () => void;
+  onSaveStorage: (event: React.FormEvent<HTMLFormElement>) => void;
+  onTestStorage: () => void;
+  apiKeys: APIKey[];
+  oneTimeKey: APIKey | null;
+  keyDraft: { name: string; type: "anon" | "service" };
+  setKeyDraft: React.Dispatch<React.SetStateAction<{ name: string; type: "anon" | "service" }>>;
+  onCreateKey: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRevokeKey: (key: APIKey) => void;
+  onCopy: (text: string) => void;
+  onDismissSecret: () => void;
+  collections: Collection[];
+  selectedCollection: Collection | null;
+  selectedCollectionName: string;
+  setSelectedCollection: (name: string) => void;
+  fileFields: Field[];
+  fileDraft: { recordId: string; field: string };
+  setFileDraft: React.Dispatch<React.SetStateAction<{ recordId: string; field: string }>>;
+  fileResult: RecordItem | null;
+  records: RecordList;
+  token: string;
+  projectSlug: string;
+  onSubmitUpload: (event: React.FormEvent<HTMLFormElement>) => void;
+  onCreateFileToken: (recordId: string, field: string, fileId: string) => Promise<string>;
+  version: string;
+}) {
+  const active = settingsItems.find((item) => item.id === props.section);
+  return (
+    <section className="pb-page">
+      <SettingsSidebar active={props.section} onChange={props.onChangeSection} />
+      <div className="pb-page-content full-height">
+        <header className="pb-page-header">
+          <nav className="pb-breadcrumbs" aria-label="Breadcrumb">
+            <span>Settings</span>
+            {active ? <span>{active.label}</span> : null}
+          </nav>
+        </header>
+        <div className="pb-wrapper">
+          {props.section === "application" ? <ApplicationSettings {...props} /> : null}
+          {props.section === "mail" ? <MailSettings {...props} /> : null}
+          {props.section === "storage" ? <StorageSettingsPanel {...props} /> : null}
+          {props.section === "apiKeys" ? <APIKeysView {...props} /> : null}
+          {props.section === "files" ? <FilesView {...props} /> : null}
+        </div>
+        <PageFooter left="Settings" version={props.version} />
+      </div>
+    </section>
+  );
+}
+
+function SettingsSidebar({ active, onChange }: { active: SettingsSection; onChange: (section: SettingsSection) => void }) {
+  const grouped = settingsItems.reduce<Record<string, typeof settingsItems[number][]>>((acc, item) => {
+    acc[item.group] = [...(acc[item.group] ?? []), item];
+    return acc;
+  }, {});
+  return (
+    <aside className="pb-sidebar settings-sidebar">
+      <nav className="pb-sidebar-content" aria-label="Settings">
+        {Object.entries(grouped).map(([group, items]) => (
+          <details key={group} className="pb-nav-group" open>
+            <summary>{group}</summary>
+            {items.map((item) => (
+              <button key={item.id} type="button" className={`pb-nav-item ${active === item.id ? "active" : ""}`} onClick={() => onChange(item.id)}>
+                <SettingsIcon id={item.id} />
+                <span className="txt">{item.label}</span>
+              </button>
+            ))}
+          </details>
+        ))}
+      </nav>
+    </aside>
+  );
+}
+
+function SettingsIcon({ id }: { id: SettingsSection }) {
+  if (id === "mail") return <Mail className="h-4 w-4" />;
+  if (id === "storage") return <HardDrive className="h-4 w-4" />;
+  if (id === "apiKeys") return <KeyRound className="h-4 w-4" />;
+  if (id === "files") return <UploadCloud className="h-4 w-4" />;
+  return <Settings className="h-4 w-4" />;
+}
+
+function ApplicationSettings({
+  project,
+  projects,
+  projectDraft,
+  setProjectDraft,
+  onSubmitProject,
+  healthState,
+  appUrl,
+}: {
+  project: Project | null;
+  projects: Project[];
+  projectDraft: { slug: string; name: string };
+  setProjectDraft: (draft: { slug: string; name: string }) => void;
+  onSubmitProject: (event: React.FormEvent<HTMLFormElement>) => void;
+  healthState: Health | null;
+  appUrl: string;
+}) {
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>Application</h2>
+        <div className="pb-info-grid">
+          <Info label="Application URL" value={appUrl} />
+          <Info label="Version" value={healthState?.version ?? ""} />
+          <Info label="DB" value={healthState?.db ?? ""} />
+          <Info label="Storage" value={healthState?.storage ?? ""} />
+        </div>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Project</h2>
+        {project ? (
+          <div className="pb-info-grid">
+            <Info label="Slug" value={project.slug} />
+            <Info label="Name" value={project.name} />
+            <Info label="Schema" value={project.schemaName} />
+            <Info label="Anon role" value={project.roles?.anon ?? ""} />
+            <Info label="Authenticated role" value={project.roles?.authenticated ?? ""} />
+            <Info label="Service role" value={project.roles?.service ?? ""} />
+          </div>
+        ) : (
+          <EmptyState label="No project selected." />
+        )}
+      </section>
+      <section className="pb-settings-block">
+        <h2>Projects</h2>
+        <form onSubmit={onSubmitProject} className="pb-grid-form">
+          <LabeledInput label="Slug" value={projectDraft.slug} onChange={(value) => setProjectDraft({ ...projectDraft, slug: value })} placeholder="myapp" />
+          <LabeledInput label="Name" value={projectDraft.name} onChange={(value) => setProjectDraft({ ...projectDraft, name: value })} placeholder="My app" />
+          <button type="submit" className="pb-btn primary">
+            <Plus className="h-4 w-4" />
+            Create project
+          </button>
+        </form>
+        <CompactTable headers={["Name", "Slug", "Schema"]} rows={projects.map((item) => [item.name, item.slug, item.schemaName])} empty="No projects yet." />
+      </section>
+    </div>
+  );
+}
+
+function MailSettings({
+  settings,
+  smtpDraft,
+  setSMTPDraft,
+  onSaveSMTP,
+  onTestSMTP,
+}: {
+  settings: InstanceSettings | null;
+  smtpDraft: typeof emptySMTPDraft;
+  setSMTPDraft: React.Dispatch<React.SetStateAction<typeof emptySMTPDraft>>;
+  onSaveSMTP: (event: React.FormEvent<HTMLFormElement>) => void;
+  onTestSMTP: () => void;
+}) {
+  return (
+    <form onSubmit={onSaveSMTP} className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>Mail settings</h2>
+        <p className="pb-muted-copy">Configure common settings for sending emails.</p>
+        <div className="pb-grid-form two">
+          <LabeledInput label="Sender address" value={smtpDraft.from} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, from: value }))} placeholder="Support <support@example.com>" />
+          <label className="pb-checkline switchline">
+            <input type="checkbox" checked={smtpDraft.enabled} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, enabled: event.target.checked }))} />
+            Use SMTP mail server <strong>(recommended)</strong>
+          </label>
+        </div>
+        {smtpDraft.enabled ? (
+          <div className="pb-grid-form smtp-grid">
+            <LabeledInput label="SMTP server host" value={smtpDraft.host} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, host: value }))} placeholder="smtp.example.com" />
+            <LabeledInput label="Port" value={smtpDraft.port} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, port: value }))} placeholder="587" />
+            <LabeledInput label="Username" value={smtpDraft.username} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, username: value }))} />
+            <label className="pb-field">
+              <span>Password {settings?.smtp.passwordSet ? <em>(saved)</em> : null}</span>
+              <input type="password" value={smtpDraft.password} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, password: event.target.value, clearPassword: false }))} placeholder={settings?.smtp.passwordSet ? "* * * * * *" : ""} />
+            </label>
+            <label className="pb-checkline">
+              <input type="checkbox" checked={smtpDraft.clearPassword} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, clearPassword: event.target.checked, password: "" }))} />
+              Clear password
+            </label>
+          </div>
+        ) : null}
+      </section>
+      <section className="pb-settings-actions">
+        <label className="pb-field test-recipient">
+          <span>Test recipient</span>
+          <input value={smtpDraft.testTo} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, testTo: event.target.value }))} placeholder="you@example.com" />
+        </label>
+        <button type="button" onClick={onTestSMTP} className="pb-btn outline expanded-lg">
+          <Mail className="h-4 w-4" />
+          Send test email
+        </button>
+        <button type="submit" className="pb-btn primary expanded-lg">
+          Save changes
+        </button>
+      </section>
+    </form>
+  );
+}
+
+function StorageSettingsPanel({
+  settings,
+  storageDraft,
+  setStorageDraft,
+  onSaveStorage,
+  onTestStorage,
+}: {
+  settings: InstanceSettings | null;
+  storageDraft: typeof emptyStorageDraft;
+  setStorageDraft: React.Dispatch<React.SetStateAction<typeof emptyStorageDraft>>;
+  onSaveStorage: (event: React.FormEvent<HTMLFormElement>) => void;
+  onTestStorage: () => void;
+}) {
+  const s3Enabled = storageDraft.type === "s3";
+  return (
+    <form onSubmit={onSaveStorage} className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>File storage</h2>
+        <p className="pb-muted-copy">By default Dublyobase uses and recommends the local file system to store uploaded files because it is faster to manage and backup.</p>
+        <p className="pb-muted-copy">Alternatively, if you have limited disk space available, you could opt to an S3 compatible external storage.</p>
+        <label className="pb-checkline switchline">
+          <input type="checkbox" checked={s3Enabled} onChange={(event) => setStorageDraft((draft) => ({ ...draft, type: event.target.checked ? "s3" : "local" }))} />
+          Use S3 storage
+        </label>
+        <div className="pb-info-grid compact">
+          <Info label="Source" value={settings?.storage.source ?? ""} />
+          <Info label="Local path" value={settings?.storage.localPath ?? ""} />
+        </div>
+        {s3Enabled ? (
+          <>
+            <div className="pb-inline-alert info">
+              If you have existing uploaded files, migrate them manually from local storage to S3 storage. Useful tools include{" "}
+              <a href="https://github.com/rclone/rclone" target="_blank" rel="noreferrer">
+                rclone
+              </a>{" "}
+              and{" "}
+              <a href="https://github.com/peak/s5cmd" target="_blank" rel="noreferrer">
+                s5cmd
+              </a>
+              .
+            </div>
+            <div className="pb-grid-form s3-grid">
+              <LabeledInput label="Endpoint" value={storageDraft.endpoint} onChange={(value) => setStorageDraft((draft) => ({ ...draft, endpoint: value }))} placeholder="https://s3.example.com" />
+              <LabeledInput label="Bucket" value={storageDraft.bucket} onChange={(value) => setStorageDraft((draft) => ({ ...draft, bucket: value }))} placeholder="dublyobase" />
+              <LabeledInput label="Region" value={storageDraft.region} onChange={(value) => setStorageDraft((draft) => ({ ...draft, region: value }))} placeholder="auto" />
+              <LabeledInput label="Prefix" value={storageDraft.prefix} onChange={(value) => setStorageDraft((draft) => ({ ...draft, prefix: value }))} placeholder="prod" />
+              <LabeledInput label="Access key" value={storageDraft.accessKey} onChange={(value) => setStorageDraft((draft) => ({ ...draft, accessKey: value }))} />
+              <label className="pb-field">
+                <span>Secret {settings?.storage.s3.secretKeySet ? <em>(saved)</em> : null}</span>
+                <input type="password" value={storageDraft.secretKey} onChange={(event) => setStorageDraft((draft) => ({ ...draft, secretKey: event.target.value, clearSecretKey: false }))} placeholder={settings?.storage.s3.secretKeySet ? "* * * * * *" : ""} />
+              </label>
+              <label className="pb-checkline">
+                <input type="checkbox" checked={storageDraft.forcePathStyle} onChange={(event) => setStorageDraft((draft) => ({ ...draft, forcePathStyle: event.target.checked }))} />
+                Force path-style addressing
+              </label>
+              <label className="pb-checkline">
+                <input type="checkbox" checked={storageDraft.useSSL} onChange={(event) => setStorageDraft((draft) => ({ ...draft, useSSL: event.target.checked }))} />
+                HTTPS
+              </label>
+              <label className="pb-checkline">
+                <input type="checkbox" checked={storageDraft.clearSecretKey} onChange={(event) => setStorageDraft((draft) => ({ ...draft, clearSecretKey: event.target.checked, secretKey: "" }))} />
+                Clear secret
+              </label>
+            </div>
+          </>
+        ) : null}
+      </section>
+      <section className="pb-settings-actions">
+        <button type="button" onClick={onTestStorage} className="pb-btn outline expanded-lg">
+          Test storage
+        </button>
+        <button type="submit" className="pb-btn primary expanded-lg">
+          Save changes
+        </button>
+      </section>
+    </form>
   );
 }
 
 function APIKeysView(props: {
-  keys: APIKey[];
+  apiKeys: APIKey[];
   oneTimeKey: APIKey | null;
   keyDraft: { name: string; type: "anon" | "service" };
-  setKeyDraft: (draft: { name: string; type: "anon" | "service" }) => void;
-  onCreate: (event: React.FormEvent<HTMLFormElement>) => void;
-  onRevoke: (key: APIKey) => void;
+  setKeyDraft: React.Dispatch<React.SetStateAction<{ name: string; type: "anon" | "service" }>>;
+  onCreateKey: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRevokeKey: (key: APIKey) => void;
   onCopy: (text: string) => void;
   onDismissSecret: () => void;
 }) {
   return (
-    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
-      <Panel title="API keys" icon={<KeyRound className="h-4 w-4" />}>
-        <div className="overflow-x-auto">
-          <table className="db-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Prefix</th>
-                <th>Created</th>
-                <th>Status</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {props.keys.map((key) => (
-                <tr key={key.id}>
-                  <td>{key.name}</td>
-                  <td>{key.type}</td>
-                  <td>{key.prefix}</td>
-                  <td>{formatDate(key.createdAt)}</td>
-                  <td>{key.revokedAt ? "revoked" : "active"}</td>
-                  <td className="text-right">
-                    {!key.revokedAt ? (
-                      <button type="button" onClick={() => props.onRevoke(key)} className="rounded-md px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50">
-                        Revoke
-                      </button>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>API keys</h2>
+        <CompactTable
+          headers={["Name", "Type", "Prefix", "Created", "Status", ""]}
+          rows={props.apiKeys.map((key) => [key.name, key.type, key.prefix, formatDate(key.createdAt), key.revokedAt ? "revoked" : "active", ""])}
+          empty="No API keys yet."
+        />
+        <div className="pb-table-actions">
+          {props.apiKeys.map((key) =>
+            !key.revokedAt ? (
+              <button key={key.id} type="button" onClick={() => props.onRevokeKey(key)} className="pb-btn sm transparent danger">
+                Revoke {key.name}
+              </button>
+            ) : null,
+          )}
         </div>
-      </Panel>
-      <Panel title="Create key" icon={<Plus className="h-4 w-4" />}>
-        <form onSubmit={props.onCreate} className="space-y-3">
-          <LabeledInput label="Name" value={props.keyDraft.name} onChange={(value) => props.setKeyDraft({ ...props.keyDraft, name: value })} placeholder="production service" />
-          <label className="text-sm font-medium text-slate-700">
-            Type
-            <select value={props.keyDraft.type} onChange={(event) => props.setKeyDraft({ ...props.keyDraft, type: event.target.value as "anon" | "service" })} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
+      </section>
+      <section className="pb-settings-block">
+        <h2>Create key</h2>
+        <form onSubmit={props.onCreateKey} className="pb-grid-form">
+          <LabeledInput label="Name" value={props.keyDraft.name} onChange={(value) => props.setKeyDraft((draft) => ({ ...draft, name: value }))} placeholder="production service" />
+          <label className="pb-field">
+            <span>Type</span>
+            <select value={props.keyDraft.type} onChange={(event) => props.setKeyDraft((draft) => ({ ...draft, type: event.target.value as "anon" | "service" }))}>
               <option value="service">service</option>
               <option value="anon">anon</option>
             </select>
           </label>
-          <button type="submit" className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
+          <button type="submit" className="pb-btn primary">
             <KeyRound className="h-4 w-4" />
             Create key
           </button>
         </form>
         {props.oneTimeKey?.key ? (
-          <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3">
-            <p className="text-sm font-semibold text-amber-900">Copy this key now. It will not be shown again.</p>
-            <div className="code-box mt-2">{props.oneTimeKey.key}</div>
-            <div className="mt-2 flex gap-2">
-              <button type="button" onClick={() => props.onCopy(props.oneTimeKey?.key ?? "")} className="inline-flex h-9 items-center gap-2 rounded-md border border-amber-300 bg-white px-3 text-sm font-medium">
+          <div className="pb-inline-alert warning">
+            <p>Copy this key now. It will not be shown again.</p>
+            <pre className="pb-code-box">{props.oneTimeKey.key}</pre>
+            <div className="pb-row-actions">
+              <button type="button" onClick={() => props.onCopy(props.oneTimeKey?.key ?? "")} className="pb-btn secondary">
                 <Copy className="h-4 w-4" />
                 Copy
               </button>
-              <button type="button" onClick={props.onDismissSecret} className="h-9 rounded-md px-3 text-sm font-medium text-amber-900 hover:bg-amber-100">
+              <button type="button" onClick={props.onDismissSecret} className="pb-btn transparent">
                 Dismiss
               </button>
             </div>
           </div>
         ) : null}
-      </Panel>
+      </section>
     </div>
   );
 }
@@ -1461,22 +1876,23 @@ function FilesView(props: {
   setSelectedCollection: (name: string) => void;
   fileFields: Field[];
   fileDraft: { recordId: string; field: string };
-  setFileDraft: (draft: { recordId: string; field: string }) => void;
+  setFileDraft: React.Dispatch<React.SetStateAction<{ recordId: string; field: string }>>;
   fileResult: RecordItem | null;
   records: RecordList;
   token: string;
-  project: string;
+  projectSlug: string;
   onSubmitUpload: (event: React.FormEvent<HTMLFormElement>) => void;
   onCreateFileToken: (recordId: string, field: string, fileId: string) => Promise<string>;
 }) {
   const availableFiles = findFiles(props.records.items, props.fileFields);
   return (
-    <div className="grid gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
-      <Panel title="Upload file" icon={<UploadCloud className="h-4 w-4" />}>
-        <form onSubmit={props.onSubmitUpload} className="space-y-3">
-          <label className="text-sm font-medium text-slate-700">
-            Collection
-            <select value={props.selectedCollectionName} onChange={(event) => props.setSelectedCollection(event.target.value)} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>Upload file</h2>
+        <form onSubmit={props.onSubmitUpload} className="pb-grid-form">
+          <label className="pb-field">
+            <span>Collection</span>
+            <select value={props.selectedCollectionName} onChange={(event) => props.setSelectedCollection(event.target.value)}>
               {props.collections.map((collection) => (
                 <option key={collection.id} value={collection.name}>
                   {collection.name}
@@ -1484,10 +1900,10 @@ function FilesView(props: {
               ))}
             </select>
           </label>
-          <LabeledInput label="Record ID" value={props.fileDraft.recordId} onChange={(value) => props.setFileDraft({ ...props.fileDraft, recordId: value })} placeholder="uuid" />
-          <label className="text-sm font-medium text-slate-700">
-            File field
-            <select value={props.fileDraft.field} onChange={(event) => props.setFileDraft({ ...props.fileDraft, field: event.target.value })} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
+          <LabeledInput label="Record ID" value={props.fileDraft.recordId} onChange={(value) => props.setFileDraft((draft) => ({ ...draft, recordId: value }))} placeholder="uuid" />
+          <label className="pb-field">
+            <span>File field</span>
+            <select value={props.fileDraft.field} onChange={(event) => props.setFileDraft((draft) => ({ ...draft, field: event.target.value }))}>
               {props.fileFields.map((field) => (
                 <option key={field.name} value={field.name}>
                   {field.name}
@@ -1495,20 +1911,21 @@ function FilesView(props: {
               ))}
             </select>
           </label>
-          <label className="text-sm font-medium text-slate-700">
-            File
-            <input name="file" type="file" required className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm" />
+          <label className="pb-field">
+            <span>File</span>
+            <input name="file" type="file" required />
           </label>
-          <button type="submit" className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
+          <button type="submit" className="pb-btn primary">
             <UploadCloud className="h-4 w-4" />
             Upload
           </button>
         </form>
-        {props.fileResult ? <pre className="code-box mt-4">{JSON.stringify(props.fileResult, null, 2)}</pre> : null}
-      </Panel>
-      <Panel title="Protected files" icon={<FileUp className="h-4 w-4" />}>
-        <div className="overflow-x-auto">
-          <table className="db-table">
+        {props.fileResult ? <pre className="pb-code-box">{JSON.stringify(props.fileResult, null, 2)}</pre> : null}
+      </section>
+      <section className="pb-settings-block">
+        <h2>Protected files</h2>
+        <div className="pb-table-wrap">
+          <table className="pb-records-table">
             <thead>
               <tr>
                 <th>Record</th>
@@ -1525,267 +1942,50 @@ function FilesView(props: {
                   <td>{file.field}</td>
                   <td>{file.name}</td>
                   <td>{file.size}</td>
-                  <td className="text-right">
+                  <td className="row-actions">
                     <button
                       type="button"
                       onClick={async () => {
                         const fileToken = await props.onCreateFileToken(file.recordId, file.field, file.id);
                         if (fileToken) {
-                          window.open(`/api/projects/${encodeURIComponent(props.project)}/files/${encodeURIComponent(props.selectedCollection?.name ?? "")}/${encodeURIComponent(file.recordId)}/${encodeURIComponent(file.field)}/${encodeURIComponent(file.id)}/${encodeURIComponent(file.name)}?token=${encodeURIComponent(fileToken)}`, "_blank", "noopener,noreferrer");
+                          window.open(`/api/projects/${encodeURIComponent(props.projectSlug)}/files/${encodeURIComponent(props.selectedCollection?.name ?? "")}/${encodeURIComponent(file.recordId)}/${encodeURIComponent(file.field)}/${encodeURIComponent(file.id)}/${encodeURIComponent(file.name)}?token=${encodeURIComponent(fileToken)}`, "_blank", "noopener,noreferrer");
                         }
                       }}
-                      className="rounded-md px-2 py-1 text-xs font-medium text-cyan-700 hover:bg-cyan-50"
+                      className="pb-btn sm secondary"
                     >
                       Download
                     </button>
                   </td>
                 </tr>
               ))}
+              {availableFiles.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="pb-empty-cell">
+                    <EmptyState label="Load records from a collection with file fields." />
+                  </td>
+                </tr>
+              ) : null}
             </tbody>
           </table>
-          {availableFiles.length === 0 ? <EmptyState label="Load records from a collection with file fields" /> : null}
         </div>
-      </Panel>
+      </section>
     </div>
-  );
-}
-
-function LogsView({ audit, onRefresh }: { audit: AuditEntry[]; onRefresh: () => void }) {
-  return (
-    <Panel title="Audit log" icon={<Archive className="h-4 w-4" />}>
-      <div className="mb-3 flex justify-end">
-        <button type="button" onClick={onRefresh} className="inline-flex h-10 items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50">
-          <RefreshCw className="h-4 w-4" />
-          Refresh logs
-        </button>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="db-table min-w-[860px]">
-          <thead>
-            <tr>
-              <th>Action</th>
-              <th>Target</th>
-              <th>IP</th>
-              <th>Created</th>
-              <th>Data</th>
-            </tr>
-          </thead>
-          <tbody>
-            {audit.map((entry) => (
-              <tr key={entry.id}>
-                <td>{entry.action}</td>
-                <td>
-                  {entry.targetType} {entry.targetId}
-                </td>
-                <td>{entry.ip || "-"}</td>
-                <td>{formatDate(entry.createdAt)}</td>
-                <td className="max-w-sm truncate">{JSON.stringify(entry.data)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Panel>
-  );
-}
-
-function SettingsView({
-  project,
-  healthState,
-  appUrl,
-  settings,
-  smtpDraft,
-  setSMTPDraft,
-  storageDraft,
-  setStorageDraft,
-  onSaveSMTP,
-  onTestSMTP,
-  onSaveStorage,
-  onTestStorage,
-}: {
-  project: Project | null;
-  healthState: Health | null;
-  appUrl: string;
-  settings: InstanceSettings | null;
-  smtpDraft: typeof emptySMTPDraft;
-  setSMTPDraft: React.Dispatch<React.SetStateAction<typeof emptySMTPDraft>>;
-  storageDraft: typeof emptyStorageDraft;
-  setStorageDraft: React.Dispatch<React.SetStateAction<typeof emptyStorageDraft>>;
-  onSaveSMTP: (event: React.FormEvent<HTMLFormElement>) => void;
-  onTestSMTP: () => void;
-  onSaveStorage: (event: React.FormEvent<HTMLFormElement>) => void;
-  onTestStorage: () => void;
-}) {
-  return (
-    <div className="grid gap-4 xl:grid-cols-2">
-      <Panel title="Project settings" icon={<Settings className="h-4 w-4" />}>
-        {project ? (
-          <dl className="grid gap-3 text-sm">
-            <Info label="Slug" value={project.slug} />
-            <Info label="Name" value={project.name} />
-            <Info label="Schema" value={project.schemaName} />
-            <Info label="Anon role" value={project.roles?.anon ?? ""} />
-            <Info label="Authenticated role" value={project.roles?.authenticated ?? ""} />
-            <Info label="Service role" value={project.roles?.service ?? ""} />
-          </dl>
-        ) : (
-          <EmptyState label="No project selected" />
-        )}
-      </Panel>
-      <Panel title="Runtime" icon={<Server className="h-4 w-4" />}>
-        <dl className="grid gap-3 text-sm">
-          <Info label="App URL" value={appUrl} />
-          <Info label="Version" value={healthState?.version ?? ""} />
-          <Info label="DB" value={healthState?.db ?? ""} />
-          <Info label="Storage" value={healthState?.storage ?? ""} />
-        </dl>
-      </Panel>
-      <Panel title="SMTP" icon={<Mail className="h-4 w-4" />}>
-        <form onSubmit={onSaveSMTP} className="space-y-3">
-          <div className="flex items-center justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-            <span className="text-sm font-medium text-slate-800">Email delivery</span>
-            <label className="flex items-center gap-2 text-sm text-slate-700">
-              <input type="checkbox" checked={smtpDraft.enabled} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, enabled: event.target.checked }))} />
-              Enabled
-            </label>
-          </div>
-          <div className="grid gap-3 md:grid-cols-2">
-            <LabeledInput label="Host" value={smtpDraft.host} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, host: value }))} placeholder="smtp.example.com" />
-            <LabeledInput label="Port" value={smtpDraft.port} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, port: value }))} placeholder="587" />
-            <LabeledInput label="From" value={smtpDraft.from} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, from: value }))} placeholder="Dublyobase <no-reply@example.com>" />
-            <LabeledInput label="Username" value={smtpDraft.username} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, username: value }))} placeholder="mailer" />
-            <label className="text-sm font-medium text-slate-700">
-              Password {settings?.smtp.passwordSet ? <span className="font-normal text-slate-500">(saved)</span> : null}
-              <input type="password" value={smtpDraft.password} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, password: event.target.value, clearPassword: false }))} placeholder={settings?.smtp.passwordSet ? "Leave blank to keep current" : ""} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" />
-            </label>
-            <label className="flex h-10 items-center gap-2 self-end rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
-              <input type="checkbox" checked={smtpDraft.clearPassword} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, clearPassword: event.target.checked, password: "" }))} />
-              Clear password
-            </label>
-          </div>
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="min-w-64 flex-1 text-sm font-medium text-slate-700">
-              Test recipient
-              <input value={smtpDraft.testTo} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, testTo: event.target.value }))} placeholder="you@example.com" className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" />
-            </label>
-            <button type="button" onClick={onTestSMTP} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50">
-              <Mail className="h-4 w-4" />
-              Send test
-            </button>
-            <button type="submit" className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
-              <Save className="h-4 w-4" />
-              Save SMTP
-            </button>
-          </div>
-        </form>
-      </Panel>
-      <Panel title="Storage provider" icon={<HardDrive className="h-4 w-4" />}>
-        <form onSubmit={onSaveStorage} className="space-y-3">
-          <label className="text-sm font-medium text-slate-700">
-            Provider
-            <select value={storageDraft.type} onChange={(event) => setStorageDraft((draft) => ({ ...draft, type: event.target.value as "local" | "s3" }))} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
-              <option value="local">Local volume</option>
-              <option value="s3">S3-compatible</option>
-            </select>
-          </label>
-          <dl className="grid gap-2 text-sm">
-            <Info label="Source" value={settings?.storage.source ?? ""} />
-            <Info label="Local path" value={settings?.storage.localPath ?? ""} />
-          </dl>
-          {storageDraft.type === "s3" ? (
-            <div className="grid gap-3 md:grid-cols-2">
-              <LabeledInput label="Endpoint" value={storageDraft.endpoint} onChange={(value) => setStorageDraft((draft) => ({ ...draft, endpoint: value }))} placeholder="https://s3.example.com" />
-              <LabeledInput label="Bucket" value={storageDraft.bucket} onChange={(value) => setStorageDraft((draft) => ({ ...draft, bucket: value }))} placeholder="dublyobase" />
-              <LabeledInput label="Region" value={storageDraft.region} onChange={(value) => setStorageDraft((draft) => ({ ...draft, region: value }))} placeholder="auto" />
-              <LabeledInput label="Prefix" value={storageDraft.prefix} onChange={(value) => setStorageDraft((draft) => ({ ...draft, prefix: value }))} placeholder="prod" />
-              <LabeledInput label="Access key" value={storageDraft.accessKey} onChange={(value) => setStorageDraft((draft) => ({ ...draft, accessKey: value }))} />
-              <label className="text-sm font-medium text-slate-700">
-                Secret key {settings?.storage.s3.secretKeySet ? <span className="font-normal text-slate-500">(saved)</span> : null}
-                <input type="password" value={storageDraft.secretKey} onChange={(event) => setStorageDraft((draft) => ({ ...draft, secretKey: event.target.value, clearSecretKey: false }))} placeholder={settings?.storage.s3.secretKeySet ? "Leave blank to keep current" : ""} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" />
-              </label>
-              <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
-                <input type="checkbox" checked={storageDraft.useSSL} onChange={(event) => setStorageDraft((draft) => ({ ...draft, useSSL: event.target.checked }))} />
-                HTTPS
-              </label>
-              <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
-                <input type="checkbox" checked={storageDraft.forcePathStyle} onChange={(event) => setStorageDraft((draft) => ({ ...draft, forcePathStyle: event.target.checked }))} />
-                Path-style bucket
-              </label>
-              <label className="flex h-10 items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700">
-                <input type="checkbox" checked={storageDraft.clearSecretKey} onChange={(event) => setStorageDraft((draft) => ({ ...draft, clearSecretKey: event.target.checked, secretKey: "" }))} />
-                Clear secret key
-              </label>
-            </div>
-          ) : null}
-          <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={onTestStorage} className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50">
-              <HardDrive className="h-4 w-4" />
-              Test storage
-            </button>
-            <button type="submit" className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-slate-950 px-3 text-sm font-medium text-white hover:bg-slate-800">
-              <Save className="h-4 w-4" />
-              Save storage
-            </button>
-          </div>
-        </form>
-      </Panel>
-    </div>
-  );
-}
-
-function Panel({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <section className="db-panel min-w-0">
-      <div className="flex items-center gap-2 border-b border-slate-200 px-4 py-3">
-        <span className="text-slate-500">{icon}</span>
-        <h3 className="text-sm font-semibold text-slate-950">{title}</h3>
-      </div>
-      <div className="p-4">{children}</div>
-    </section>
-  );
-}
-
-function MetricPanel({ label, value, helper }: { label: string; value: number | string; helper: string }) {
-  return (
-    <section className="db-panel p-4">
-      <p className="text-xs font-medium uppercase text-slate-500">{label}</p>
-      <p className="mt-2 text-3xl font-semibold text-slate-950">{value}</p>
-      <p className="mt-1 text-sm text-slate-500">{helper}</p>
-    </section>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-white/10 bg-white/5 p-4">
-      <p className="text-xs uppercase text-slate-400">{label}</p>
-      <p className="mt-2 truncate text-lg font-semibold text-white">{value}</p>
-    </div>
-  );
-}
-
-function StatusChip({ label, value, ok }: { label: string; value: string; ok: boolean }) {
-  return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700">
-      <span className={`status-dot ${ok ? "bg-emerald-600" : "bg-amber-500"}`} />
-      {label} {value}
-    </span>
   );
 }
 
 function LabeledInput({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string }) {
   return (
-    <label className="text-sm font-medium text-slate-700">
-      {label}
-      <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm" />
+    <label className="pb-field">
+      <span>{label}</span>
+      <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
     </label>
   );
 }
 
 function CompactTable({ headers, rows, empty }: { headers: string[]; rows: string[][]; empty: string }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="db-table">
+    <div className="pb-table-wrap">
+      <table className="pb-records-table compact">
         <thead>
           <tr>
             {headers.map((header) => (
@@ -1797,39 +1997,75 @@ function CompactTable({ headers, rows, empty }: { headers: string[]; rows: strin
           {rows.map((row, index) => (
             <tr key={index}>
               {row.map((cell, cellIndex) => (
-                <td key={cellIndex} className="max-w-64 truncate">
+                <td key={cellIndex} className="truncate-cell">
                   {cell}
                 </td>
               ))}
             </tr>
           ))}
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={headers.length} className="pb-empty-cell">
+                <EmptyState label={empty} />
+              </td>
+            </tr>
+          ) : null}
         </tbody>
       </table>
-      {rows.length === 0 ? <EmptyState label={empty} /> : null}
     </div>
   );
 }
 
-function EmptyState({ label }: { label: string }) {
+function EmptyState({ label, action, onAction }: { label: string; action?: string; onAction?: () => void }) {
   return (
-    <div className="flex items-center gap-2 rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-sm text-slate-500">
+    <div className="pb-empty-state">
       <AlertCircle className="h-4 w-4" />
-      {label}
+      <span>{label}</span>
+      {action && onAction ? (
+        <button type="button" className="pb-btn secondary expanded-lg" onClick={onAction}>
+          {action}
+        </button>
+      ) : null}
     </div>
   );
 }
 
 function Info({ label, value }: { label: string; value: string }) {
   return (
-    <div className="grid grid-cols-[150px_minmax(0,1fr)] gap-3 border-b border-slate-100 pb-2 last:border-0">
-      <dt className="text-slate-500">{label}</dt>
-      <dd className="break-all font-medium text-slate-900">{value || "-"}</dd>
+    <div className="pb-info-row">
+      <dt>{label}</dt>
+      <dd>{value || "-"}</dd>
     </div>
   );
 }
 
+function StatusPill({ label, value, ok }: { label: string; value: string; ok: boolean }) {
+  return (
+    <span className="pb-status-pill">
+      <span className={`status-dot ${ok ? "success" : "warning"}`} />
+      {label} {value}
+    </span>
+  );
+}
+
+function PageFooter({ left, version }: { left: string; version: string }) {
+  return (
+    <footer className="pb-page-footer">
+      <span>{left}</span>
+      <span className="credits">
+        <a href="https://github.com/dublyo/dublyobase" target="_blank" rel="noreferrer">
+          Docs
+        </a>
+        <a href="https://github.com/dublyo/dublyobase/releases" target="_blank" rel="noreferrer">
+          Dublyobase {version}
+        </a>
+      </span>
+    </footer>
+  );
+}
+
 function renderValue(value: unknown) {
-  if (value === null || value === undefined) return "-";
+  if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
 }
@@ -1963,10 +2199,15 @@ function findFiles(records: RecordItem[], fields: Field[]): FileMeta[] {
         if (!item || typeof item !== "object") continue;
         const raw = item as Record<string, unknown>;
         const id = String(raw.id ?? "");
-        const name = String(raw.name ?? raw.filename ?? "file");
-        if (recordId && id) {
-          out.push({ recordId, field, id, name, size: String(raw.size ?? "-") });
-        }
+        const name = String(raw.name ?? "");
+        if (!id || !name) continue;
+        out.push({
+          recordId,
+          field,
+          id,
+          name,
+          size: typeof raw.size === "number" ? `${Math.round(raw.size / 1024)} KB` : String(raw.size ?? "-"),
+        });
       }
     }
   }

@@ -5,7 +5,7 @@
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.9.0 — M8 admin controls and provider settings complete
+**Status:** v0.9.1 — M8 admin controls, provider settings, and PocketBase-style UI polish complete
 (self-closing setup, opaque hashed admin sessions, protected admin/project APIs,
 project schema/role provisioning, collection metadata, transactional schema sync,
 records CRUD, API keys, RLS-backed rules, production SPA fallback hardening,
@@ -363,6 +363,15 @@ against a disposable PostgreSQL 16 cluster.
 - **Accept:** admin panel can create collections without raw JSON, SMTP settings
   are stored with secrets masked, storage can switch between local and S3-compatible
   providers, and the test suite plus admin UI build are green.
+
+### M8.1 — PocketBase-style admin UI polish — DONE (v0.9.1, 2026-07-04)
+- [x] Rework the embedded admin shell around PocketBase's collection-first layout:
+      compact accent header, fixed collection/settings sidebars, dense tables, and
+      right-side slide-over modals
+- [x] Align mail and file-storage settings with the PocketBase toggle-first flow
+- [x] Add S3-compatible storage guidance for manual migration tools such as
+      `rclone` and `s5cmd`
+- [x] Harden responsive behavior for SMTP forms and mobile empty table states
 
 ### M9 — Realtime + webhooks  →  v0.10.0
 - [ ] `NOTIFY dbo_events, <json>` triggers on collection tables; one LISTEN conn

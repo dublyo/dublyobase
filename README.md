@@ -5,7 +5,7 @@ storage, and an admin UI, served from **one Go binary on one port**. It connects
 Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a single
 `<30 MB` container to `ghcr.io/dublyo/dublyobase`. One-click deployable on Dublyo.
 
-> Status: **v0.9.0 / M8 complete.** Control-plane auth, project provisioning,
+> Status: **v0.9.1 / M8 UI polish complete.** Control-plane auth, project provisioning,
 > collections metadata, schema sync, records CRUD, API keys, RLS-backed rules, and
 > email/password app auth, local file storage, and resumable chunk uploads are
 > implemented, including SMTP delivery for verification/reset emails and an
