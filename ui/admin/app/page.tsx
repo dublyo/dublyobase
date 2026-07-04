@@ -86,7 +86,6 @@ import {
   runBackupJob,
   runCronJob,
   runSQL,
-  setup,
   testSMTPSettings,
   testStorageSettings,
   updateCollection,
@@ -513,20 +512,6 @@ export default function AdminApp() {
         return;
       }
       await refreshAll(response.token);
-    } catch (error) {
-      handleError(error);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function submitSetup(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    setBusy(true);
-    try {
-      await setup(String(data.get("setupEmail") ?? ""), String(data.get("setupPassword") ?? ""));
-      showNotice("success", "First admin created. Log in with that account.");
     } catch (error) {
       handleError(error);
     } finally {
@@ -1137,7 +1122,7 @@ export default function AdminApp() {
   }
 
   if (!token || !admin) {
-    return <AuthScreen busy={busy} healthState={healthState} notice={notice} onLogin={submitLogin} onSetup={submitSetup} />;
+    return <AuthScreen busy={busy} healthState={healthState} notice={notice} onLogin={submitLogin} />;
   }
 
   if (admin.mustChangePassword) {
@@ -1404,13 +1389,11 @@ function AuthScreen({
   healthState,
   notice,
   onLogin,
-  onSetup,
 }: {
   busy: boolean;
   healthState: Health | null;
   notice: Notice;
   onLogin: (event: React.FormEvent<HTMLFormElement>) => void;
-  onSetup: (event: React.FormEvent<HTMLFormElement>) => void;
 }) {
   const [showPassword, setShowPassword] = useState(false);
   return (
@@ -1445,26 +1428,6 @@ function AuthScreen({
             Login
           </button>
         </form>
-        <div className="pb-inline-alert success">
-          Fresh install login: <strong>admin@example.com</strong> / <strong>dublyo</strong>. Change it immediately after login.
-        </div>
-        <details className="pb-setup-details">
-          <summary>Create first admin if setup is open</summary>
-          <form onSubmit={onSetup} className="pb-form-stack compact">
-            <label className="pb-field">
-              <span>Email</span>
-              <input id="setupEmail" name="setupEmail" type="email" autoComplete="username" required />
-            </label>
-            <label className="pb-field">
-              <span>Password</span>
-              <input id="setupPassword" name="setupPassword" type="password" autoComplete="new-password" minLength={12} required />
-            </label>
-            <button type="submit" disabled={busy} className="pb-btn secondary">
-              <Plus className="h-4 w-4" />
-              Create admin
-            </button>
-          </form>
-        </details>
         <div className="pb-login-status">
           <span>DB {healthState?.db ?? "checking"}</span>
           <span>Storage {healthState?.storage ?? "checking"}</span>

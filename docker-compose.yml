@@ -23,7 +23,7 @@ services:
       retries: 10
 
   app:
-    image: ghcr.io/dublyo/dublyobase:v0.10.5
+    image: ghcr.io/dublyo/dublyobase:v0.10.6
     # build: .   # uncomment to build locally instead of pulling the image
     restart: unless-stopped
     environment:

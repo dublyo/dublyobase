@@ -98,7 +98,7 @@ func NewServer(app *core.App) *http.Server {
 	mux.HandleFunc("DELETE /api/projects/{slug}/files/uploads/{uploadId}", s.cancelFileUploadSession)
 	mux.HandleFunc("POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token", s.createFileToken)
 	mux.HandleFunc("GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}", s.downloadFile)
-	mux.Handle("/", spaHandler(ui.DistFS()))
+	mux.Handle("/", adminUIHandler(ui.DistFS()))
 
 	return &http.Server{
 		Addr:              app.Config.Addr(),
@@ -111,12 +111,16 @@ func NewServer(app *core.App) *http.Server {
 	}
 }
 
-// spaHandler serves the embedded admin SPA: real files are served as-is;
-// any other path falls back to index.html so client-side routes deep-link.
-func spaHandler(dist fs.FS) http.Handler {
+// adminUIHandler serves static admin assets, exposes the admin SPA only below
+// /_/, and keeps the root path as a generic decoy page.
+func adminUIHandler(dist fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(dist))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if p == "" {
+			writeDecoyRoot(w)
+			return
+		}
 		if isReservedAPIPath(p) {
 			writeJSON(w, http.StatusNotFound, map[string]any{
 				"error":   "not_found",
@@ -130,7 +134,7 @@ func spaHandler(dist fs.FS) http.Handler {
 				fileServer.ServeHTTP(w, r)
 				return
 			}
-			if rejectsSPAFallback(p) {
+			if !isAdminUIPath(p) || rejectsSPAFallback(p) {
 				http.NotFound(w, r)
 				return
 			}
@@ -139,6 +143,41 @@ func spaHandler(dist fs.FS) http.Handler {
 		r2.URL.Path = "/"
 		fileServer.ServeHTTP(w, r2)
 	})
+}
+
+func writeDecoyRoot(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write([]byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Access denied</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #0b0d10; color: #e5e7eb; }
+    main { width: min(560px, calc(100vw - 48px)); border: 1px solid #2f3642; background: #11151b; padding: 32px; }
+    h1 { margin: 0 0 12px; font-size: 22px; line-height: 1.2; }
+    p { margin: 0; color: #9ca3af; line-height: 1.6; }
+    code { color: #f87171; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Access denied</h1>
+    <p>This endpoint is not public. The request has been rejected and logged.</p>
+    <p><code>403</code> restricted service</p>
+  </main>
+</body>
+</html>`))
+}
+
+func isAdminUIPath(p string) bool {
+	return p == "_" || strings.HasPrefix(p, "_/")
 }
 
 func isReservedAPIPath(p string) bool {

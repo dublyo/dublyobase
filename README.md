@@ -1,6 +1,6 @@
 # Dublyobase
 
-Dublyobase is an open-source, Postgres-backed backend for building apps with a
+Dublyobase is an open-source Supabase Alternative, Postgres-backed backend for building apps with a
 PocketBase-style developer experience. It provides a control panel, projects,
 collections, REST APIs, email/password auth, file storage, SMTP settings, cron
 jobs, backups, and scoped remote MCP access from one Go backend and one embedded
@@ -14,7 +14,7 @@ The runtime is intentionally small:
 - GHCR image: `ghcr.io/dublyo/dublyobase`
 - No Redis, no nginx sidecar, no separate admin service
 
-Current public release: `v0.10.5`. Realtime subscriptions are not included in
+Current public release: `v0.10.6`. Realtime subscriptions are not included in
 this release.
 
 ## Features
@@ -75,7 +75,8 @@ this release.
 
 ### Admin UI
 
-- Embedded admin panel served from `/`.
+- Embedded admin panel served from `/_/`.
+- Root `/` returns a generic restricted-service warning page.
 - Fixed empty-install bootstrap admin: `admin@example.com` / `dublyo`.
 - First login must change the bootstrap password before admin access is allowed.
 - Project creation and API key management.
@@ -96,7 +97,7 @@ Use [Dublyo PaaS](https://dublyo.com) for the simplest production path:
 2. Pick PostgreSQL `16`, `17`, or `18`.
 3. Set your domain.
 4. Let Dublyo generate `JWT_SECRET` and the database password.
-5. Deploy the stack and open `https://your-domain/`.
+5. Deploy the stack and open `https://your-domain/_/`.
 6. Log in with `admin@example.com` / `dublyo` and set a new admin password.
 
 The template runs two services: Postgres and Dublyobase. TLS and routing are
@@ -129,7 +130,8 @@ Then start it:
 docker compose up -d
 ```
 
-Open [http://localhost:8080](http://localhost:8080). Health should return `200`:
+Open [http://localhost:8080/_/](http://localhost:8080/_/) for the admin panel.
+Health should return `200`:
 
 ```bash
 curl http://localhost:8080/health
@@ -138,7 +140,7 @@ curl http://localhost:8080/health
 Use a pinned image tag in production:
 
 ```yaml
-image: ghcr.io/dublyo/dublyobase:v0.10.5
+image: ghcr.io/dublyo/dublyobase:v0.10.6
 ```
 
 ### Existing Postgres
@@ -151,7 +153,7 @@ docker run --rm -p 8080:8080 \
   -e APP_URL="https://dublyobase.example.com" \
   -e JWT_SECRET="$(openssl rand -base64 32)" \
   -v dublyobase-storage:/data/storage \
-  ghcr.io/dublyo/dublyobase:v0.10.5
+  ghcr.io/dublyo/dublyobase:v0.10.6
 ```
 
 `DATABASE_URL`, `APP_URL`, and `JWT_SECRET` are required. On an empty install,

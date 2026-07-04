@@ -144,7 +144,7 @@ func TestSPAFallback(t *testing.T) {
 	app := newTestApp(t, deadPool(t))
 	srv := NewServer(app)
 
-	for _, route := range []string{"/", "/collections/users", "/admin/settings"} {
+	for _, route := range []string{"/_/", "/_/collections/users", "/_/admin/settings"} {
 		rec := httptest.NewRecorder()
 		srv.Handler.ServeHTTP(rec, httptest.NewRequest("GET", route, nil))
 		if rec.Code != http.StatusOK {
@@ -158,6 +158,39 @@ func TestSPAFallback(t *testing.T) {
 	// sanity: the embedded FS actually contains the shell
 	if _, err := ui.DistFS().Open("index.html"); err != nil {
 		t.Fatalf("embedded index.html missing: %v", err)
+	}
+}
+
+func TestRootServesDecoyWarning(t *testing.T) {
+	app := newTestApp(t, deadPool(t))
+	srv := NewServer(app)
+
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("GET /: want 403 decoy page, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "dublyobase") || strings.Contains(rec.Body.String(), "Superuser login") {
+		t.Fatalf("GET /: decoy page must not expose admin UI: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Access denied") {
+		t.Fatalf("GET /: decoy page missing warning copy: %s", rec.Body.String())
+	}
+}
+
+func TestLegacyAdminRoutesDoNotServeSPA(t *testing.T) {
+	app := newTestApp(t, deadPool(t))
+	srv := NewServer(app)
+
+	for _, route := range []string{"/collections/users", "/admin/settings"} {
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, httptest.NewRequest("GET", route, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s: want 404 outside /_/, got %d", route, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "dublyobase") {
+			t.Fatalf("GET %s: legacy route must not serve admin UI", route)
+		}
 	}
 }
 
