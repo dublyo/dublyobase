@@ -52,6 +52,8 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("DELETE /admin/api/projects/{slug}/api-keys/{id}", s.requireAdminReady(http.HandlerFunc(s.adminRevokeAPIKey)))
 	mux.Handle("GET /admin/api/projects/{slug}/collections/export", s.requireAdminReady(http.HandlerFunc(s.adminExportCollections)))
 	mux.Handle("POST /admin/api/projects/{slug}/collections/import", s.requireAdminReady(http.HandlerFunc(s.adminImportCollections)))
+	mux.Handle("GET /admin/api/projects/{slug}/schema/discover", s.requireAdminReady(http.HandlerFunc(s.adminDiscoverSchema)))
+	mux.Handle("POST /admin/api/projects/{slug}/schema/import", s.requireAdminReady(http.HandlerFunc(s.adminImportSchemaTables)))
 	mux.Handle("POST /admin/api/projects/{slug}/sql", s.requireAdminReady(http.HandlerFunc(s.adminRunSQL)))
 	mux.Handle("GET /admin/api/audit-log", s.requireAdminReady(http.HandlerFunc(s.adminListAuditLog)))
 	mux.Handle("GET /admin/api/settings", s.requireAdminReady(http.HandlerFunc(s.adminGetSettings)))

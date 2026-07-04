@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dublyo/dublyobase/core"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -96,6 +98,148 @@ func TestAdminCollectionSyncEndpoints(t *testing.T) {
 	}
 	assertColumnExists(t, app.Pool, targetSchema, "posts", "body")
 	assertProjectAuditExists(t, app.Pool, "collections.import", target)
+}
+
+func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+	legacySchema := fmt.Sprintf("legacy_%d", time.Now().UnixNano()%1_000_000_000)
+	legacyIdent := pgx.Identifier{legacySchema}.Sanitize()
+	if _, err := app.Pool.Exec(context.Background(), `create schema `+legacyIdent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.Pool.Exec(context.Background(), fmt.Sprintf(`
+		create table %s (
+			id uuid primary key default gen_random_uuid(),
+			created timestamptz not null default now(),
+			updated timestamptz not null default now(),
+			name text not null
+		);
+		create table %s (
+			id uuid primary key default gen_random_uuid(),
+			created timestamptz not null default now(),
+			updated timestamptz not null default now(),
+			author_id uuid references %s(id),
+			title text not null,
+			views int not null default 0
+		);
+		create table %s (
+			title text not null
+		);`,
+		pgx.Identifier{legacySchema, "authors"}.Sanitize(),
+		pgx.Identifier{legacySchema, "articles"}.Sanitize(),
+		pgx.Identifier{legacySchema, "authors"}.Sanitize(),
+		pgx.Identifier{legacySchema, "without_pk"}.Sanitize(),
+	)); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := getJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/schema/discover?schema=%s", slug, legacySchema), token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("discover schema: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var discovery core.SchemaDiscoveryResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &discovery); err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]core.DiscoveredTable{}
+	for _, table := range discovery.Items {
+		found[table.Table] = table
+	}
+	if !found["authors"].CanImport || !found["articles"].CanImport {
+		t.Fatalf("authors/articles should be importable: %+v", found)
+	}
+	if found["without_pk"].CanImport || !strings.Contains(found["without_pk"].Reason, "primary key") {
+		t.Fatalf("without_pk should be read-only: %+v", found["without_pk"])
+	}
+	if !found["articles"].StandardSystemColumns || len(found["articles"].ForeignKeys) != 1 {
+		t.Fatalf("articles discovery missing standard columns or FK: %+v", found["articles"])
+	}
+
+	importBody := fmt.Sprintf(`{
+		"dryRun": true,
+		"items": [
+			{"schema":%q,"table":"authors","name":"legacy_authors"},
+			{"schema":%q,"table":"articles","name":"legacy_articles"},
+			{"schema":%q,"table":"without_pk","name":"legacy_without_pk"}
+		]
+	}`, legacySchema, legacySchema, legacySchema)
+	rec = postJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/schema/import", slug), token, importBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview schema import: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var preview core.CollectionImportResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if !preview.DryRun || preview.Created != 2 || preview.Skipped != 1 {
+		t.Fatalf("unexpected import preview: %+v", preview)
+	}
+
+	importBody = strings.Replace(importBody, `"dryRun": true`, `"dryRun": false`, 1)
+	rec = postJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/schema/import", slug), token, importBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply schema import: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var applied core.CollectionImportResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied.Created != 2 || applied.Skipped != 1 {
+		t.Fatalf("unexpected import result: %+v", applied)
+	}
+
+	author := createRecordInCollectionForTest(t, srv.Handler, slug, "legacy_authors", token, `{"name":"Ada"}`)
+	authorID, ok := author["id"].(string)
+	if !ok || authorID == "" {
+		t.Fatalf("imported author record missing id: %+v", author)
+	}
+	article := createRecordInCollectionForTest(t, srv.Handler, slug, "legacy_articles", token, fmt.Sprintf(`{"title":"First","author_id":%q,"views":3}`, authorID))
+	if article["title"] != "First" || article["views"] == nil {
+		t.Fatalf("unexpected imported article response: %+v", article)
+	}
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_articles/records?filter[title][_eq]=First&perPage=10", slug), token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list imported records: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertRecordListCount(t, rec.Body.Bytes(), 1)
+
+	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_articles", slug), token, `{"fields":[{"name":"title","type":"text"},{"name":"summary","type":"text"}]}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("unmanaged imported field edit: want 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_articles", slug), token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get imported collection: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var imported core.Collection
+	if err := json.Unmarshal(rec.Body.Bytes(), &imported); err != nil {
+		t.Fatal(err)
+	}
+	var options map[string]any
+	if err := json.Unmarshal(imported.Options, &options); err != nil {
+		t.Fatal(err)
+	}
+	options["managed"] = true
+	optionsJSON, err := json.Marshal(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedBody, err := json.Marshal(map[string]any{
+		"options": json.RawMessage(optionsJSON),
+		"fields":  append(imported.Fields, core.Field{Name: "summary", Type: "text"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_articles", slug), token, string(managedBody))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("managed imported field edit: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertColumnExists(t, app.Pool, legacySchema, "articles", "summary")
 }
 
 func TestAdminSQLConsole(t *testing.T) {

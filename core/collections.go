@@ -68,6 +68,12 @@ func CreateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	if err := ValidateCollectionInput(&input); err != nil {
 		return nil, err
 	}
+	if err := validateCollectionOptionsJSON(input.Options); err != nil {
+		return nil, err
+	}
+	if collectionOptionsImported(input.Options) {
+		return nil, fmt.Errorf("%w: use schema import for existing Postgres tables", ErrValidation)
+	}
 	project, err := GetProject(ctx, pool, projectSlug)
 	if err != nil {
 		return nil, err
@@ -265,6 +271,31 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	if input.DeleteRule != nil {
 		next.DeleteRule = input.DeleteRule
 	}
+	options := next.Options
+	if len(input.Options) != 0 {
+		if err := validateCollectionOptionsJSON(input.Options); err != nil {
+			return nil, err
+		}
+		options = input.Options
+	}
+	if len(options) == 0 {
+		options = []byte(`{}`)
+	}
+	if collectionIsImported(current) && !collectionOptionsImported(options) {
+		return nil, fmt.Errorf("%w: imported collection metadata cannot be removed", ErrValidation)
+	}
+	if !collectionIsImported(current) && collectionOptionsImported(options) {
+		return nil, fmt.Errorf("%w: use schema import for existing Postgres tables", ErrValidation)
+	}
+	next.Options = options
+	if collectionIsImported(current) {
+		if collectionIsManaged(&next) && !collectionStandardSystemColumns(current) {
+			return nil, fmt.Errorf("%w: imported table needs id uuid, created and updated before Dublyobase can manage fields", ErrValidation)
+		}
+		if input.FieldsSet && !collectionCanAlterSchema(&next) {
+			return nil, fmt.Errorf("%w: imported table is read-only until managed by Dublyobase", ErrDestructiveChange)
+		}
+	}
 	if input.FieldsSet {
 		next.Fields = normalizeFields(input.Fields)
 		if err := ValidateFields(next.Fields); err != nil {
@@ -273,14 +304,18 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 		if err := ValidateCollectionRules(&next); err != nil {
 			return nil, err
 		}
-		if err := applyFieldDiff(ctx, tx, project.SchemaName, oldName, current.Fields, next.Fields, input.DropMissingFields); err != nil {
+		schemaName, tableName, err := collectionPhysicalTable(project, current)
+		if err != nil {
+			return nil, err
+		}
+		if err := applyFieldDiff(ctx, tx, schemaName, tableName, current.Fields, next.Fields, input.DropMissingFields); err != nil {
 			return nil, err
 		}
 		next.Fields = stripFieldMigrationOptions(next.Fields)
 	} else if err := ValidateCollectionRules(&next); err != nil {
 		return nil, err
 	}
-	if next.Name != oldName {
+	if next.Name != oldName && !collectionIsImported(current) {
 		if _, err := tx.Exec(ctx,
 			fmt.Sprintf(`alter table %s rename to %s`, quoteIdent(project.SchemaName, oldName), quoteIdent(next.Name)),
 		); err != nil {
@@ -296,13 +331,6 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	fieldsJSON, err := encodeFields(next.Fields)
 	if err != nil {
 		return nil, err
-	}
-	options := next.Options
-	if len(input.Options) != 0 {
-		options = input.Options
-	}
-	if len(options) == 0 {
-		options = []byte(`{}`)
 	}
 	if err := tx.QueryRow(ctx, `
 		update _dbo.collections
@@ -336,8 +364,10 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	if err != nil {
 		return nil, err
 	}
-	if err := syncCollectionPolicies(ctx, tx, project, &next); err != nil {
-		return nil, err
+	if !collectionIsImported(&next) {
+		if err := syncCollectionPolicies(ctx, tx, project, &next); err != nil {
+			return nil, err
+		}
 	}
 	if err := InsertAudit(ctx, tx, AuditEvent{
 		AdminID:    &adminID,
@@ -454,11 +484,13 @@ func DeleteCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	if collection.System {
 		return fmt.Errorf("%w: system collections cannot be deleted", ErrValidation)
 	}
-	if _, err := tx.Exec(ctx, fmt.Sprintf(`drop table %s`, quoteIdent(project.SchemaName, collection.Name))); err != nil {
-		if pgErrCode(err) == "42P01" {
-			return ErrSchemaDrift
+	if !collectionIsImported(collection) {
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`drop table %s`, quoteIdent(project.SchemaName, collection.Name))); err != nil {
+			if pgErrCode(err) == "42P01" {
+				return ErrSchemaDrift
+			}
+			return err
 		}
-		return err
 	}
 	if _, err := tx.Exec(ctx, `delete from _dbo.collections where id = $1`, collection.ID); err != nil {
 		return err

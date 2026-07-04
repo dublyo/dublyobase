@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,6 +48,10 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 	if err != nil {
 		return nil, err
 	}
+	table, err := recordTable(auth, collection)
+	if err != nil {
+		return nil, err
+	}
 	opts = normalizeListOptions(opts)
 	columns, err := projectionColumns(collection, opts.Fields)
 	if err != nil {
@@ -60,14 +65,13 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 	if err != nil {
 		return nil, err
 	}
-	table := quoteIdent(auth.Project.SchemaName, collection.Name)
 	where := ""
 	if filter.SQL != "" {
 		where = " where " + filter.SQL
 	}
 
 	result := &RecordListResult{Items: make([]Record, 0), Page: opts.Page, PerPage: opts.PerPage}
-	err = withRecordTx(ctx, pool, auth, "list", func(tx pgx.Tx) error {
+	err = withRecordTxForCollection(ctx, pool, auth, collection, "list", func(tx pgx.Tx) error {
 		var total int
 		countSQL := fmt.Sprintf(`select count(*) from %s%s`, table, where)
 		if err := tx.QueryRow(ctx, countSQL, filter.Args...).Scan(&total); err != nil {
@@ -81,7 +85,7 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 		offsetPos := len(args) + 1
 		args = append(args, opts.Offset)
 		query := fmt.Sprintf(`select %s from %s%s order by %s limit $%d offset $%d`,
-			selectList(columns),
+			recordSelectList(collection, columns),
 			table,
 			where,
 			orderBy,
@@ -115,19 +119,22 @@ func CreateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	}
 	payload = appendAutodatePayload(collection, payload, "create")
 	columns := allRecordColumns(collection)
-	table := quoteIdent(auth.Project.SchemaName, collection.Name)
+	table, err := recordTable(auth, collection)
+	if err != nil {
+		return nil, err
+	}
 
 	var out Record
-	err = withRecordTx(ctx, pool, auth, "create", func(tx pgx.Tx) error {
+	err = withRecordTxForCollection(ctx, pool, auth, collection, "create", func(tx pgx.Tx) error {
 		var query string
 		if len(payload.Columns) == 0 {
-			query = fmt.Sprintf(`insert into %s default values returning %s`, table, selectList(columns))
+			query = fmt.Sprintf(`insert into %s default values returning %s`, table, recordSelectList(collection, columns))
 		} else {
 			query = fmt.Sprintf(`insert into %s (%s) values (%s) returning %s`,
 				table,
-				selectList(payload.Columns),
+				recordColumnList(collection, payload.Columns),
 				valuePlaceholders(payload.Columns, fieldByName(collection.Fields), 1),
-				selectList(columns),
+				recordSelectList(collection, columns),
 			)
 		}
 		record, err := queryOneRecord(ctx, tx, query, columns, payload.Values...)
@@ -144,19 +151,24 @@ func CreateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 }
 
 func GetRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
-	if err := ValidateUUID(id); err != nil {
-		return nil, err
-	}
 	collection, err := recordCollection(ctx, pool, auth.Project.Slug, collectionName)
 	if err != nil {
 		return nil, err
 	}
+	if err := validateRecordKey(collection, id); err != nil {
+		return nil, err
+	}
 	columns := allRecordColumns(collection)
-	table := quoteIdent(auth.Project.SchemaName, collection.Name)
+	table, err := recordTable(auth, collection)
+	if err != nil {
+		return nil, err
+	}
+	pkField := collectionPrimaryKeyField(collection)
+	pkColumn := recordColumnSQL(collection, pkField)
 
 	var out Record
-	err = withRecordTx(ctx, pool, auth, "view", func(tx pgx.Tx) error {
-		query := fmt.Sprintf(`select %s from %s where id = $1`, selectList(columns), table)
+	err = withRecordTxForCollection(ctx, pool, auth, collection, "view", func(tx pgx.Tx) error {
+		query := fmt.Sprintf(`select %s from %s where %s = %s`, recordSelectList(collection, columns), table, pkColumn, recordKeyPlaceholder(collection, 1))
 		record, err := queryOneRecord(ctx, tx, query, columns, id)
 		if err != nil {
 			return err
@@ -171,11 +183,11 @@ func GetRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collec
 }
 
 func UpdateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string, raw map[string]json.RawMessage) (Record, error) {
-	if err := ValidateUUID(id); err != nil {
-		return nil, err
-	}
 	collection, err := recordCollection(ctx, pool, auth.Project.Slug, collectionName)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateRecordKey(collection, id); err != nil {
 		return nil, err
 	}
 	payload, err := normalizePatchPayload(collection, raw)
@@ -184,24 +196,35 @@ func UpdateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	}
 	payload = appendAutodatePayload(collection, payload, "update")
 	columns := allRecordColumns(collection)
-	table := quoteIdent(auth.Project.SchemaName, collection.Name)
+	table, err := recordTable(auth, collection)
+	if err != nil {
+		return nil, err
+	}
+	pkField := collectionPrimaryKeyField(collection)
+	pkColumn := recordColumnSQL(collection, pkField)
 
 	var out Record
-	err = withRecordTx(ctx, pool, auth, "update", func(tx pgx.Tx) error {
+	err = withRecordTxForCollection(ctx, pool, auth, collection, "update", func(tx pgx.Tx) error {
 		assignments := make([]string, 0, len(payload.Columns)+1)
 		args := make([]any, 0, len(payload.Values)+1)
 		fields := fieldByName(collection.Fields)
 		for i, column := range payload.Columns {
-			assignments = append(assignments, fmt.Sprintf(`%s = %s`, quoteIdent(column), valuePlaceholder(fields[column], i+1)))
+			assignments = append(assignments, fmt.Sprintf(`%s = %s`, recordColumnSQL(collection, column), valuePlaceholder(fields[column], i+1)))
 			args = append(args, payload.Values[i])
 		}
-		assignments = append(assignments, `updated = now()`)
+		if collectionStandardSystemColumns(collection) {
+			assignments = append(assignments, `updated = now()`)
+		}
+		if len(assignments) == 0 {
+			return fmt.Errorf("%w: patch body is empty", ErrValidation)
+		}
 		args = append(args, id)
-		query := fmt.Sprintf(`update %s set %s where id = $%d returning %s`,
+		query := fmt.Sprintf(`update %s set %s where %s = %s returning %s`,
 			table,
 			strings.Join(assignments, ", "),
-			len(args),
-			selectList(columns),
+			pkColumn,
+			recordKeyPlaceholder(collection, len(args)),
+			recordSelectList(collection, columns),
 		)
 		record, err := queryOneRecord(ctx, tx, query, columns, args...)
 		if err != nil {
@@ -217,18 +240,23 @@ func UpdateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 }
 
 func DeleteRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
-	if err := ValidateUUID(id); err != nil {
-		return nil, err
-	}
 	collection, err := recordCollection(ctx, pool, auth.Project.Slug, collectionName)
 	if err != nil {
 		return nil, err
 	}
+	if err := validateRecordKey(collection, id); err != nil {
+		return nil, err
+	}
 	columns := allRecordColumns(collection)
-	table := quoteIdent(auth.Project.SchemaName, collection.Name)
+	table, err := recordTable(auth, collection)
+	if err != nil {
+		return nil, err
+	}
+	pkField := collectionPrimaryKeyField(collection)
+	pkColumn := recordColumnSQL(collection, pkField)
 	var out Record
-	err = withRecordTx(ctx, pool, auth, "delete", func(tx pgx.Tx) error {
-		query := fmt.Sprintf(`delete from %s where id = $1 returning %s`, table, selectList(columns))
+	err = withRecordTxForCollection(ctx, pool, auth, collection, "delete", func(tx pgx.Tx) error {
+		query := fmt.Sprintf(`delete from %s where %s = %s returning %s`, table, pkColumn, recordKeyPlaceholder(collection, 1), recordSelectList(collection, columns))
 		record, err := queryOneRecord(ctx, tx, query, columns, id)
 		if err != nil {
 			return err
@@ -277,13 +305,33 @@ func normalizeListOptions(opts RecordListOptions) RecordListOptions {
 	return opts
 }
 
+func recordTable(auth *RecordAuth, collection *Collection) (string, error) {
+	schemaName, tableName, err := collectionPhysicalTable(&auth.Project, collection)
+	if err != nil {
+		return "", err
+	}
+	return quoteIdent(schemaName, tableName), nil
+}
+
+func withRecordTxForCollection(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collection *Collection, operation string, fn func(pgx.Tx) error) error {
+	bypassRole := auth.Role == RecordRoleService && collectionIsImported(collection)
+	return withRecordTxOptions(ctx, pool, auth, operation, bypassRole, fn)
+}
+
 func allRecordColumns(collection *Collection) []string {
-	columns := []string{"id", "created", "updated"}
+	pkField := collectionPrimaryKeyField(collection)
+	columns := []string{pkField}
+	if collectionStandardSystemColumns(collection) {
+		columns = append(columns, "created", "updated")
+	}
 	for _, field := range collection.Fields {
 		if isAuthUsersHiddenField(collection, field.Name) {
 			continue
 		}
 		if field.Hidden || field.Type == "password" {
+			continue
+		}
+		if field.Name == pkField {
 			continue
 		}
 		columns = append(columns, field.Name)
@@ -319,8 +367,15 @@ func projectionColumns(collection *Collection, projection string) ([]string, err
 }
 
 func orderByClause(collection *Collection, raw string) (string, error) {
+	pkField := collectionPrimaryKeyField(collection)
 	if strings.TrimSpace(raw) == "" {
-		return quoteIdent("created") + " desc, " + quoteIdent("id") + " desc", nil
+		if collectionStandardSystemColumns(collection) {
+			return recordColumnSQL(collection, "created") + " desc, " + recordColumnSQL(collection, pkField) + " desc", nil
+		}
+		return recordColumnSQL(collection, pkField) + " asc", nil
+	}
+	if !collectionStandardSystemColumns(collection) && strings.TrimSpace(raw) == "-created" {
+		return recordColumnSQL(collection, pkField) + " asc", nil
 	}
 	allowed := allowedRecordColumns(collection)
 	seen := map[string]struct{}{}
@@ -344,16 +399,20 @@ func orderByClause(collection *Collection, raw string) (string, error) {
 			continue
 		}
 		seen[key] = struct{}{}
-		parts = append(parts, quoteIdent(name)+" "+dir)
+		parts = append(parts, recordColumnSQL(collection, name)+" "+dir)
 	}
 	if len(parts) == 0 {
 		return "", fmt.Errorf("%w: sort is empty", ErrValidation)
 	}
-	return strings.Join(parts, ", ") + ", " + quoteIdent("id") + " asc", nil
+	return strings.Join(parts, ", ") + ", " + recordColumnSQL(collection, pkField) + " asc", nil
 }
 
 func allowedRecordColumns(collection *Collection) map[string]struct{} {
-	out := map[string]struct{}{"id": {}, "created": {}, "updated": {}}
+	out := map[string]struct{}{collectionPrimaryKeyField(collection): {}}
+	if collectionStandardSystemColumns(collection) {
+		out["created"] = struct{}{}
+		out["updated"] = struct{}{}
+	}
 	for _, field := range collection.Fields {
 		if isAuthUsersHiddenField(collection, field.Name) {
 			continue
@@ -397,12 +456,14 @@ func normalizeRecordPayload(collection *Collection, raw map[string]json.RawMessa
 	fields := fieldByName(collection.Fields)
 	columns := make([]string, 0, len(raw))
 	valuesByColumn := map[string]json.RawMessage{}
+	pkField := collectionPrimaryKeyField(collection)
+	hasStandardColumns := collectionStandardSystemColumns(collection)
 	for name, body := range raw {
 		name = NormalizeIdentifier(name)
 		if _, exists := valuesByColumn[name]; exists {
 			return nil, fmt.Errorf("%w: duplicate field %q", ErrValidation, name)
 		}
-		if name == "id" || name == "created" || name == "updated" {
+		if name == pkField || (hasStandardColumns && (name == "created" || name == "updated")) {
 			return nil, fmt.Errorf("%w: system field %q cannot be written", ErrValidation, name)
 		}
 		if isAuthUsersHiddenField(collection, name) {
@@ -789,6 +850,59 @@ func selectList(columns []string) string {
 	return strings.Join(parts, ", ")
 }
 
+func recordSelectList(collection *Collection, columns []string) string {
+	parts := make([]string, len(columns))
+	for i, column := range columns {
+		expr := recordColumnSQL(collection, column)
+		alias := quoteIdent(column)
+		if expr == alias {
+			parts[i] = expr
+		} else {
+			parts[i] = expr + " as " + alias
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+func recordColumnList(collection *Collection, columns []string) string {
+	parts := make([]string, len(columns))
+	for i, column := range columns {
+		parts[i] = recordColumnSQL(collection, column)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func recordColumnSQL(collection *Collection, name string) string {
+	if name == collectionPrimaryKeyField(collection) {
+		return quoteIdent(collectionPrimaryKeySource(collection))
+	}
+	if collectionStandardSystemColumns(collection) && (name == "created" || name == "updated") {
+		return quoteIdent(name)
+	}
+	if field, ok := fieldByName(collection.Fields)[name]; ok {
+		return quoteIdent(fieldSourceColumn(field))
+	}
+	return quoteIdent(name)
+}
+
+func fieldSourceColumn(field Field) string {
+	if field.Options != nil {
+		if source, _ := field.Options["sourceColumn"].(string); strings.TrimSpace(source) != "" {
+			return strings.TrimSpace(source)
+		}
+	}
+	return field.Name
+}
+
+func fieldSourceType(field Field) string {
+	if field.Options != nil {
+		if sourceType, _ := field.Options["sourceType"].(string); strings.TrimSpace(sourceType) != "" {
+			return strings.ToLower(strings.TrimSpace(sourceType))
+		}
+	}
+	return ""
+}
+
 func valuePlaceholders(columns []string, fields map[string]Field, start int) string {
 	parts := make([]string, len(columns))
 	for i, column := range columns {
@@ -799,6 +913,9 @@ func valuePlaceholders(columns []string, fields map[string]Field, start int) str
 
 func valuePlaceholder(field Field, pos int) string {
 	p := fmt.Sprintf("$%d", pos)
+	if cast := postgresPlaceholderCast(fieldSourceType(field)); cast != "" {
+		return p + "::" + cast
+	}
 	switch field.Type {
 	case "number":
 		return p + "::double precision"
@@ -822,6 +939,68 @@ func valuePlaceholder(field Field, pos int) string {
 		return p + "::uuid"
 	default:
 		return p + "::text"
+	}
+}
+
+func recordKeyPlaceholder(collection *Collection, pos int) string {
+	p := fmt.Sprintf("$%d", pos)
+	if cast := postgresPlaceholderCast(collectionPrimaryKeyType(collection)); cast != "" {
+		return p + "::" + cast
+	}
+	return p
+}
+
+func postgresPlaceholderCast(udtName string) string {
+	switch strings.ToLower(strings.TrimSpace(udtName)) {
+	case "uuid":
+		return "uuid"
+	case "bool":
+		return "boolean"
+	case "int2":
+		return "smallint"
+	case "int4":
+		return "integer"
+	case "int8":
+		return "bigint"
+	case "float4":
+		return "real"
+	case "float8":
+		return "double precision"
+	case "numeric":
+		return "numeric"
+	case "timestamptz":
+		return "timestamptz"
+	case "timestamp":
+		return "timestamp"
+	case "date":
+		return "date"
+	case "json":
+		return "json"
+	case "jsonb":
+		return "jsonb"
+	default:
+		return ""
+	}
+}
+
+func validateRecordKey(collection *Collection, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("%w: record id is required", ErrValidation)
+	}
+	switch collectionPrimaryKeyType(collection) {
+	case "uuid":
+		return ValidateUUID(id)
+	case "int2", "int4", "int8":
+		if _, err := strconv.ParseInt(id, 10, 64); err != nil {
+			return fmt.Errorf("%w: invalid record id", ErrValidation)
+		}
+		return nil
+	default:
+		if len(id) > 512 {
+			return fmt.Errorf("%w: record id is too long", ErrValidation)
+		}
+		return nil
 	}
 }
 

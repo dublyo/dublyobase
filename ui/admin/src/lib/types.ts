@@ -104,6 +104,58 @@ export type CollectionImportResult = {
   dryRun: boolean;
 };
 
+export type DiscoveredPrimaryKey = {
+  column: string;
+  field: string;
+  type: string;
+};
+
+export type DiscoveredColumn = {
+  name: string;
+  fieldName?: string;
+  dataType: string;
+  udtName: string;
+  nullable: boolean;
+  hasDefault: boolean;
+  primaryKey: boolean;
+  supported: boolean;
+  reason?: string;
+};
+
+export type DiscoveredForeignKey = {
+  column: string;
+  targetSchema: string;
+  targetTable: string;
+  targetColumn: string;
+  onDelete?: string;
+};
+
+export type DiscoveredTable = {
+  schema: string;
+  table: string;
+  suggestedName: string;
+  existingCollection?: string;
+  imported: boolean;
+  canImport: boolean;
+  canManage: boolean;
+  reason?: string;
+  primaryKey?: DiscoveredPrimaryKey;
+  standardSystemColumns: boolean;
+  columns: DiscoveredColumn[];
+  fields: Field[];
+  foreignKeys: DiscoveredForeignKey[];
+};
+
+export type SchemaDiscoveryResult = {
+  items: DiscoveredTable[];
+};
+
+export type SchemaImportItem = {
+  schema: string;
+  table: string;
+  name?: string;
+};
+
 export type SQLResult = {
   columns: Array<{ name: string; typeOid: number }>;
   rows: unknown[][];

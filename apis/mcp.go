@@ -253,6 +253,40 @@ func (s *server) callMCPTool(ctx context.Context, token *core.MCPToken, name str
 			Options:           input.Options,
 		}, ip, userAgent)
 		return collection, projectSlug, err
+	case "schema.discover":
+		var input struct {
+			ProjectSlug string `json:"projectSlug"`
+			Schema      string `json:"schema"`
+			Table       string `json:"table"`
+		}
+		if err := decodeMCPArgs(rawArgs, &input); err != nil {
+			return nil, "", err
+		}
+		projectSlug, err := mcpProjectSlugValue(token, input.ProjectSlug)
+		if err != nil {
+			return nil, "", err
+		}
+		result, err := core.DiscoverSchemaTables(ctx, s.app.Pool, projectSlug, core.SchemaDiscoveryInput{Schema: input.Schema, Table: input.Table})
+		return result, projectSlug, err
+	case "schema.import":
+		adminID, err := mcpAdminID(token)
+		if err != nil {
+			return nil, "", err
+		}
+		var input struct {
+			ProjectSlug string                  `json:"projectSlug"`
+			Items       []core.SchemaImportItem `json:"items"`
+			DryRun      bool                    `json:"dryRun"`
+		}
+		if err := decodeMCPArgs(rawArgs, &input); err != nil {
+			return nil, "", err
+		}
+		projectSlug, err := mcpProjectSlugValue(token, input.ProjectSlug)
+		if err != nil {
+			return nil, "", err
+		}
+		result, err := core.ImportSchemaTables(ctx, s.app.Pool, adminID, projectSlug, core.SchemaImportInput{Items: input.Items, DryRun: input.DryRun}, ip, userAgent)
+		return result, projectSlug, err
 	case "records.list":
 		var input struct {
 			ProjectSlug string `json:"projectSlug"`
@@ -648,6 +682,8 @@ func mcpToolsForToken(token *core.MCPToken) []mcpTool {
 		"collections.list":        mcpToolDef("collections.list", "List collections for a project.", projectSchema()),
 		"collections.create":      mcpToolDef("collections.create", "Create a collection and its Postgres table.", collectionCreateSchema()),
 		"collections.update":      mcpToolDef("collections.update", "Update fields or rules for a collection.", collectionUpdateSchema()),
+		"schema.discover":         mcpToolDef("schema.discover", "Discover existing non-system Postgres tables and import readiness.", schemaDiscoverSchema()),
+		"schema.import":           mcpToolDef("schema.import", "Import existing primary-key tables as Dublyobase collections.", schemaImportSchema()),
 		"records.list":            mcpToolDef("records.list", "List records using service-role access for the scoped project.", recordsListSchema()),
 		"records.create":          mcpToolDef("records.create", "Create a record.", recordWriteSchema(false)),
 		"records.update":          mcpToolDef("records.update", "Update a record.", recordWriteSchema(true)),
@@ -750,6 +786,29 @@ func collectionUpdateSchema() map[string]any {
 		"updateRule":        stringSchema(),
 		"deleteRule":        stringSchema(),
 		"options":           objectSchema(),
+	})
+}
+
+func schemaDiscoverSchema() map[string]any {
+	return mcpObjectSchema(nil, map[string]any{
+		"projectSlug": stringSchema(),
+		"schema":      stringSchema(),
+		"table":       stringSchema(),
+	})
+}
+
+func schemaImportSchema() map[string]any {
+	return mcpObjectSchema([]string{"items"}, map[string]any{
+		"projectSlug": stringSchema(),
+		"dryRun":      booleanSchema(),
+		"items": map[string]any{
+			"type": "array",
+			"items": mcpObjectSchema([]string{"schema", "table"}, map[string]any{
+				"schema": stringSchema(),
+				"table":  stringSchema(),
+				"name":   stringSchema(),
+			}),
+		},
 	})
 }
 

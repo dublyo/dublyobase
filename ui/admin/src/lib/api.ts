@@ -1,4 +1,4 @@
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SQLResult } from "./types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SchemaDiscoveryResult, SchemaImportItem, SQLResult } from "./types";
 
 type RequestOptions = RequestInit & {
   token?: string | null;
@@ -224,6 +224,22 @@ export function importCollections(
   },
 ) {
   return request<CollectionImportResult>(`/admin/api/projects/${encodeURIComponent(project)}/collections/import`, {
+    method: "POST",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function discoverSchema(token: string, project: string, input: { schema?: string; table?: string } = {}) {
+  const params = new URLSearchParams();
+  if (input.schema?.trim()) params.set("schema", input.schema.trim());
+  if (input.table?.trim()) params.set("table", input.table.trim());
+  const suffix = params.toString() ? `?${params}` : "";
+  return request<SchemaDiscoveryResult>(`/admin/api/projects/${encodeURIComponent(project)}/schema/discover${suffix}`, { token });
+}
+
+export function importSchemaTables(token: string, project: string, input: { items: SchemaImportItem[]; dryRun: boolean }) {
+  return request<CollectionImportResult>(`/admin/api/projects/${encodeURIComponent(project)}/schema/import`, {
     method: "POST",
     token,
     body: JSON.stringify(input),

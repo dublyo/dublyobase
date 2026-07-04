@@ -125,6 +125,16 @@ func ImportCollections(ctx context.Context, pool *pgxpool.Pool, adminID string, 
 		seen[item.Name] = struct{}{}
 
 		createInput := item.collectionInput()
+		if collectionOptionsImported(createInput.Options) {
+			result.Skipped++
+			result.Items = append(result.Items, CollectionImportItemResult{
+				Name:    createInput.Name,
+				Action:  "skip",
+				Status:  "skipped",
+				Message: "imported table metadata must be recreated with schema discovery",
+			})
+			continue
+		}
 		if err := ValidateCollectionInput(&createInput); err != nil {
 			return nil, err
 		}

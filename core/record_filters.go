@@ -82,7 +82,7 @@ func compileRecordSearch(raw string, collection *Collection, base int) (*SQLExpr
 		if !field.Searchable || !fieldCanSearch(field) {
 			continue
 		}
-		column := quoteIdent(field.Name)
+		column := recordColumnSQL(collection, field.Name)
 		switch field.Type {
 		case "number":
 			if n, ok := parseSearchNumber(search); ok {
@@ -227,7 +227,7 @@ func (b *recordFilterBuilder) compilePredicate(field Field, operator string, val
 	if b.predicates > maxRecordFilterPredicates {
 		return "", fmt.Errorf("%w: JSON filter has too many predicates", ErrInvalidFilter)
 	}
-	column := quoteIdent(field.Name)
+	column := recordColumnSQL(b.collection, field.Name)
 	value = normalizeFilterJSONValue(value)
 	switch operator {
 	case "_eq":
@@ -322,7 +322,10 @@ func (b *recordFilterBuilder) arg(value any) string {
 }
 
 func filterableRecordField(collection *Collection, name string) (Field, bool) {
-	if name == "id" || name == "created" || name == "updated" {
+	if name == collectionPrimaryKeyField(collection) {
+		return Field{Name: name, Type: "text"}, true
+	}
+	if collectionStandardSystemColumns(collection) && (name == "created" || name == "updated") {
 		return Field{Name: name, Type: "text"}, true
 	}
 	for _, field := range collection.Fields {

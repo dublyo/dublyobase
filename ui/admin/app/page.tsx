@@ -79,10 +79,12 @@ import {
   createRecord,
   deleteCollection,
   deleteRecord,
+  discoverSchema,
   exportCollections,
   health,
   getSettings,
   importCollections,
+  importSchemaTables,
   listAPIKeys,
   listAudit,
   listBackupJobs,
@@ -109,7 +111,7 @@ import {
   updateStorageSettings,
   uploadFile,
 } from "../src/lib/api";
-import type { APIKey, Admin, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, Field, FieldType, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SQLResult } from "../src/lib/types";
+import type { APIKey, Admin, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SchemaImportItem, SQLResult } from "../src/lib/types";
 
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
@@ -178,6 +180,7 @@ const settingsItems = [
   { id: "mcp", label: "MCP access", group: "System" },
   { id: "exportCollections", label: "Export collections", group: "Sync" },
   { id: "importCollections", label: "Import collections", group: "Sync" },
+  { id: "discoverTables", label: "Discover tables", group: "Sync" },
   { id: "sqlConsole", label: "SQL console", group: "Debug" },
   { id: "apiKeys", label: "API keys", group: "Project" },
   { id: "files", label: "File uploads", group: "Project" },
@@ -313,6 +316,7 @@ export default function AdminApp() {
   const [editingFields, setEditingFields] = useState<Field[]>([]);
   const [editingRules, setEditingRules] = useState<RuleDraft>(emptyRules);
   const [editingIcon, setEditingIcon] = useState<CollectionIconOption>({ type: "lucide", name: "table" });
+  const [editingManaged, setEditingManaged] = useState(false);
   const [smtpDraft, setSMTPDraft] = useState(emptySMTPDraft);
   const [storageDraft, setStorageDraft] = useState(emptyStorageDraft);
   const [cronDraft, setCronDraft] = useState(emptyCronDraft);
@@ -328,6 +332,11 @@ export default function AdminApp() {
   const [importMode, setImportMode] = useState<"create_missing" | "upsert">("create_missing");
   const [importDropMissingFields, setImportDropMissingFields] = useState(false);
   const [importResult, setImportResult] = useState<CollectionImportResult | null>(null);
+  const [discoveredTables, setDiscoveredTables] = useState<DiscoveredTable[]>([]);
+  const [schemaSelection, setSchemaSelection] = useState<string[]>([]);
+  const [schemaFilters, setSchemaFilters] = useState({ schema: "", table: "" });
+  const [schemaImportNames, setSchemaImportNames] = useState<Record<string, string>>({});
+  const [schemaImportResult, setSchemaImportResult] = useState<CollectionImportResult | null>(null);
   const [sqlQuery, setSQLQuery] = useState("select * from users limit 25");
   const [sqlMaxRows, setSQLMaxRows] = useState("250");
   const [sqlResult, setSQLResult] = useState<SQLResult | null>(null);
@@ -514,6 +523,7 @@ export default function AdminApp() {
       deleteRule: selectedCollectionModel.deleteRule ?? "",
     });
     setEditingIcon(collectionIconFromOptions(selectedCollectionModel));
+    setEditingManaged(collectionManagedByDublyobase(selectedCollectionModel));
     if (!selectedCollectionModel.fields.some((field) => field.searchable && canSearchField(field))) {
       setRecordSearch("");
     }
@@ -661,11 +671,19 @@ export default function AdminApp() {
     if (!token || !selectedProject || !selectedCollectionModel) return;
     setBusy(true);
     try {
-      const updated = await updateCollection(token, selectedProject, selectedCollectionModel.name, {
-        fields: editingFields.map(cleanField),
+      const imported = collectionImportedFromOptions(selectedCollectionModel);
+      const options = collectionOptionsWithIcon(selectedCollectionModel.options, editingIcon);
+      if (imported) {
+        options.managed = editingManaged;
+      }
+      const payload: Record<string, unknown> = {
         ...editingRules,
-        options: collectionOptionsWithIcon(selectedCollectionModel.options, editingIcon),
-      });
+        options,
+      };
+      if (!imported || editingManaged) {
+        payload.fields = editingFields.map(cleanField);
+      }
+      const updated = await updateCollection(token, selectedProject, selectedCollectionModel.name, payload);
       showNotice("success", `Collection ${updated.name} saved`);
       setCollectionModal(null);
       await loadProjectData(token, selectedProject);
@@ -743,11 +761,13 @@ export default function AdminApp() {
   }
 
   async function removeRecord(record: RecordItem) {
-    if (!token || !selectedProject || !selectedCollectionModel || typeof record.id !== "string") return;
-    if (!window.confirm(`Delete record ${record.id}?`)) return;
+    if (!token || !selectedProject || !selectedCollectionModel) return;
+    const recordId = recordPrimaryKeyValue(selectedCollectionModel, record);
+    if (!recordId) return;
+    if (!window.confirm(`Delete record ${recordId}?`)) return;
     setBusy(true);
     try {
-      await deleteRecord(token, selectedProject, selectedCollectionModel.name, record.id);
+      await deleteRecord(token, selectedProject, selectedCollectionModel.name, recordId);
       showNotice("success", "Record deleted");
       await refreshRecords(records.page);
     } catch (error) {
@@ -1123,6 +1143,59 @@ export default function AdminApp() {
     }
   }
 
+  async function scanSchemaTables() {
+    if (!token || !selectedProject) return;
+    setBusy(true);
+    try {
+      const response = await discoverSchema(token, selectedProject, schemaFilters);
+      setDiscoveredTables(response.items);
+      setSchemaSelection(response.items.filter((item) => item.canImport && !item.existingCollection).map(discoveredTableKey));
+      setSchemaImportNames(Object.fromEntries(response.items.map((item) => [discoveredTableKey(item), item.suggestedName])));
+      setSchemaImportResult(null);
+      showNotice("success", `Found ${response.items.length} tables`);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleSchemaTable(table: DiscoveredTable) {
+    const key = discoveredTableKey(table);
+    setSchemaSelection((current) => (current.includes(key) ? current.filter((item) => item !== key) : [...current, key]));
+  }
+
+  function setSchemaImportName(table: DiscoveredTable, name: string) {
+    setSchemaImportNames((current) => ({ ...current, [discoveredTableKey(table)]: name }));
+  }
+
+  async function submitSchemaImport(dryRun: boolean) {
+    if (!token || !selectedProject) return;
+    const items = discoveredTables.filter((table) => schemaSelection.includes(discoveredTableKey(table))).map<SchemaImportItem>((table) => ({
+      schema: table.schema,
+      table: table.table,
+      name: schemaImportNames[discoveredTableKey(table)] || table.suggestedName,
+    }));
+    if (items.length === 0) {
+      showNotice("error", "Choose at least one CRUD-ready table");
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await importSchemaTables(token, selectedProject, { items, dryRun });
+      setSchemaImportResult(response);
+      showNotice("success", dryRun ? "Schema import preview ready" : "Tables imported as collections");
+      if (!dryRun) {
+        await loadProjectData(token, selectedProject);
+        await scanSchemaTables();
+      }
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function executeSQL(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!token || !selectedProject) return;
@@ -1181,7 +1254,7 @@ export default function AdminApp() {
     <main className="pb-app">
       <header className="pb-app-header accent-surface">
         <button type="button" className="pb-logo" onClick={() => changeView("collections")} aria-label="Open collections">
-          <Database className="h-4 w-4" />
+          <img className="pb-brand-mark" src="/icon.png" alt="" aria-hidden="true" />
         </button>
         <nav className="pb-main-nav" aria-label="Primary">
           {navItems.map((item) => {
@@ -1262,7 +1335,7 @@ export default function AdminApp() {
             setRecordEditorOpen(true);
           }}
           onEditRecord={(record) => {
-            setSelectedRecordId(String(record.id ?? ""));
+            setSelectedRecordId(selectedCollectionModel ? recordPrimaryKeyValue(selectedCollectionModel, record) : "");
             setRecordJSON(JSON.stringify(stripSystemFields(record, selectedCollectionModel), null, 2));
             setRecordEditorOpen(true);
           }}
@@ -1370,6 +1443,17 @@ export default function AdminApp() {
           importResult={importResult}
           onPreviewImport={() => submitCollectionImport(true)}
           onApplyImport={() => submitCollectionImport(false)}
+          discoveredTables={discoveredTables}
+          schemaSelection={schemaSelection}
+          schemaFilters={schemaFilters}
+          setSchemaFilters={setSchemaFilters}
+          schemaImportNames={schemaImportNames}
+          schemaImportResult={schemaImportResult}
+          onScanSchema={scanSchemaTables}
+          onToggleSchemaTable={toggleSchemaTable}
+          onSetSchemaImportName={setSchemaImportName}
+          onPreviewSchemaImport={() => submitSchemaImport(true)}
+          onApplySchemaImport={() => submitSchemaImport(false)}
           sqlQuery={sqlQuery}
           setSQLQuery={setSQLQuery}
           sqlMaxRows={sqlMaxRows}
@@ -1408,6 +1492,8 @@ export default function AdminApp() {
           collections={collections}
           icon={editingIcon}
           setIcon={setEditingIcon}
+          managed={editingManaged}
+          setManaged={setEditingManaged}
           fields={editingFields}
           setFields={setEditingFields}
           rules={editingRules}
@@ -1452,7 +1538,7 @@ function AuthScreen({
     <main className="pb-login-screen">
       <section className="pb-login-card" aria-labelledby="login-title">
         <div className="pb-login-logo">
-          <Database className="h-6 w-6" />
+          <img className="pb-login-mark" src="/icon.png" alt="" aria-hidden="true" />
         </div>
         <h1 id="login-title">Superuser login</h1>
         {notice ? (
@@ -1511,7 +1597,7 @@ function PasswordChangeScreen({
     <main className="pb-login-screen">
       <section className="pb-login-card" aria-labelledby="password-change-title">
         <div className="pb-login-logo">
-          <ShieldCheck className="h-6 w-6" />
+          <img className="pb-login-mark" src="/icon.png" alt="" aria-hidden="true" />
         </div>
         <h1 id="password-change-title">Change admin password</h1>
         <p className="pb-muted-copy">Signed in as {admin.email}. Set a new password before opening the control panel.</p>
@@ -1668,7 +1754,9 @@ function CollectionsWorkspace({
   onDeleteCollection: (collection: Collection) => void;
   version: string;
 }) {
-  const columns = selectedCollection ? Array.from(new Set(["id", ...selectedCollection.fields.filter(isVisibleRecordField).map((field) => field.name), "created", "updated"])) : ["id"];
+  const primaryKeyField = selectedCollection ? collectionPrimaryKeyFieldName(selectedCollection) : "id";
+  const systemColumns = selectedCollection && collectionStandardSystemColumns(selectedCollection) ? ["created", "updated"] : [];
+  const columns = selectedCollection ? Array.from(new Set([primaryKeyField, ...selectedCollection.fields.filter(isVisibleRecordField).map((field) => field.name), ...systemColumns])) : ["id"];
   const totalPages = Math.max(1, Math.ceil(records.totalItems / Math.max(1, records.perPage || recordPerPage)));
   const currentPage = Math.max(1, records.page || 1);
   const searchableFields = selectedCollection?.fields.filter(canSearchField).filter((field) => field.searchable).map((field) => field.name) ?? [];
@@ -1759,10 +1847,12 @@ function CollectionsWorkspace({
               </tr>
             </thead>
             <tbody>
-              {records.items.map((record, index) => (
-                <tr key={String(record.id ?? index)} onDoubleClick={() => onEditRecord(record)}>
+              {records.items.map((record, index) => {
+                const recordKey = selectedCollection ? recordPrimaryKeyValue(selectedCollection, record) || String(index) : String(index);
+                return (
+                <tr key={recordKey} onDoubleClick={() => onEditRecord(record)}>
                   <td className="col-bulk">
-                    <input type="checkbox" aria-label={`Select record ${String(record.id ?? index)}`} />
+                    <input type="checkbox" aria-label={`Select record ${recordKey}`} />
                   </td>
                   {columns.map((column) => (
                     <td key={column} className="truncate-cell">
@@ -1778,7 +1868,8 @@ function CollectionsWorkspace({
                     </button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {records.items.length === 0 ? (
                 <tr>
                   <td colSpan={columns.length + 2} className="pb-empty-cell">
@@ -1946,6 +2037,8 @@ function CollectionModal({
   setDraft,
   icon,
   setIcon,
+  managed,
+  setManaged,
   fields,
   setFields,
   rules,
@@ -1962,6 +2055,8 @@ function CollectionModal({
   setDraft?: React.Dispatch<React.SetStateAction<CollectionDraft>>;
   icon: CollectionIconOption;
   setIcon: (icon: CollectionIconOption) => void;
+  managed?: boolean;
+  setManaged?: (managed: boolean) => void;
   fields: Field[];
   setFields: (fields: Field[]) => void;
   rules: RuleDraft;
@@ -1973,6 +2068,9 @@ function CollectionModal({
 }) {
   const [tab, setTab] = useState<"fields" | "rules">("fields");
   const title = mode === "create" ? "Create collection" : "Collection settings";
+  const imported = collection ? collectionImportedFromOptions(collection) : false;
+  const manageReady = collection ? collectionStandardSystemColumns(collection) : false;
+  const schemaLocked = imported && !managed;
   return (
     <div className="pb-modal-layer" role="presentation">
       <form
@@ -2015,12 +2113,25 @@ function CollectionModal({
               <CollectionIcon collection={collection} icon={icon} />
               <div>
                 <p>{collection.name}</p>
-                <span>{collection.type} collection</span>
+                <span>{collection.type} collection{imported ? ` · ${collectionSourceTable(collection)}` : ""}</span>
               </div>
             </div>
           ) : null}
 
           <CollectionIconPicker icon={icon} onChange={setIcon} />
+
+          {mode === "settings" && imported ? (
+            <div className="pb-managed-toggle">
+              <div>
+                <strong>Imported Postgres table</strong>
+                <span>{manageReady ? "Field edits can be enabled because standard system columns exist." : "Field edits require id uuid, created, and updated columns first."}</span>
+              </div>
+              <label className="pb-checkline switchline">
+                <input type="checkbox" checked={Boolean(managed)} disabled={!manageReady} onChange={(event) => setManaged?.(event.target.checked)} />
+                Managed by Dublyobase
+              </label>
+            </div>
+          ) : null}
 
           <div className="pb-tabs" role="tablist" aria-label="Collection editor">
             <button type="button" role="tab" aria-selected={tab === "fields"} className={`pb-tab-item ${tab === "fields" ? "active" : ""}`} onClick={() => setTab("fields")}>
@@ -2031,7 +2142,12 @@ function CollectionModal({
             </button>
           </div>
 
-          {tab === "fields" ? <FieldRows fields={fields} collections={collections} onChange={setFields} onAdd={onAddField} /> : null}
+          {tab === "fields" ? (
+            <>
+              {schemaLocked ? <div className="pb-inline-alert warning">This imported table is staged for CRUD. Enable managed takeover before editing columns or field definitions.</div> : null}
+              <FieldRows fields={fields} collections={collections} onChange={setFields} onAdd={onAddField} readOnly={schemaLocked} />
+            </>
+          ) : null}
           {tab === "rules" ? <RuleInputs rules={rules} onChange={setRules} /> : null}
         </div>
 
@@ -2053,51 +2169,65 @@ function FieldRows({
   collections,
   onChange,
   onAdd,
+  readOnly,
 }: {
   fields: Field[];
   collections: Collection[];
   onChange: (fields: Field[]) => void;
   onAdd: (type?: FieldType) => void;
+  readOnly?: boolean;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [openRows, setOpenRows] = useState<Record<string, boolean>>({});
   const update = (index: number, field: Field) => onChange(fields.map((item, i) => (i === index ? field : item)));
   const addField = (type: FieldType) => {
     onAdd(type);
     setPickerOpen(false);
   };
+  const toggleRow = (key: string) => setOpenRows((current) => ({ ...current, [key]: !(current[key] ?? false) }));
   return (
     <div className="pb-fields-editor">
       {fields.length === 0 ? <EmptyState label="No fields yet" /> : null}
-      {fields.map((field, index) => (
-        <div key={`${field.name}-${index}`} className="pb-field-row">
-          <div className="pb-field-row-main">
-            <label className="pb-field-type">
-              <span className="sr-only">Type</span>
-              <select value={field.type} onChange={(event) => update(index, fieldWithType(field, event.target.value as FieldType))}>
-                {fieldTypes.map((type) => (
-                  <option key={type} value={type}>
-                    {type}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <input value={field.name} onChange={(event) => update(index, { ...field, name: event.target.value })} placeholder="Field name*" />
-            <label className="pb-checkline sm">
-              <input type="checkbox" checked={Boolean(field.required)} onChange={(event) => update(index, { ...field, required: event.target.checked })} />
-              Required
-            </label>
-            <button type="button" aria-label={`Remove field ${field.name || index + 1}`} className="pb-btn sm circle transparent danger" onClick={() => onChange(fields.filter((_, i) => i !== index))}>
-              <Trash2 className="h-4 w-4" />
-            </button>
+      {fields.map((field, index) => {
+        const rowKey = `${index}-${field.name || "field"}-${field.type}`;
+        const open = openRows[rowKey] ?? field.name === "";
+        return (
+          <div key={`${field.name}-${index}`} className={`pb-field-row ${open ? "open" : ""}`}>
+            <div className="pb-field-row-main">
+              <label className="pb-field-type">
+                <span className="sr-only">Type</span>
+                <select value={field.type} disabled={readOnly} onChange={(event) => update(index, fieldWithType(field, event.target.value as FieldType))}>
+                  {fieldTypes.map((type) => (
+                    <option key={type} value={type}>
+                      {type}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <input value={field.name} disabled={readOnly} onChange={(event) => update(index, { ...field, name: event.target.value })} placeholder="Field name*" />
+              <span className="pb-field-row-meta">{fieldMetaSummary(field)}</span>
+              <label className="pb-checkline sm">
+                <input type="checkbox" checked={Boolean(field.required)} disabled={readOnly} onChange={(event) => update(index, { ...field, required: event.target.checked })} />
+                Required
+              </label>
+              <button type="button" aria-label={`${open ? "Collapse" : "Expand"} field ${field.name || index + 1}`} aria-expanded={open} className="pb-btn sm circle transparent" onClick={() => toggleRow(rowKey)}>
+                <Settings className="h-4 w-4" />
+              </button>
+              <button type="button" aria-label={`Remove field ${field.name || index + 1}`} className="pb-btn sm circle transparent danger" disabled={readOnly} onClick={() => onChange(fields.filter((_, i) => i !== index))}>
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+            {open ? <FieldOptionsEditor field={field} collections={collections} onChange={(next) => update(index, next)} readOnly={readOnly} /> : null}
           </div>
-          <FieldOptionsEditor field={field} collections={collections} onChange={(next) => update(index, next)} />
-        </div>
-      ))}
-      <button type="button" className={`pb-new-field-toggle ${pickerOpen ? "open" : ""}`} onClick={() => setPickerOpen((value) => !value)} aria-expanded={pickerOpen}>
-        <Plus className="h-4 w-4" />
-        New field
-      </button>
-      {pickerOpen ? (
+        );
+      })}
+      {!readOnly ? (
+        <button type="button" className={`pb-new-field-toggle ${pickerOpen ? "open" : ""}`} onClick={() => setPickerOpen((value) => !value)} aria-expanded={pickerOpen}>
+          <Plus className="h-4 w-4" />
+          New field
+        </button>
+      ) : null}
+      {pickerOpen && !readOnly ? (
         <div className="pb-field-type-picker" role="list" aria-label="Choose field type">
           {fieldTypeChoices.map((choice) => {
             const Icon = choice.icon;
@@ -2121,8 +2251,9 @@ function FieldRows({
   );
 }
 
-function FieldOptionsEditor({ field, collections, onChange }: { field: Field; collections: Collection[]; onChange: (field: Field) => void }) {
+function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field: Field; collections: Collection[]; onChange: (field: Field) => void; readOnly?: boolean }) {
   const searchSupported = canSearchField(field);
+  const relationTarget = field.type === "relation" ? collections.find((collection) => collection.name === field.options?.collection) : undefined;
   const commonOptions = (
     <div className="pb-field-options common">
       <label className="pb-field">
@@ -2198,6 +2329,17 @@ function FieldOptionsEditor({ field, collections, onChange }: { field: Field; co
             ))}
           </select>
         </label>
+        <label className="pb-field">
+          <span>Display field</span>
+          <select value={String(field.options?.displayField ?? "")} onChange={(event) => onChange(setFieldOption(field, "displayField", event.target.value))} disabled={!relationTarget}>
+            <option value="">Auto</option>
+            {relationTarget?.fields.filter((item) => !item.hidden && item.type !== "password").map((item) => (
+              <option key={item.name} value={item.name}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        </label>
         <div className="pb-option-grid">
           <label className="pb-field">
             <span>Min select</span>
@@ -2212,6 +2354,17 @@ function FieldOptionsEditor({ field, collections, onChange }: { field: Field; co
             Cascade delete
           </label>
         </div>
+        <label className="pb-field">
+          <span>Reverse field name</span>
+          <input value={String(field.options?.reverseName ?? "")} onChange={(event) => onChange(setFieldOption(field, "reverseName", event.target.value))} placeholder={`${field.name || "field"}_records`} />
+        </label>
+        {field.options?.targetTable || field.options?.sourceColumn ? (
+          <div className="pb-relation-source">
+            <Info label="Source column" value={String(field.options?.sourceColumn ?? field.name)} />
+            <Info label="Target table" value={[field.options?.targetSchema, field.options?.targetTable].filter(Boolean).join(".")} />
+            <Info label="Target column" value={String(field.options?.targetColumn ?? "id")} />
+          </div>
+        ) : null}
       </div>
     );
   } else if (field.type === "file") {
@@ -2324,10 +2477,10 @@ function FieldOptionsEditor({ field, collections, onChange }: { field: Field; co
     );
   }
   return (
-    <div className="pb-field-options-stack">
+    <fieldset className="pb-field-options-stack" disabled={readOnly}>
       {commonOptions}
       {typeOptions}
-    </div>
+    </fieldset>
   );
 }
 
@@ -2812,6 +2965,17 @@ function SettingsWorkspace(props: {
   importResult: CollectionImportResult | null;
   onPreviewImport: () => void;
   onApplyImport: () => void;
+  discoveredTables: DiscoveredTable[];
+  schemaSelection: string[];
+  schemaFilters: { schema: string; table: string };
+  setSchemaFilters: React.Dispatch<React.SetStateAction<{ schema: string; table: string }>>;
+  schemaImportNames: Record<string, string>;
+  schemaImportResult: CollectionImportResult | null;
+  onScanSchema: () => void;
+  onToggleSchemaTable: (table: DiscoveredTable) => void;
+  onSetSchemaImportName: (table: DiscoveredTable, name: string) => void;
+  onPreviewSchemaImport: () => void;
+  onApplySchemaImport: () => void;
   sqlQuery: string;
   setSQLQuery: React.Dispatch<React.SetStateAction<string>>;
   sqlMaxRows: string;
@@ -2843,6 +3007,7 @@ function SettingsWorkspace(props: {
           {props.section === "mcp" ? <MCPAccessView {...props} /> : null}
           {props.section === "exportCollections" ? <ExportCollectionsView {...props} /> : null}
           {props.section === "importCollections" ? <ImportCollectionsView {...props} /> : null}
+          {props.section === "discoverTables" ? <DiscoverTablesView {...props} /> : null}
           {props.section === "sqlConsole" ? <SQLConsoleView {...props} /> : null}
           {props.section === "apiKeys" ? <APIKeysView {...props} /> : null}
           {props.section === "files" ? <FilesView {...props} /> : null}
@@ -2886,6 +3051,7 @@ function SettingsIcon({ id }: { id: SettingsSection }) {
   if (id === "mcp") return <KeyRound className="h-4 w-4" />;
   if (id === "exportCollections") return <FileUp className="h-4 w-4" />;
   if (id === "importCollections") return <UploadCloud className="h-4 w-4" />;
+  if (id === "discoverTables") return <Database className="h-4 w-4" />;
   if (id === "sqlConsole") return <Code2 className="h-4 w-4" />;
   if (id === "apiKeys") return <KeyRound className="h-4 w-4" />;
   if (id === "files") return <UploadCloud className="h-4 w-4" />;
@@ -3734,6 +3900,158 @@ function ImportCollectionsView(props: {
   );
 }
 
+function DiscoverTablesView(props: {
+  discoveredTables: DiscoveredTable[];
+  schemaSelection: string[];
+  schemaFilters: { schema: string; table: string };
+  setSchemaFilters: React.Dispatch<React.SetStateAction<{ schema: string; table: string }>>;
+  schemaImportNames: Record<string, string>;
+  schemaImportResult: CollectionImportResult | null;
+  onScanSchema: () => void;
+  onToggleSchemaTable: (table: DiscoveredTable) => void;
+  onSetSchemaImportName: (table: DiscoveredTable, name: string) => void;
+  onPreviewSchemaImport: () => void;
+  onApplySchemaImport: () => void;
+}) {
+  const selectedCount = props.schemaSelection.length;
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <div className="pb-section-title-row">
+          <h2>Discover existing tables</h2>
+          <button type="button" className="pb-btn outline" onClick={props.onScanSchema}>
+            <RefreshCw className="h-4 w-4" />
+            Scan database
+          </button>
+        </div>
+        <div className="pb-inline-alert info">
+          Discovery is read-only. Tables can be imported for admin CRUD only when they have a single usable primary key. Field edits stay locked until the table has `id uuid`, `created`, and `updated` and is marked managed.
+        </div>
+        <div className="pb-grid-form import-options">
+          <LabeledInput label="Schema filter" value={props.schemaFilters.schema} onChange={(value) => props.setSchemaFilters((current) => ({ ...current, schema: value }))} placeholder="public" />
+          <LabeledInput label="Table search" value={props.schemaFilters.table} onChange={(value) => props.setSchemaFilters((current) => ({ ...current, table: value }))} placeholder="users" />
+        </div>
+      </section>
+
+      <section className="pb-settings-block">
+        <div className="pb-section-title-row">
+          <h2>Tables</h2>
+          <div className="pb-row-actions tight">
+            <button type="button" className="pb-btn secondary" onClick={props.onPreviewSchemaImport} disabled={selectedCount === 0}>
+              Preview import
+            </button>
+            <button type="button" className="pb-btn primary" onClick={props.onApplySchemaImport} disabled={selectedCount === 0}>
+              Import selected
+            </button>
+          </div>
+        </div>
+        <div className="pb-table-wrap">
+          <table className="pb-records-table compact schema-discovery-table">
+            <thead>
+              <tr>
+                <th aria-label="Select" />
+                <th>Source table</th>
+                <th>Collection</th>
+                <th>Primary key</th>
+                <th>Fields</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {props.discoveredTables.map((table) => {
+                const key = discoveredTableKey(table);
+                const selected = props.schemaSelection.includes(key);
+                const disabled = !table.canImport || Boolean(table.existingCollection);
+                return (
+                  <tr key={key}>
+                    <td>
+                      <input type="checkbox" checked={selected} disabled={disabled} onChange={() => props.onToggleSchemaTable(table)} aria-label={`Import ${table.schema}.${table.table}`} />
+                    </td>
+                    <td>
+                      <div className="pb-table-identity">
+                        <strong>{table.table}</strong>
+                        <span>{table.schema}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <input
+                        className="pb-inline-input"
+                        value={props.schemaImportNames[key] ?? table.suggestedName}
+                        disabled={disabled}
+                        onChange={(event) => props.onSetSchemaImportName(table, event.target.value)}
+                      />
+                    </td>
+                    <td>{table.primaryKey ? `${table.primaryKey.column} · ${table.primaryKey.type}` : "-"}</td>
+                    <td>
+                      {table.fields.length}/{table.columns.length} supported
+                      {table.foreignKeys.length ? ` · ${table.foreignKeys.length} relations` : ""}
+                    </td>
+                    <td>
+                      <div className="pb-chip-row">
+                        <SchemaStatusChip table={table} />
+                        {table.standardSystemColumns ? <span className="pb-chip success">managed-ready</span> : <span className="pb-chip">staged</span>}
+                      </div>
+                      {table.reason ? <small className="pb-muted-inline">{table.reason}</small> : null}
+                    </td>
+                  </tr>
+                );
+              })}
+              {props.discoveredTables.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="pb-empty-cell">
+                    <EmptyState label="Scan the database to preview existing tables." action="Scan database" onAction={props.onScanSchema} />
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {props.discoveredTables.length > 0 ? (
+        <section className="pb-settings-block">
+          <h2>Preview fields</h2>
+          <div className="pb-discovery-preview-grid">
+            {props.discoveredTables.slice(0, 12).map((table) => (
+              <details key={`preview-${discoveredTableKey(table)}`} className="pb-discovery-card">
+                <summary>
+                  <span>{table.schema}.{table.table}</span>
+                  <em>{table.fields.length} fields</em>
+                </summary>
+                <div className="pb-discovery-fields">
+                  {table.columns.map((column) => (
+                    <span key={column.name} className={column.supported ? "" : "muted"} title={column.reason || column.udtName}>
+                      {column.fieldName || column.name}
+                      <em>{column.udtName}</em>
+                    </span>
+                  ))}
+                </div>
+              </details>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {props.schemaImportResult ? (
+        <section className="pb-settings-block">
+          <h2>{props.schemaImportResult.dryRun ? "Import preview" : "Import result"}</h2>
+          <div className="pb-info-grid compact">
+            <Info label="Import" value={String(props.schemaImportResult.created)} />
+            <Info label="Skip" value={String(props.schemaImportResult.skipped)} />
+          </div>
+          <CompactTable headers={["Collection", "Action", "Status", "Message"]} rows={props.schemaImportResult.items.map((item) => [item.name, item.action, item.status, item.message ?? ""])} empty="No table import changes." />
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function SchemaStatusChip({ table }: { table: DiscoveredTable }) {
+  if (table.existingCollection) return <span className="pb-chip">configured as {table.existingCollection}</span>;
+  if (table.canImport) return <span className="pb-chip success">CRUD-ready</span>;
+  return <span className="pb-chip warning">read-only</span>;
+}
+
 function SQLConsoleView(props: {
   sqlQuery: string;
   setSQLQuery: React.Dispatch<React.SetStateAction<string>>;
@@ -4160,6 +4478,37 @@ function collectionOptionsWithIcon(options: CollectionOptions | undefined, icon:
   };
 }
 
+function collectionImportedFromOptions(collection: Collection): boolean {
+  return Boolean(normalizeCollectionOptions(collection.options).imported);
+}
+
+function collectionManagedByDublyobase(collection: Collection): boolean {
+  const options = normalizeCollectionOptions(collection.options);
+  return !options.imported || Boolean(options.managed);
+}
+
+function collectionStandardSystemColumns(collection: Collection): boolean {
+  const options = normalizeCollectionOptions(collection.options);
+  return !options.imported || Boolean(options.standardSystemColumns);
+}
+
+function collectionSourceTable(collection: Collection): string {
+  const options = normalizeCollectionOptions(collection.options);
+  const schema = typeof options.sourceSchema === "string" ? options.sourceSchema : "";
+  const table = typeof options.sourceTable === "string" ? options.sourceTable : "";
+  return [schema, table].filter(Boolean).join(".");
+}
+
+function collectionPrimaryKeyFieldName(collection: Collection): string {
+  const options = normalizeCollectionOptions(collection.options);
+  return typeof options.primaryKeyField === "string" && options.primaryKeyField ? options.primaryKeyField : "id";
+}
+
+function recordPrimaryKeyValue(collection: Collection, record: RecordItem): string {
+  const value = record[collectionPrimaryKeyFieldName(collection)];
+  return value === null || value === undefined ? "" : String(value);
+}
+
 function normalizeCollectionOptions(options: unknown): CollectionOptions {
   if (!options || typeof options !== "object" || Array.isArray(options)) return {};
   return { ...(options as CollectionOptions) };
@@ -4218,6 +4567,10 @@ function extractImportItems(raw: string): unknown[] {
   throw new Error("Import JSON must be an array or include an items array");
 }
 
+function discoveredTableKey(table: Pick<DiscoveredTable, "schema" | "table">) {
+  return `${table.schema}.${table.table}`;
+}
+
 function isDangerousSQL(query: string) {
   const first = query.trim().split(/\s+/, 1)[0]?.toLowerCase().replace(/;$/, "") ?? "";
   return ["alter", "replace", "insert", "create", "update", "delete", "drop", "truncate", "grant", "revoke"].includes(first);
@@ -4263,9 +4616,10 @@ function csvCell(value: string) {
 
 function stripSystemFields(record: RecordItem, collection?: Collection | null): RecordItem {
   const writable = collection ? new Set(collection.fields.filter(isRecordFormField).map((field) => field.name)) : null;
+  const primaryKeyField = collection ? collectionPrimaryKeyFieldName(collection) : "id";
   const next: RecordItem = {};
   for (const [key, value] of Object.entries(record)) {
-    if (!["id", "created", "updated"].includes(key) && (!writable || writable.has(key))) {
+    if (key !== primaryKeyField && !["id", "created", "updated"].includes(key) && (!writable || writable.has(key))) {
       next[key] = value;
     }
   }
@@ -4341,6 +4695,17 @@ function canSearchField(field: Field): boolean {
   return ["text", "editor", "email", "url", "select", "number", "bool", "date", "autodate", "relation"].includes(field.type);
 }
 
+function fieldMetaSummary(field: Field) {
+  const parts = [];
+  if (field.hidden) parts.push("hidden");
+  if (field.presentable) parts.push("presentable");
+  if (field.searchable) parts.push("searchable");
+  if (typeof field.options?.sourceColumn === "string") parts.push(`source: ${field.options.sourceColumn}`);
+  if (field.type === "relation" && field.options?.collection) parts.push(`to ${field.options.collection}`);
+  if (field.type === "file" && field.options?.multiple) parts.push("multiple");
+  return parts.length ? parts.join(" · ") : "default";
+}
+
 function fieldWithType(field: Field, type: FieldType): Field {
   const hidden = type === "password" ? true : field.hidden;
   const nextField = {
@@ -4387,8 +4752,13 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
     const values = optionValues(options, key);
     return values.length > 0 ? { [key]: values } : {};
   };
+  const sourceOptions = {
+    ...withString("sourceColumn"),
+    ...withString("sourceType"),
+  };
   if (type === "text" || type === "url" || type === "password") {
     return {
+      ...sourceOptions,
       ...withNumber("min"),
       ...withNumber("max"),
       ...withString("pattern"),
@@ -4397,6 +4767,7 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
   }
   if (type === "number") {
     return {
+      ...sourceOptions,
       ...withNumber("min"),
       ...withNumber("max"),
       ...withBool("onlyInt"),
@@ -4404,18 +4775,21 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
   }
   if (type === "email") {
     return {
+      ...sourceOptions,
       ...withStringList("onlyDomains"),
       ...withStringList("exceptDomains"),
     };
   }
   if (type === "editor") {
     return {
+      ...sourceOptions,
       ...withNumber("maxSize"),
       ...withBool("convertURLs"),
     };
   }
   if (type === "json") {
     return {
+      ...sourceOptions,
       ...withNumber("maxSize"),
     };
   }
@@ -4423,12 +4797,14 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
     const onCreate = options.onCreate !== false;
     const onUpdate = Boolean(options.onUpdate);
     return {
+      ...sourceOptions,
       ...(onCreate ? { onCreate: true } : {}),
       ...(onUpdate ? { onUpdate: true } : {}),
     };
   }
   if (type === "select") {
     return {
+      ...sourceOptions,
       values: splitOptionValues(optionValuesText(options)),
       ...withNumber("minSelect"),
       ...withNumber("maxSelect"),
@@ -4436,7 +4812,14 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
   }
   if (type === "relation") {
     return {
+      ...sourceOptions,
       collection: typeof options.collection === "string" ? options.collection : "",
+      ...withString("displayField"),
+      ...withString("reverseName"),
+      ...withString("targetSchema"),
+      ...withString("targetTable"),
+      ...withString("targetColumn"),
+      ...withString("onDelete"),
       ...withNumber("minSelect"),
       ...withNumber("maxSelect"),
       ...withBool("cascadeDelete"),
@@ -4444,6 +4827,7 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
   }
   if (type === "file") {
     return {
+      ...sourceOptions,
       ...withBool("multiple"),
       ...withBool("protected"),
       ...withNumber("maxSelect"),
@@ -4452,7 +4836,7 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
       ...withStringList("thumbs"),
     };
   }
-  return {};
+  return sourceOptions;
 }
 
 function setFieldOption(field: Field, key: string, value: unknown): Field {

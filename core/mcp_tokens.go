@@ -100,6 +100,7 @@ func DefaultMCPTools(scope string) []string {
 		return []string{
 			"projects.list", "projects.create",
 			"collections.list", "collections.create", "collections.update",
+			"schema.discover", "schema.import",
 			"records.list", "records.create", "records.update", "records.delete",
 			"files.upload_base64", "users.create",
 			"settings.smtp.update", "settings.storage.update", "settings.storage.test",
@@ -109,6 +110,7 @@ func DefaultMCPTools(scope string) []string {
 	}
 	return []string{
 		"collections.list", "collections.create", "collections.update",
+		"schema.discover", "schema.import",
 		"records.list", "records.create", "records.update", "records.delete",
 		"files.upload_base64", "users.create",
 		"backups.list", "backups.create", "backups.run",

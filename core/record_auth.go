@@ -100,14 +100,20 @@ func newRecordAuth(project *Project, role RecordRole, roleName string, subject s
 }
 
 // ServiceRecordAuth returns the project service role auth context for trusted
-// control-plane operations such as admin UI and scoped MCP tools. It still goes
-// through SET LOCAL ROLE and RLS, but uses the project's service policies.
+// control-plane operations such as admin UI and scoped MCP tools. Managed
+// Dublyobase tables still go through SET LOCAL ROLE and RLS; imported tables
+// use the app database role for service access because they may not grant the
+// project service role.
 func ServiceRecordAuth(project *Project) *RecordAuth {
 	_, roles := ProjectNames(project.Slug)
 	return newRecordAuth(project, RecordRoleService, roles.Service, "", "")
 }
 
 func withRecordTx(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, operation string, fn func(pgx.Tx) error) error {
+	return withRecordTxOptions(ctx, pool, auth, operation, false, fn)
+}
+
+func withRecordTxOptions(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, operation string, bypassRole bool, fn func(pgx.Tx) error) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -119,8 +125,10 @@ func withRecordTx(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, ope
 		return err
 	}
 	searchPath := auth.Project.SchemaName + ", pg_catalog"
-	if _, err := tx.Exec(ctx, fmt.Sprintf(`set local role %s`, quoteIdent(auth.RoleName))); err != nil {
-		return err
+	if !bypassRole {
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`set local role %s`, quoteIdent(auth.RoleName))); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(ctx, `set local statement_timeout = '5s'`); err != nil {
 		return err
