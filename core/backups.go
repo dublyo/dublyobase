@@ -240,7 +240,7 @@ func RunDueBackupJobs(ctx context.Context, pool *pgxpool.Pool, cfg *Config, now 
 		where b.enabled and b.next_run_at is not null and b.next_run_at <= $1
 		order by b.next_run_at asc
 		limit 2
-		for update skip locked`, now.UTC())
+		for update of b skip locked`, now.UTC())
 	if err != nil {
 		return err
 	}

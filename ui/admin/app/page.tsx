@@ -128,6 +128,7 @@ const navItems = [
 ] as const;
 const settingsItems = [
   { id: "application", label: "Application", group: "System" },
+  { id: "auth", label: "Auth settings", group: "System" },
   { id: "mail", label: "Mail settings", group: "System" },
   { id: "storage", label: "Files storage", group: "System" },
   { id: "backups", label: "Backups", group: "System" },
@@ -271,6 +272,7 @@ export default function AdminApp() {
   const [mcpDraft, setMCPDraft] = useState(emptyMCPDraft);
   const [keyDraft, setKeyDraft] = useState({ name: "", type: "service" as "anon" | "service" });
   const [fileDraft, setFileDraft] = useState({ recordId: "", field: "" });
+  const [selectedUploadFile, setSelectedUploadFile] = useState<File | null>(null);
   const [fileResult, setFileResult] = useState<RecordItem | null>(null);
   const [collectionExport, setCollectionExport] = useState<CollectionExport | null>(null);
   const [exportSelection, setExportSelection] = useState<string[]>([]);
@@ -528,6 +530,7 @@ export default function AdminApp() {
     setCronJobs([]);
     setBackupJobs([]);
     setMCPTokens([]);
+    setSelectedUploadFile(null);
     setOneTimeMCPToken(null);
   }
 
@@ -730,7 +733,7 @@ export default function AdminApp() {
     event.preventDefault();
     if (!token || !selectedProject || !selectedCollectionModel) return;
     const input = event.currentTarget.elements.namedItem("file") as HTMLInputElement | null;
-    const file = input?.files?.[0];
+    const file = selectedUploadFile ?? input?.files?.[0];
     if (!file) {
       showNotice("error", "Choose a file first");
       return;
@@ -739,6 +742,8 @@ export default function AdminApp() {
     try {
       const result = await uploadFile(token, selectedProject, selectedCollectionModel.name, fileDraft.recordId, fileDraft.field, file);
       setFileResult(result);
+      setSelectedUploadFile(null);
+      if (input) input.value = "";
       showNotice("success", "File uploaded");
       await refreshRecords(records.page);
     } catch (error) {
@@ -1207,6 +1212,10 @@ export default function AdminApp() {
           healthState={healthState}
           appUrl={typeof window !== "undefined" ? window.location.origin : ""}
           settings={settings}
+          onOpenAuth={() => changeSettings("auth")}
+          onOpenMail={() => changeSettings("mail")}
+          onOpenFiles={() => changeSettings("files")}
+          onOpenMCP={() => changeSettings("mcp")}
           smtpDraft={smtpDraft}
           setSMTPDraft={setSMTPDraft}
           storageDraft={storageDraft}
@@ -1251,6 +1260,8 @@ export default function AdminApp() {
           fileFields={fileFields}
           fileDraft={fileDraft}
           setFileDraft={setFileDraft}
+          selectedUploadFile={selectedUploadFile}
+          setSelectedUploadFile={setSelectedUploadFile}
           fileResult={fileResult}
           records={records}
           token={token}
@@ -2475,6 +2486,10 @@ function SettingsWorkspace(props: {
   healthState: Health | null;
   appUrl: string;
   settings: InstanceSettings | null;
+  onOpenAuth: () => void;
+  onOpenMail: () => void;
+  onOpenFiles: () => void;
+  onOpenMCP: () => void;
   smtpDraft: typeof emptySMTPDraft;
   setSMTPDraft: React.Dispatch<React.SetStateAction<typeof emptySMTPDraft>>;
   storageDraft: typeof emptyStorageDraft;
@@ -2519,6 +2534,8 @@ function SettingsWorkspace(props: {
   fileFields: Field[];
   fileDraft: { recordId: string; field: string };
   setFileDraft: React.Dispatch<React.SetStateAction<{ recordId: string; field: string }>>;
+  selectedUploadFile: File | null;
+  setSelectedUploadFile: React.Dispatch<React.SetStateAction<File | null>>;
   fileResult: RecordItem | null;
   records: RecordList;
   token: string;
@@ -2566,6 +2583,7 @@ function SettingsWorkspace(props: {
         </header>
         <div className="pb-wrapper">
           {props.section === "application" ? <ApplicationSettings {...props} /> : null}
+          {props.section === "auth" ? <AuthSettingsPanel {...props} /> : null}
           {props.section === "mail" ? <MailSettings {...props} /> : null}
           {props.section === "storage" ? <StorageSettingsPanel {...props} /> : null}
           {props.section === "backups" ? <BackupsView {...props} onOpenExport={() => props.onChangeSection("exportCollections")} /> : null}
@@ -2608,6 +2626,7 @@ function SettingsSidebar({ active, onChange }: { active: SettingsSection; onChan
 }
 
 function SettingsIcon({ id }: { id: SettingsSection }) {
+  if (id === "auth") return <ShieldCheck className="h-4 w-4" />;
   if (id === "mail") return <Mail className="h-4 w-4" />;
   if (id === "storage") return <HardDrive className="h-4 w-4" />;
   if (id === "backups") return <Archive className="h-4 w-4" />;
@@ -2629,6 +2648,10 @@ function ApplicationSettings({
   onSubmitProject,
   healthState,
   appUrl,
+  onOpenAuth,
+  onOpenMail,
+  onOpenFiles,
+  onOpenMCP,
 }: {
   project: Project | null;
   projects: Project[];
@@ -2637,6 +2660,10 @@ function ApplicationSettings({
   onSubmitProject: (event: React.FormEvent<HTMLFormElement>) => void;
   healthState: Health | null;
   appUrl: string;
+  onOpenAuth: () => void;
+  onOpenMail: () => void;
+  onOpenFiles: () => void;
+  onOpenMCP: () => void;
 }) {
   return (
     <div className="pb-settings-stack">
@@ -2647,6 +2674,39 @@ function ApplicationSettings({
           <Info label="Version" value={healthState?.version ?? ""} />
           <Info label="DB" value={healthState?.db ?? ""} />
           <Info label="Storage" value={healthState?.storage ?? ""} />
+        </div>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Core services</h2>
+        <div className="pb-service-grid">
+          <button type="button" className="pb-service-tile" onClick={onOpenAuth}>
+            <ShieldCheck className="h-5 w-5" />
+            <span>
+              <strong>Auth</strong>
+              <em>Email/password users, tokens, verification, reset</em>
+            </span>
+          </button>
+          <button type="button" className="pb-service-tile" onClick={onOpenMail}>
+            <Mail className="h-5 w-5" />
+            <span>
+              <strong>Email</strong>
+              <em>SMTP delivery for auth and test messages</em>
+            </span>
+          </button>
+          <button type="button" className="pb-service-tile" onClick={onOpenFiles}>
+            <UploadCloud className="h-5 w-5" />
+            <span>
+              <strong>Files</strong>
+              <em>Upload, protected tokens, thumbnails</em>
+            </span>
+          </button>
+          <button type="button" className="pb-service-tile" onClick={onOpenMCP}>
+            <KeyRound className="h-5 w-5" />
+            <span>
+              <strong>MCP</strong>
+              <em>Scoped AI tool access to the live backend</em>
+            </span>
+          </button>
         </div>
       </section>
       <section className="pb-settings-block">
@@ -2675,6 +2735,94 @@ function ApplicationSettings({
           </button>
         </form>
         <CompactTable headers={["Name", "Slug", "Schema"]} rows={projects.map((item) => [item.name, item.slug, item.schemaName])} empty="No projects yet." />
+      </section>
+    </div>
+  );
+}
+
+function AuthSettingsPanel({
+  project,
+  appUrl,
+  settings,
+  onOpenMail,
+}: {
+  project: Project | null;
+  appUrl: string;
+  settings: InstanceSettings | null;
+  onOpenMail: () => void;
+}) {
+  const projectSlug = project?.slug || "{project}";
+  const base = `${appUrl}/api/projects/${projectSlug}`;
+  const routes = [
+    ["POST", `${base}/auth/signup`, "Create an app user"],
+    ["POST", `${base}/auth/login`, "Email/password login"],
+    ["POST", `${base}/auth/refresh`, "Rotate refresh token"],
+    ["GET", `${base}/auth/me`, "Current app user"],
+    ["POST", `${base}/auth/request-verification`, "Send verification email"],
+    ["POST", `${base}/auth/confirm-verification`, "Confirm verification token"],
+    ["POST", `${base}/auth/request-password-reset`, "Send password reset email"],
+    ["POST", `${base}/auth/confirm-password-reset`, "Set a new password"],
+  ];
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>Auth settings</h2>
+        <div className="pb-inline-alert info">
+          Email/password auth is available per project through the system `users` collection. Verification and reset emails use the SMTP settings.
+        </div>
+        <div className="pb-info-grid compact">
+          <Info label="Project" value={project?.slug ?? "No project selected"} />
+          <Info label="Users collection" value={project ? "users" : ""} />
+          <Info label="SMTP" value={settings?.smtp.enabled ? "enabled" : "not enabled"} />
+        </div>
+        {!settings?.smtp.enabled ? (
+          <div className="pb-row-actions">
+            <button type="button" className="pb-btn secondary" onClick={onOpenMail}>
+              <Mail className="h-4 w-4" />
+              Configure SMTP
+            </button>
+          </div>
+        ) : null}
+      </section>
+      <section className="pb-settings-block">
+        <h2>Auth API</h2>
+        <div className="pb-table-wrap">
+          <table className="pb-records-table compact">
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Endpoint</th>
+                <th>Use</th>
+              </tr>
+            </thead>
+            <tbody>
+              {routes.map(([method, route, use]) => (
+                <tr key={`${method}-${route}`}>
+                  <td>{method}</td>
+                  <td className="truncate-cell">
+                    <code>{route}</code>
+                  </td>
+                  <td>{use}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Client payloads</h2>
+        <div className="pb-sync-grid">
+          <pre className="pb-code-box">{`POST ${base}/auth/signup
+{
+  "email": "user@example.com",
+  "password": "password-123"
+}`}</pre>
+          <pre className="pb-code-box">{`POST ${base}/auth/login
+{
+  "email": "user@example.com",
+  "password": "password-123"
+}`}</pre>
+        </div>
       </section>
     </div>
   );
@@ -3505,6 +3653,8 @@ function FilesView(props: {
   fileFields: Field[];
   fileDraft: { recordId: string; field: string };
   setFileDraft: React.Dispatch<React.SetStateAction<{ recordId: string; field: string }>>;
+  selectedUploadFile: File | null;
+  setSelectedUploadFile: React.Dispatch<React.SetStateAction<File | null>>;
   fileResult: RecordItem | null;
   records: RecordList;
   token: string;
@@ -3513,11 +3663,18 @@ function FilesView(props: {
   onCreateFileToken: (recordId: string, field: string, fileId: string) => Promise<string>;
 }) {
   const availableFiles = findFiles(props.records.items, props.fileFields);
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pickFile = (files: FileList | null) => {
+    const file = files?.[0] ?? null;
+    props.setSelectedUploadFile(file);
+  };
   return (
     <div className="pb-settings-stack">
       <section className="pb-settings-block">
         <h2>Upload file</h2>
-        <form onSubmit={props.onSubmitUpload} className="pb-grid-form">
+        <form onSubmit={props.onSubmitUpload} className="pb-grid-form file-upload-form">
           <label className="pb-field">
             <span>Collection</span>
             <select value={props.selectedCollectionName} onChange={(event) => props.setSelectedCollection(event.target.value)}>
@@ -3539,10 +3696,52 @@ function FilesView(props: {
               ))}
             </select>
           </label>
-          <label className="pb-field">
-            <span>File</span>
-            <input name="file" type="file" required />
-          </label>
+          <div
+            className={`pb-dropzone ${dragActive ? "active" : ""} ${props.selectedUploadFile ? "has-file" : ""}`}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              dragDepthRef.current += 1;
+              setDragActive(true);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragActive(true);
+            }}
+            onDragLeave={(event) => {
+              event.preventDefault();
+              dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+              if (dragDepthRef.current === 0) setDragActive(false);
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              dragDepthRef.current = 0;
+              setDragActive(false);
+              pickFile(event.dataTransfer.files);
+            }}
+          >
+            <input ref={fileInputRef} name="file" type="file" className="sr-only" onChange={(event) => pickFile(event.currentTarget.files)} />
+            <UploadCloud className="h-6 w-6" />
+            <div>
+              <strong>{props.selectedUploadFile ? props.selectedUploadFile.name : "Drop file here"}</strong>
+              <span>{props.selectedUploadFile ? `${formatBytes(props.selectedUploadFile.size)} · use Browse to replace` : "or use Browse to select from your computer"}</span>
+            </div>
+            <button type="button" className="pb-btn secondary" onClick={() => fileInputRef.current?.click()}>
+              Browse
+            </button>
+            {props.selectedUploadFile ? (
+              <button
+                type="button"
+                className="pb-icon-btn"
+                aria-label="Clear selected file"
+                onClick={() => {
+                  props.setSelectedUploadFile(null);
+                  if (fileInputRef.current) fileInputRef.current.value = "";
+                }}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            ) : null}
+          </div>
           <button type="submit" className="pb-btn primary">
             <UploadCloud className="h-4 w-4" />
             Upload
