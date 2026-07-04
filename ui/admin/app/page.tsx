@@ -4665,7 +4665,7 @@ function tableRelationSummary(table: DiscoveredTable, tables: DiscoveredTable[],
   return table.foreignKeys.map((foreignKey) => {
     const targetKey = `${foreignKey.targetSchema}.${foreignKey.targetTable}`;
     const targetTable = bySource.get(targetKey);
-    const targetName = targetTable ? names[targetKey] || targetTable.suggestedName : foreignKey.targetTable;
+    const targetName = targetTable ? targetTable.existingCollection || names[targetKey] || targetTable.suggestedName : foreignKey.targetTable;
     return {
       column: foreignKey.column,
       label: `${foreignKey.column} -> ${targetName}.${foreignKey.targetColumn}`,
