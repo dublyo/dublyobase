@@ -3,6 +3,7 @@ package apis
 import (
 	"context"
 	"encoding/json"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +79,50 @@ func TestServerHasDefensiveTimeouts(t *testing.T) {
 	if srv.MaxHeaderBytes == 0 {
 		t.Fatal("MaxHeaderBytes must be set")
 	}
+}
+
+func TestAdminUICacheHeaders(t *testing.T) {
+	dist := ui.DistFS()
+	handler := adminUIHandler(dist)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/_/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin shell: want 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("admin shell cache-control = %q, want no-store", got)
+	}
+
+	chunkPath := firstAdminUIChunk(t, dist)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/"+chunkPath, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("static chunk: want 200, got %d", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("static chunk cache-control = %q, want immutable", got)
+	}
+}
+
+func firstAdminUIChunk(t *testing.T, dist fs.FS) string {
+	t.Helper()
+	var out string
+	if err := fs.WalkDir(dist, "_next/static/chunks", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || out != "" {
+			return err
+		}
+		if strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".css") {
+			out = path
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if out == "" {
+		t.Fatal("no admin UI chunk found")
+	}
+	return out
 }
 
 func TestHealthDegradedShapeAndSpeed(t *testing.T) {

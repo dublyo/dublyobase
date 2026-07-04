@@ -190,6 +190,16 @@ type View = (typeof navItems)[number]["id"];
 type SettingsSection = (typeof settingsItems)[number]["id"];
 type Notice = { type: "success" | "error"; message: string } | null;
 type CollectionModalMode = "create" | "settings" | null;
+type CollectionsMode = "records" | "overview";
+type OverviewTab = "fields" | "rules";
+type RelationEdge = {
+  sourceCollection: string;
+  sourceField: string;
+  targetCollection: string;
+  displayField: string;
+  required: boolean;
+  multiple: boolean;
+};
 
 type CollectionDraft = {
   name: string;
@@ -1782,6 +1792,7 @@ function CollectionsWorkspace({
   onDeleteCollection: (collection: Collection) => void;
   version: string;
 }) {
+  const [mode, setMode] = useState<CollectionsMode>("records");
   const primaryKeyField = selectedCollection ? collectionPrimaryKeyFieldName(selectedCollection) : "id";
   const systemColumns = selectedCollection && collectionStandardSystemColumns(selectedCollection) ? ["created", "updated"] : [];
   const columns = selectedCollection ? Array.from(new Set([primaryKeyField, ...selectedCollection.fields.filter(isVisibleRecordField).map((field) => field.name), ...systemColumns])) : ["id"];
@@ -1798,6 +1809,14 @@ function CollectionsWorkspace({
             {selectedCollection ? <span title={selectedCollection.name}>{selectedCollection.name}</span> : null}
           </nav>
           <div className="pb-header-secondary-btns">
+            <div className="pb-segmented-control compact" role="tablist" aria-label="Collections view">
+              <button type="button" role="tab" aria-selected={mode === "records"} className={mode === "records" ? "active" : ""} onClick={() => setMode("records")}>
+                Records
+              </button>
+              <button type="button" role="tab" aria-selected={mode === "overview"} className={mode === "overview" ? "active" : ""} onClick={() => setMode("overview")}>
+                Overview
+              </button>
+            </div>
             <button type="button" className="pb-btn circle transparent secondary" onClick={onOpenCollectionSettings} disabled={!selectedCollection} aria-label="Collection settings">
               <Settings className="h-4 w-4" />
             </button>
@@ -1822,108 +1841,277 @@ function CollectionsWorkspace({
           </div>
         </header>
 
-        <form
-          className="pb-record-toolbar"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onRefresh();
-          }}
-        >
-          <label className="pb-record-control search">
-            <Search className="h-4 w-4" />
-            <input
-              value={recordSearch}
-              onChange={(event) => setRecordSearch(event.target.value)}
-              placeholder={searchableFields.length > 0 ? `Search ${searchableFields.slice(0, 3).join(", ")}` : "Search selected fields"}
-              disabled={!selectedCollection || searchableFields.length === 0}
-            />
-          </label>
-          <label className="pb-record-control filter">
-            <ListFilter className="h-4 w-4" />
-            <input value={recordFilter} onChange={(event) => setRecordFilter(event.target.value)} placeholder='{"title":{"_icontains":"hello"}}' disabled={!selectedCollection} />
-          </label>
-          <label className="pb-page-size-control">
-            <span>Rows</span>
-            <select
-              value={recordPerPage}
-              disabled={!selectedCollection}
-              onChange={(event) => onPageSizeChange(Number(event.target.value) as (typeof recordPageSizes)[number])}
+        {mode === "overview" ? (
+          <CollectionOverview collections={collections} selected={selectedCollectionName} onSelect={onSelectCollection} onCreate={onOpenCreateCollection} />
+        ) : (
+          <>
+            <form
+              className="pb-record-toolbar"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onRefresh();
+              }}
             >
-              {recordPageSizes.map((size) => (
-                <option key={size} value={size}>
-                  {size}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button type="submit" className="pb-btn sm secondary">
-            Apply
-          </button>
-        </form>
-
-        <div className="pb-table-wrap">
-          <table className="pb-records-table">
-            <thead>
-              <tr>
-                <th className="col-bulk" />
-                {columns.map((column) => (
-                  <th key={column}>{column}</th>
-                ))}
-                <th className="col-meta">
-                  <MoreHorizontal className="h-4 w-4" />
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {records.items.map((record, index) => {
-                const recordKey = selectedCollection ? recordPrimaryKeyValue(selectedCollection, record) || String(index) : String(index);
-                return (
-                <tr key={recordKey} onDoubleClick={() => onEditRecord(record)}>
-                  <td className="col-bulk">
-                    <input type="checkbox" aria-label={`Select record ${recordKey}`} />
-                  </td>
-                  {columns.map((column) => (
-                    <td key={column} className="truncate-cell">
-                      {renderValue(record[column])}
-                    </td>
+              <label className="pb-record-control search">
+                <Search className="h-4 w-4" />
+                <input
+                  value={recordSearch}
+                  onChange={(event) => setRecordSearch(event.target.value)}
+                  placeholder={searchableFields.length > 0 ? `Search ${searchableFields.slice(0, 3).join(", ")}` : "Search selected fields"}
+                  disabled={!selectedCollection || searchableFields.length === 0}
+                />
+              </label>
+              <label className="pb-record-control filter">
+                <ListFilter className="h-4 w-4" />
+                <input value={recordFilter} onChange={(event) => setRecordFilter(event.target.value)} placeholder='{"title":{"_icontains":"hello"}}' disabled={!selectedCollection} />
+              </label>
+              <label className="pb-page-size-control">
+                <span>Rows</span>
+                <select
+                  value={recordPerPage}
+                  disabled={!selectedCollection}
+                  onChange={(event) => onPageSizeChange(Number(event.target.value) as (typeof recordPageSizes)[number])}
+                >
+                  {recordPageSizes.map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
                   ))}
-                  <td className="row-actions">
-                    <button type="button" className="pb-btn sm transparent secondary" onClick={() => onEditRecord(record)}>
-                      Edit
-                    </button>
-                    <button type="button" className="pb-btn sm transparent danger" onClick={() => onDeleteRecord(record)}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-                );
-              })}
-              {records.items.length === 0 ? (
-                <tr>
-                  <td colSpan={columns.length + 2} className="pb-empty-cell">
-                    <EmptyState label={selectedCollection ? "No records found." : project ? "Select a collection." : "Create or select a project."} action={selectedCollection ? "New record" : undefined} onAction={selectedCollection ? onOpenNewRecord : undefined} />
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+                </select>
+              </label>
+              <button type="submit" className="pb-btn sm secondary">
+                Apply
+              </button>
+            </form>
 
-        <div className="pb-record-pagination" aria-label="Record pagination">
-          <span>{selectedCollection ? `Total ${records.totalItems} · Page ${currentPage} of ${totalPages}` : "No collection selected"}</span>
-          <div className="pb-pagination-actions">
-            <button type="button" className="pb-btn sm secondary" disabled={!selectedCollection || currentPage <= 1} onClick={() => onPageChange(currentPage - 1)}>
-              Previous
-            </button>
-            <button type="button" className="pb-btn sm secondary" disabled={!selectedCollection || currentPage >= totalPages} onClick={() => onPageChange(currentPage + 1)}>
-              Next
-            </button>
-          </div>
-        </div>
+            <div className="pb-table-wrap">
+              <table className="pb-records-table">
+                <thead>
+                  <tr>
+                    <th className="col-bulk" />
+                    {columns.map((column) => (
+                      <th key={column}>{column}</th>
+                    ))}
+                    <th className="col-meta">
+                      <MoreHorizontal className="h-4 w-4" />
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {records.items.map((record, index) => {
+                    const recordKey = selectedCollection ? recordPrimaryKeyValue(selectedCollection, record) || String(index) : String(index);
+                    return (
+                      <tr key={recordKey} onDoubleClick={() => onEditRecord(record)}>
+                        <td className="col-bulk">
+                          <input type="checkbox" aria-label={`Select record ${recordKey}`} />
+                        </td>
+                        {columns.map((column) => (
+                          <td key={column} className="truncate-cell">
+                            {renderValue(record[column])}
+                          </td>
+                        ))}
+                        <td className="row-actions">
+                          <button type="button" className="pb-btn sm transparent secondary" onClick={() => onEditRecord(record)}>
+                            Edit
+                          </button>
+                          <button type="button" className="pb-btn sm transparent danger" onClick={() => onDeleteRecord(record)}>
+                            Delete
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {records.items.length === 0 ? (
+                    <tr>
+                      <td colSpan={columns.length + 2} className="pb-empty-cell">
+                        <EmptyState label={selectedCollection ? "No records found." : project ? "Select a collection." : "Create or select a project."} action={selectedCollection ? "New record" : undefined} onAction={selectedCollection ? onOpenNewRecord : undefined} />
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
 
-        <PageFooter left={selectedCollection ? `Showing ${records.items.length} of ${records.totalItems}` : "No collection selected"} version={version} />
+            <div className="pb-record-pagination" aria-label="Record pagination">
+              <span>{selectedCollection ? `Total ${records.totalItems} · Page ${currentPage} of ${totalPages}` : "No collection selected"}</span>
+              <div className="pb-pagination-actions">
+                <button type="button" className="pb-btn sm secondary" disabled={!selectedCollection || currentPage <= 1} onClick={() => onPageChange(currentPage - 1)}>
+                  Previous
+                </button>
+                <button type="button" className="pb-btn sm secondary" disabled={!selectedCollection || currentPage >= totalPages} onClick={() => onPageChange(currentPage + 1)}>
+                  Next
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+
+        <PageFooter left={mode === "overview" ? `${collections.length} collections` : selectedCollection ? `Showing ${records.items.length} of ${records.totalItems}` : "No collection selected"} version={version} />
       </div>
     </section>
+  );
+}
+
+function CollectionOverview({
+  collections,
+  selected,
+  onSelect,
+  onCreate,
+}: {
+  collections: Collection[];
+  selected: string;
+  onSelect: (name: string) => void;
+  onCreate: () => void;
+}) {
+  const [tab, setTab] = useState<OverviewTab>("fields");
+  const [showSystem, setShowSystem] = useState(false);
+  const visibleCollections = collections.filter((collection) => showSystem || !collection.system);
+  const relationEdges = collectionRelationEdges(visibleCollections);
+  const fieldCount = visibleCollections.reduce((total, collection) => total + collection.fields.length, 0);
+  return (
+    <div className="pb-overview">
+      <div className="pb-overview-topbar">
+        <div>
+          <h2>Collections overview</h2>
+          <span>
+            {visibleCollections.length} collections · {fieldCount} fields · {relationEdges.length} relations
+          </span>
+        </div>
+        <label className="pb-checkline switchline">
+          <input type="checkbox" checked={showSystem} onChange={(event) => setShowSystem(event.target.checked)} />
+          System collections
+        </label>
+      </div>
+      <div className="pb-overview-tabs" role="tablist" aria-label="Collections overview">
+        <button type="button" role="tab" aria-selected={tab === "fields"} className={tab === "fields" ? "active" : ""} onClick={() => setTab("fields")}>
+          Fields and relations
+        </button>
+        <button type="button" role="tab" aria-selected={tab === "rules"} className={tab === "rules" ? "active" : ""} onClick={() => setTab("rules")}>
+          Rules
+        </button>
+      </div>
+      {visibleCollections.length === 0 ? (
+        <div className="pb-overview-empty">
+          <EmptyState label={collections.length > 0 ? "Enable system collections to show the remaining collections." : "No collections yet."} action="New collection" onAction={onCreate} />
+        </div>
+      ) : tab === "fields" ? (
+        <div className="pb-overview-fields">
+          <div className="pb-overview-board">
+            {visibleCollections.map((collection) => (
+              <CollectionOverviewNode key={collection.id} collection={collection} active={selected === collection.name} onSelect={onSelect} />
+            ))}
+          </div>
+          <RelationTree collections={visibleCollections} edges={relationEdges} onSelect={onSelect} />
+        </div>
+      ) : (
+        <CollectionRulesOverview collections={visibleCollections} onSelect={onSelect} />
+      )}
+    </div>
+  );
+}
+
+function CollectionOverviewNode({ collection, active, onSelect }: { collection: Collection; active: boolean; onSelect: (name: string) => void }) {
+  return (
+    <article className={`pb-overview-node ${active ? "active" : ""}`}>
+      <button type="button" className="pb-overview-node-head" onClick={() => onSelect(collection.name)}>
+        <CollectionIcon collection={collection} />
+        <strong>{collection.name}</strong>
+        <span>{collection.type}</span>
+      </button>
+      <div className="pb-overview-field-list">
+        {collection.fields.length === 0 ? <span className="pb-overview-field muted">No editable fields</span> : null}
+        {collection.fields.map((field) => (
+          <div key={`${collection.id}-${field.name}`} className={`pb-overview-field ${field.type === "relation" ? "relation" : ""}`}>
+            <FieldTypeGlyph type={field.type} />
+            <span className="field-name">{field.name}</span>
+            <span className="field-type">{field.type}</span>
+            {field.hidden ? <span className="pb-mini-badge danger">Hidden</span> : null}
+            {field.required ? <span className="pb-mini-badge">Required</span> : null}
+            {field.type === "relation" ? <span className="pb-relation-arrow">to {relationTargetName(field) || "unconfigured"}</span> : null}
+            {field.type === "file" && field.options?.multiple ? <span className="pb-mini-badge">multiple</span> : null}
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function RelationTree({ collections, edges, onSelect }: { collections: Collection[]; edges: RelationEdge[]; onSelect: (name: string) => void }) {
+  const byCollection = new Map(collections.map((collection) => [collection.name, collection]));
+  const grouped = collections.map((collection) => ({
+    collection,
+    edges: edges.filter((edge) => edge.sourceCollection === collection.name),
+  }));
+  return (
+    <aside className="pb-relation-tree" aria-label="Relation tree">
+      <header>
+        <h3>Relation tree</h3>
+        <span>{edges.length ? `${edges.length} links` : "No relation fields"}</span>
+      </header>
+      {edges.length === 0 ? (
+        <div className="pb-inline-alert info">Add a relation field to connect one collection to another.</div>
+      ) : (
+        <div className="pb-tree-list">
+          {grouped.map(({ collection, edges: collectionEdges }) => (
+            <details key={collection.id} open={collectionEdges.length > 0}>
+              <summary>
+                <CollectionIcon collection={collection} />
+                <span>{collection.name}</span>
+                <em>{collectionEdges.length}</em>
+              </summary>
+              {collectionEdges.length === 0 ? <p>No outgoing relations.</p> : null}
+              {collectionEdges.map((edge) => (
+                <button key={`${edge.sourceCollection}.${edge.sourceField}`} type="button" onClick={() => edge.targetCollection && onSelect(edge.targetCollection)}>
+                  <Share2 className="h-4 w-4" />
+                  <span>
+                    <strong>{edge.sourceField}</strong>
+                    <em>
+                      {edge.multiple ? "many" : "single"} to {edge.targetCollection || "unconfigured"}
+                      {edge.displayField ? ` · display ${edge.displayField}` : ""}
+                    </em>
+                  </span>
+                  {edge.targetCollection && byCollection.has(edge.targetCollection) ? <CollectionIcon collection={byCollection.get(edge.targetCollection)} /> : <Table2 className="h-4 w-4" />}
+                </button>
+              ))}
+            </details>
+          ))}
+        </div>
+      )}
+    </aside>
+  );
+}
+
+function CollectionRulesOverview({ collections, onSelect }: { collections: Collection[]; onSelect: (name: string) => void }) {
+  const ruleRows = [
+    ["List", "listRule"],
+    ["View", "viewRule"],
+    ["Create", "createRule"],
+    ["Update", "updateRule"],
+    ["Delete", "deleteRule"],
+  ] as const;
+  return (
+    <div className="pb-overview-rules">
+      {collections.map((collection) => (
+        <article key={collection.id} className="pb-rule-node">
+          <button type="button" className="pb-overview-node-head" onClick={() => onSelect(collection.name)}>
+            <CollectionIcon collection={collection} />
+            <strong>{collection.name}</strong>
+            <span>{collection.type}</span>
+          </button>
+          <dl>
+            {ruleRows.map(([label, key]) => {
+              const value = collection[key];
+              return (
+                <div key={`${collection.id}-${key}`}>
+                  <dt>{label}</dt>
+                  <dd>{value || "Superusers only"}</dd>
+                </div>
+              );
+            })}
+          </dl>
+        </article>
+      ))}
+    </div>
   );
 }
 
@@ -2218,7 +2406,7 @@ function FieldRows({
       {fields.length === 0 ? <EmptyState label="No fields yet" /> : null}
       {fields.map((field, index) => {
         const rowKey = `${index}-${field.name || "field"}-${field.type}`;
-        const open = openRows[rowKey] ?? field.name === "";
+        const open = openRows[rowKey] ?? (field.name === "" || field.type === "relation");
         return (
           <div key={`${field.name}-${index}`} className={`pb-field-row ${open ? "open" : ""}`}>
             <div className="pb-field-row-main">
@@ -2346,6 +2534,9 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
   } else if (field.type === "relation") {
     typeOptions = (
       <div className="pb-field-options two">
+        <div className="pb-inline-alert info pb-relation-hint">
+          Relation fields store record ids from another collection. Choose the target collection, then optionally choose the display field used by record forms and API previews.
+        </div>
         <label className="pb-field">
           <span>Target collection</span>
           <select value={String(field.options?.collection ?? "")} onChange={(event) => onChange(setFieldOption(field, "collection", event.target.value))}>
@@ -4822,6 +5013,62 @@ function isVisibleRecordField(field: Field): boolean {
 function canSearchField(field: Field): boolean {
   if (field.hidden || field.type === "password") return false;
   return ["text", "editor", "email", "url", "select", "number", "bool", "date", "autodate", "relation"].includes(field.type);
+}
+
+function FieldTypeGlyph({ type }: { type: FieldType }) {
+  const Icon = fieldTypeIcon(type);
+  return <Icon className="h-4 w-4" />;
+}
+
+function fieldTypeIcon(type: FieldType): LucideIcon {
+  switch (type) {
+    case "editor":
+      return PencilLine;
+    case "password":
+      return KeyRound;
+    case "number":
+      return Hash;
+    case "bool":
+      return ToggleLeft;
+    case "date":
+      return Calendar;
+    case "autodate":
+      return CalendarCheck2;
+    case "email":
+      return Mail;
+    case "url":
+      return Link2;
+    case "select":
+      return List;
+    case "json":
+      return Braces;
+    case "relation":
+      return Share2;
+    case "file":
+      return Image;
+    case "text":
+    default:
+      return Type;
+  }
+}
+
+function relationTargetName(field: Field): string {
+  return typeof field.options?.collection === "string" ? field.options.collection : "";
+}
+
+function collectionRelationEdges(collections: Collection[]): RelationEdge[] {
+  return collections.flatMap((collection) =>
+    collection.fields
+      .filter((field) => field.type === "relation")
+      .map((field) => ({
+        sourceCollection: collection.name,
+        sourceField: field.name,
+        targetCollection: relationTargetName(field),
+        displayField: typeof field.options?.displayField === "string" ? field.options.displayField : "",
+        required: Boolean(field.required),
+        multiple: fieldIsMultiple(field),
+      })),
+  );
 }
 
 function fieldMetaSummary(field: Field) {

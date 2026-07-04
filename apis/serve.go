@@ -137,6 +137,7 @@ func adminUIHandler(dist fs.FS) http.Handler {
 		if p != "" {
 			if f, err := dist.Open(p); err == nil {
 				f.Close()
+				setAdminUICacheHeaders(w, p)
 				fileServer.ServeHTTP(w, r)
 				return
 			}
@@ -145,10 +146,21 @@ func adminUIHandler(dist fs.FS) http.Handler {
 				return
 			}
 		}
+		setAdminUICacheHeaders(w, "index.html")
 		r2 := r.Clone(r.Context())
 		r2.URL.Path = "/"
 		fileServer.ServeHTTP(w, r2)
 	})
+}
+
+func setAdminUICacheHeaders(w http.ResponseWriter, p string) {
+	if p == "" || p == "index.html" || strings.HasSuffix(p, ".html") || strings.HasSuffix(p, ".txt") {
+		w.Header().Set("Cache-Control", "no-store")
+		return
+	}
+	if strings.HasPrefix(p, "_next/static/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
 }
 
 func writeDecoyRoot(w http.ResponseWriter) {
