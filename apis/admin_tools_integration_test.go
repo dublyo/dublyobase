@@ -223,6 +223,16 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	if err := json.Unmarshal(imported.Options, &options); err != nil {
 		t.Fatal(err)
 	}
+	var authorRelation core.Field
+	for _, field := range imported.Fields {
+		if field.Name == "author_id" {
+			authorRelation = field
+			break
+		}
+	}
+	if authorRelation.Type != "relation" || authorRelation.Options["collection"] != "legacy_authors" {
+		t.Fatalf("imported relation should target renamed collection legacy_authors: %+v", authorRelation)
+	}
 	options["managed"] = true
 	optionsJSON, err := json.Marshal(options)
 	if err != nil {

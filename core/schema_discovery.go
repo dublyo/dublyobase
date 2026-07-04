@@ -220,6 +220,10 @@ func ImportSchemaTables(ctx context.Context, pool *pgxpool.Pool, adminID string,
 	}
 
 	if !input.DryRun && len(ready) > 0 {
+		batchRelationTargets := map[string]string{}
+		for _, item := range ready {
+			batchRelationTargets[item.table.Schema+"\x00"+item.table.Table] = item.name
+		}
 		tx, err := pool.Begin(ctx)
 		if err != nil {
 			return nil, err
@@ -229,6 +233,7 @@ func ImportSchemaTables(ctx context.Context, pool *pgxpool.Pool, adminID string,
 			return nil, err
 		}
 		for _, item := range ready {
+			rewriteBatchRelationTargets(&item.table, batchRelationTargets)
 			if err := insertImportedCollection(ctx, tx, project, item.name, item.table); err != nil {
 				if errors.Is(err, ErrCollectionExists) {
 					result.Skipped++
@@ -280,6 +285,26 @@ func ImportSchemaTables(ctx context.Context, pool *pgxpool.Pool, adminID string,
 		return nil, err
 	}
 	return result, nil
+}
+
+func rewriteBatchRelationTargets(table *DiscoveredTable, batchRelationTargets map[string]string) {
+	if len(batchRelationTargets) == 0 {
+		return
+	}
+	for i := range table.Fields {
+		field := &table.Fields[i]
+		if field.Type != "relation" || field.Options == nil {
+			continue
+		}
+		targetSchema, _ := field.Options["targetSchema"].(string)
+		targetTable, _ := field.Options["targetTable"].(string)
+		if targetSchema == "" || targetTable == "" {
+			continue
+		}
+		if collectionName := batchRelationTargets[targetSchema+"\x00"+targetTable]; collectionName != "" {
+			field.Options["collection"] = collectionName
+		}
+	}
 }
 
 func discoverOneTable(ctx context.Context, pool *pgxpool.Pool, project *Project, existingByTable map[string]string, existingNames map[string]struct{}, schemaName string, tableName string) (DiscoveredTable, error) {

@@ -1447,6 +1447,7 @@ export default function AdminApp() {
           schemaSelection={schemaSelection}
           schemaFilters={schemaFilters}
           setSchemaFilters={setSchemaFilters}
+          setSchemaSelection={setSchemaSelection}
           schemaImportNames={schemaImportNames}
           schemaImportResult={schemaImportResult}
           onScanSchema={scanSchemaTables}
@@ -2969,6 +2970,7 @@ function SettingsWorkspace(props: {
   schemaSelection: string[];
   schemaFilters: { schema: string; table: string };
   setSchemaFilters: React.Dispatch<React.SetStateAction<{ schema: string; table: string }>>;
+  setSchemaSelection: React.Dispatch<React.SetStateAction<string[]>>;
   schemaImportNames: Record<string, string>;
   schemaImportResult: CollectionImportResult | null;
   onScanSchema: () => void;
@@ -3905,6 +3907,7 @@ function DiscoverTablesView(props: {
   schemaSelection: string[];
   schemaFilters: { schema: string; table: string };
   setSchemaFilters: React.Dispatch<React.SetStateAction<{ schema: string; table: string }>>;
+  setSchemaSelection: React.Dispatch<React.SetStateAction<string[]>>;
   schemaImportNames: Record<string, string>;
   schemaImportResult: CollectionImportResult | null;
   onScanSchema: () => void;
@@ -3913,19 +3916,50 @@ function DiscoverTablesView(props: {
   onPreviewSchemaImport: () => void;
   onApplySchemaImport: () => void;
 }) {
+  const selectedKeys = new Set(props.schemaSelection);
+  const eligibleTables = props.discoveredTables.filter((table) => table.canImport && !table.existingCollection);
+  const selectedTables = props.discoveredTables.filter((table) => selectedKeys.has(discoveredTableKey(table)));
   const selectedCount = props.schemaSelection.length;
+  const schemaCount = new Set(props.discoveredTables.map((table) => table.schema)).size;
+  const importedCount = props.discoveredTables.filter((table) => table.existingCollection).length;
+  const readOnlyCount = props.discoveredTables.filter((table) => !table.canImport && !table.existingCollection).length;
+  const relationCount = props.discoveredTables.reduce((total, table) => total + table.foreignKeys.length, 0);
+  const importNameIssues = schemaImportNameIssues(selectedTables, props.schemaImportNames);
+  const canSubmit = selectedCount > 0 && importNameIssues.length === 0;
+
+  function selectEligibleTables() {
+    props.setSchemaSelection(eligibleTables.map(discoveredTableKey));
+  }
+
+  function clearSelection() {
+    props.setSchemaSelection([]);
+  }
+
   return (
     <div className="pb-settings-stack">
       <section className="pb-settings-block">
         <div className="pb-section-title-row">
           <h2>Discover existing tables</h2>
-          <button type="button" className="pb-btn outline" onClick={props.onScanSchema}>
-            <RefreshCw className="h-4 w-4" />
-            Scan database
-          </button>
+          <div className="pb-row-actions tight">
+            <button type="button" className="pb-btn secondary" onClick={selectEligibleTables} disabled={eligibleTables.length === 0}>
+              Select CRUD-ready
+            </button>
+            <button type="button" className="pb-btn outline" onClick={props.onScanSchema}>
+              <RefreshCw className="h-4 w-4" />
+              Scan database
+            </button>
+          </div>
         </div>
         <div className="pb-inline-alert info">
           Discovery is read-only. Tables can be imported for admin CRUD only when they have a single usable primary key. Field edits stay locked until the table has `id uuid`, `created`, and `updated` and is marked managed.
+        </div>
+        <div className="pb-discovery-stats" aria-label="Schema discovery summary">
+          <Info label="Schemas" value={String(schemaCount)} />
+          <Info label="Tables" value={String(props.discoveredTables.length)} />
+          <Info label="CRUD-ready" value={String(eligibleTables.length)} />
+          <Info label="Relations" value={String(relationCount)} />
+          <Info label="Read-only" value={String(readOnlyCount)} />
+          <Info label="Configured" value={String(importedCount)} />
         </div>
         <div className="pb-grid-form import-options">
           <LabeledInput label="Schema filter" value={props.schemaFilters.schema} onChange={(value) => props.setSchemaFilters((current) => ({ ...current, schema: value }))} placeholder="public" />
@@ -3937,14 +3971,26 @@ function DiscoverTablesView(props: {
         <div className="pb-section-title-row">
           <h2>Tables</h2>
           <div className="pb-row-actions tight">
-            <button type="button" className="pb-btn secondary" onClick={props.onPreviewSchemaImport} disabled={selectedCount === 0}>
+            <button type="button" className="pb-btn outline" onClick={clearSelection} disabled={selectedCount === 0}>
+              Clear
+            </button>
+            <button type="button" className="pb-btn secondary" onClick={props.onPreviewSchemaImport} disabled={!canSubmit}>
               Preview import
             </button>
-            <button type="button" className="pb-btn primary" onClick={props.onApplySchemaImport} disabled={selectedCount === 0}>
+            <button type="button" className="pb-btn primary" onClick={props.onApplySchemaImport} disabled={!canSubmit}>
               Import selected
             </button>
           </div>
         </div>
+        {importNameIssues.length > 0 ? (
+          <div className="pb-inline-alert danger">
+            {importNameIssues[0]}
+          </div>
+        ) : selectedCount > 0 ? (
+          <div className="pb-inline-alert success">
+            {selectedCount} table{selectedCount === 1 ? "" : "s"} selected for import.
+          </div>
+        ) : null}
         <div className="pb-table-wrap">
           <table className="pb-records-table compact schema-discovery-table">
             <thead>
@@ -3962,6 +4008,7 @@ function DiscoverTablesView(props: {
                 const key = discoveredTableKey(table);
                 const selected = props.schemaSelection.includes(key);
                 const disabled = !table.canImport || Boolean(table.existingCollection);
+                const relationSummary = tableRelationSummary(table, props.discoveredTables, props.schemaImportNames);
                 return (
                   <tr key={key}>
                     <td>
@@ -3984,7 +4031,14 @@ function DiscoverTablesView(props: {
                     <td>{table.primaryKey ? `${table.primaryKey.column} · ${table.primaryKey.type}` : "-"}</td>
                     <td>
                       {table.fields.length}/{table.columns.length} supported
-                      {table.foreignKeys.length ? ` · ${table.foreignKeys.length} relations` : ""}
+                      {relationSummary.length > 0 ? (
+                        <div className="pb-relation-chip-list">
+                          {relationSummary.slice(0, 3).map((relation) => (
+                            <span key={`${key}-${relation.column}`}>{relation.label}</span>
+                          ))}
+                          {relationSummary.length > 3 ? <span>+{relationSummary.length - 3}</span> : null}
+                        </div>
+                      ) : null}
                     </td>
                     <td>
                       <div className="pb-chip-row">
@@ -4010,19 +4064,30 @@ function DiscoverTablesView(props: {
 
       {props.discoveredTables.length > 0 ? (
         <section className="pb-settings-block">
-          <h2>Preview fields</h2>
+          <h2>Preview fields and relations</h2>
           <div className="pb-discovery-preview-grid">
-            {props.discoveredTables.slice(0, 12).map((table) => (
+            {(selectedTables.length > 0 ? selectedTables : props.discoveredTables.slice(0, 12)).map((table) => (
               <details key={`preview-${discoveredTableKey(table)}`} className="pb-discovery-card">
                 <summary>
                   <span>{table.schema}.{table.table}</span>
-                  <em>{table.fields.length} fields</em>
+                  <em>{table.fields.length} fields · {table.foreignKeys.length} relations</em>
                 </summary>
+                <div className="pb-discovery-card-meta">
+                  <Info label="Collection" value={props.schemaImportNames[discoveredTableKey(table)] ?? table.suggestedName} />
+                  <Info label="Primary key" value={table.primaryKey ? `${table.primaryKey.field} (${table.primaryKey.type})` : "none"} />
+                </div>
+                {table.foreignKeys.length > 0 ? (
+                  <div className="pb-discovery-relations">
+                    {tableRelationSummary(table, props.discoveredTables, props.schemaImportNames).map((relation) => (
+                      <span key={`${table.schema}.${table.table}.${relation.column}`}>{relation.label}</span>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="pb-discovery-fields">
                   {table.columns.map((column) => (
-                    <span key={column.name} className={column.supported ? "" : "muted"} title={column.reason || column.udtName}>
+                    <span key={column.name} className={`${column.supported ? "" : "muted"} ${column.primaryKey ? "primary-key" : ""}`} title={column.reason || column.udtName}>
                       {column.fieldName || column.name}
-                      <em>{column.udtName}</em>
+                      <em>{column.primaryKey ? "pk" : column.udtName}</em>
                     </span>
                   ))}
                 </div>
@@ -4569,6 +4634,43 @@ function extractImportItems(raw: string): unknown[] {
 
 function discoveredTableKey(table: Pick<DiscoveredTable, "schema" | "table">) {
   return `${table.schema}.${table.table}`;
+}
+
+function schemaImportNameIssues(tables: DiscoveredTable[], names: Record<string, string>) {
+  const issues: string[] = [];
+  const seen = new Map<string, string>();
+  for (const table of tables) {
+    const key = discoveredTableKey(table);
+    const name = (names[key] || table.suggestedName || "").trim();
+    if (!isValidCollectionName(name)) {
+      issues.push(`${table.schema}.${table.table} needs a valid collection name: lowercase letters, numbers, and underscores, starting with a letter.`);
+      continue;
+    }
+    const previous = seen.get(name);
+    if (previous) {
+      issues.push(`${previous} and ${table.schema}.${table.table} both import as "${name}".`);
+      continue;
+    }
+    seen.set(name, `${table.schema}.${table.table}`);
+  }
+  return issues;
+}
+
+function isValidCollectionName(name: string) {
+  return /^[a-z][a-z0-9_]{0,58}$/.test(name) && !name.startsWith("pg_") && name !== "id" && name !== "created" && name !== "updated";
+}
+
+function tableRelationSummary(table: DiscoveredTable, tables: DiscoveredTable[], names: Record<string, string>) {
+  const bySource = new Map(tables.map((item) => [discoveredTableKey(item), item]));
+  return table.foreignKeys.map((foreignKey) => {
+    const targetKey = `${foreignKey.targetSchema}.${foreignKey.targetTable}`;
+    const targetTable = bySource.get(targetKey);
+    const targetName = targetTable ? names[targetKey] || targetTable.suggestedName : foreignKey.targetTable;
+    return {
+      column: foreignKey.column,
+      label: `${foreignKey.column} -> ${targetName}.${foreignKey.targetColumn}`,
+    };
+  });
 }
 
 function isDangerousSQL(query: string) {
