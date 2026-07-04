@@ -148,3 +148,25 @@ func TestSeedAdminNeverOverwrites(t *testing.T) {
 		t.Fatalf("password must be bcrypt-hashed, got %q", hash[:4])
 	}
 }
+
+func TestSeedAdminDefaultsToBootstrapCredential(t *testing.T) {
+	pool := testPool(t)
+	dropDbo(t, pool)
+	ctx := context.Background()
+
+	if err := Migrate(ctx, pool, testLogger()); err != nil {
+		t.Fatal(err)
+	}
+	if err := SeedAdmin(ctx, pool, &Config{}, testLogger()); err != nil {
+		t.Fatal(err)
+	}
+
+	var email string
+	var mustChange bool
+	if err := pool.QueryRow(ctx, `select email, must_change_password from _dbo.admins`).Scan(&email, &mustChange); err != nil {
+		t.Fatal(err)
+	}
+	if email != BootstrapAdminEmail || !mustChange {
+		t.Fatalf("seeded admin = %q mustChange=%v, want bootstrap forced-change admin", email, mustChange)
+	}
+}

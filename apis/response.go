@@ -39,6 +39,8 @@ func writeCoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "invalid_refresh_token", "invalid refresh token")
 	case errors.Is(err, core.ErrAdminDisabled):
 		writeError(w, http.StatusForbidden, "admin_disabled", "admin is disabled")
+	case errors.Is(err, core.ErrPasswordChangeRequired):
+		writeError(w, http.StatusForbidden, "password_change_required", "admin password must be changed before accessing the control panel")
 	case errors.Is(err, core.ErrUserDisabled):
 		writeError(w, http.StatusForbidden, "user_disabled", "user is disabled")
 	case errors.Is(err, core.ErrSetupClosed):

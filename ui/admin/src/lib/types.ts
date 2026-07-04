@@ -1,6 +1,7 @@
 export type Admin = {
   id: string;
   email: string;
+  mustChangePassword: boolean;
 };
 
 export type Project = {

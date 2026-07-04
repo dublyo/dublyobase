@@ -22,8 +22,6 @@ env_vars:
   - key: DOMAIN
   - key: JWT_SECRET      # auto-generated (>=32 chars)
   - key: DB_PASSWORD     # auto-generated
-  - key: ADMIN_EMAIL     # user-provided — first admin login
-  - key: ADMIN_PASSWORD  # auto-generated — first admin password
 
 # Pin an exact semver in production templates — never track :latest, so a broken
 # upstream release cannot propagate to every deployed user.
@@ -50,14 +48,12 @@ compose: |
         retries: 10
 
     app:
-      image: ghcr.io/dublyo/dublyobase:v0.10.0
+      image: ghcr.io/dublyo/dublyobase:v0.10.1
       restart: unless-stopped
       environment:
         - DATABASE_URL=postgres://dublyobase:${DB_PASSWORD}@db:5432/dublyobase?sslmode=disable
         - APP_URL=https://${DOMAIN}
         - JWT_SECRET=${JWT_SECRET}
-        - ADMIN_EMAIL=${ADMIN_EMAIL}
-        - ADMIN_PASSWORD=${ADMIN_PASSWORD}
         - BCRYPT_COST=10
         - AUTH_DEV_TOKENS=false
         - SMTP_HOST=${SMTP_HOST:-}

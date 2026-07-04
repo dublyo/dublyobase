@@ -24,6 +24,21 @@ func (s *server) requireAdmin(next http.Handler) http.Handler {
 	})
 }
 
+func (s *server) requireAdminReady(next http.Handler) http.Handler {
+	return s.requireAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := adminAuth(r)
+		if auth == nil {
+			writeCoreError(w, core.ErrUnauthorized)
+			return
+		}
+		if auth.Admin.MustChangePassword {
+			writeCoreError(w, core.ErrPasswordChangeRequired)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
 func bearerToken(r *http.Request) string {
 	authz := strings.TrimSpace(r.Header.Get("Authorization"))
 	if authz == "" {

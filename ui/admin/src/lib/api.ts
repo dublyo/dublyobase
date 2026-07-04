@@ -78,6 +78,14 @@ export function logout(token: string) {
   return request<void>("/admin/api/auth/logout", { method: "POST", token });
 }
 
+export function changeAdminPassword(token: string, currentPassword: string, newPassword: string) {
+  return request<{ admin: Admin }>("/admin/api/auth/change-password", {
+    method: "POST",
+    token,
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+}
+
 export function me(token: string) {
   return request<{ admin: Admin; session: { id: string; expiresAt: string } }>("/admin/api/me", { token });
 }

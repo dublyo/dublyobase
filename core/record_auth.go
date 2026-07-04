@@ -39,8 +39,12 @@ func ResolveRecordAuth(ctx context.Context, pool *pgxpool.Pool, cfg *Config, pro
 		return newRecordAuth(project, RecordRoleAnon, roles.Anon, "", ""), nil
 	}
 	if strings.HasPrefix(token, adminTokenPrefix) {
-		if _, err := FindAdminByToken(ctx, pool, token, now); err != nil {
+		adminAuth, err := FindAdminByToken(ctx, pool, token, now)
+		if err != nil {
 			return nil, err
+		}
+		if adminAuth.Admin.MustChangePassword {
+			return nil, ErrPasswordChangeRequired
 		}
 		return newRecordAuth(project, RecordRoleService, roles.Service, "", ""), nil
 	}

@@ -190,6 +190,83 @@ func TestSetupLoginMeAndLogout(t *testing.T) {
 	}
 }
 
+func TestBootstrapAdminRequiresPasswordChange(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	if err := core.SeedAdmin(context.Background(), app.Pool, app.Config, testLogger()); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(app)
+
+	rec := postJSON(srv.Handler, "/admin/api/auth/login", "", `{"email":"admin@example.com","password":"dublyo"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bootstrap login: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var loginBody struct {
+		Token string     `json:"token"`
+		Admin core.Admin `json:"admin"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &loginBody); err != nil {
+		t.Fatal(err)
+	}
+	if loginBody.Token == "" || !loginBody.Admin.MustChangePassword {
+		t.Fatalf("bootstrap login must return forced-change admin: %s", rec.Body.String())
+	}
+
+	rec = getJSON(srv.Handler, "/admin/api/me", loginBody.Token)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"mustChangePassword":true`) {
+		t.Fatalf("me should allow forced-change session: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = getJSON(srv.Handler, "/admin/api/projects", loginBody.Token)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "password_change_required") {
+		t.Fatalf("forced-change admin API: want 403 password_change_required, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = postJSON(srv.Handler, "/admin/api/auth/change-password", loginBody.Token, `{"currentPassword":"wrong","newPassword":"changed-pass-123"}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong current password: want 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = postJSON(srv.Handler, "/admin/api/auth/change-password", loginBody.Token, `{"currentPassword":"dublyo","newPassword":"changed-pass-123"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"mustChangePassword":false`) {
+		t.Fatalf("change password: want unlocked admin, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = getJSON(srv.Handler, "/admin/api/projects", loginBody.Token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin API after password change: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = postJSON(srv.Handler, "/admin/api/auth/login", "", `{"email":"admin@example.com","password":"dublyo"}`)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old bootstrap password after change: want 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, "/admin/api/auth/login", "", `{"email":"admin@example.com","password":"changed-pass-123"}`)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"mustChangePassword":true`) {
+		t.Fatalf("new password login: want normal admin, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestForcedChangeAdminCannotUseRecordRoutes(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := fmt.Sprintf("p%d", time.Now().UnixNano()%1_000_000_000)
+
+	rec := postJSON(srv.Handler, "/admin/api/projects", token, fmt.Sprintf(`{"slug":%q,"name":"Forced Change Demo"}`, slug))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create project: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := app.Pool.Exec(context.Background(), `update _dbo.admins set must_change_password = true`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/users/records", slug), token)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "password_change_required") {
+		t.Fatalf("forced-change record route: want 403 password_change_required, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestSetupConcurrent(t *testing.T) {
 	app, _ := newIntegrationApp(t)
 	srv := NewServer(app)

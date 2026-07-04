@@ -30,8 +30,6 @@ services:
       DATABASE_URL: postgres://dublyobase:change_me_in_prod@db:5432/dublyobase?sslmode=disable
       APP_URL: http://localhost:8080
       JWT_SECRET: change_me_to_a_32_plus_char_random_secret_value
-      ADMIN_EMAIL: admin@example.com
-      ADMIN_PASSWORD: change_me_too
       BCRYPT_COST: "10"
       AUTH_DEV_TOKENS: "false"
       SMTP_HOST: ""

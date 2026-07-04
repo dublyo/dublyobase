@@ -15,6 +15,11 @@ type credentialsRequest struct {
 	Password string `json:"password"`
 }
 
+type changePasswordRequest struct {
+	CurrentPassword string `json:"currentPassword"`
+	NewPassword     string `json:"newPassword"`
+}
+
 func (s *server) setup(w http.ResponseWriter, r *http.Request) {
 	var req credentialsRequest
 	if !decodeJSON(w, r, &req) {
@@ -89,6 +94,34 @@ func (s *server) adminLogout(w http.ResponseWriter, r *http.Request) {
 		UserAgent:  r.UserAgent(),
 	})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *server) adminChangePassword(w http.ResponseWriter, r *http.Request) {
+	auth := adminAuth(r)
+	if auth == nil {
+		writeCoreError(w, core.ErrUnauthorized)
+		return
+	}
+	var req changePasswordRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	admin, err := core.ChangeAdminPassword(
+		r.Context(),
+		s.app.Pool,
+		auth.Admin.ID,
+		auth.Session.ID,
+		req.CurrentPassword,
+		req.NewPassword,
+		s.app.Config.BcryptCost,
+		s.clientIP(r),
+		r.UserAgent(),
+	)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"admin": admin})
 }
 
 func (s *server) adminMe(w http.ResponseWriter, r *http.Request) {

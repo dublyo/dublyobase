@@ -74,6 +74,20 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAllowsFixedBootstrapAdmin(t *testing.T) {
+	setRequired(t)
+	t.Setenv("ADMIN_EMAIL", BootstrapAdminEmail)
+	t.Setenv("ADMIN_PASSWORD", BootstrapAdminPassword)
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("bootstrap admin config should be valid: %v", err)
+	}
+	if !IsBootstrapAdminCredential(cfg.AdminEmail, cfg.AdminPassword) {
+		t.Fatalf("unexpected bootstrap config: %q", cfg.AdminEmail)
+	}
+}
+
 func TestLoadConfigInvalidValuesFailLoud(t *testing.T) {
 	cases := []struct {
 		name string

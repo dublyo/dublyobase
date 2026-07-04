@@ -14,7 +14,7 @@ The runtime is intentionally small:
 - GHCR image: `ghcr.io/dublyo/dublyobase`
 - No Redis, no nginx sidecar, no separate admin service
 
-Current public release: `v0.10.0`. Realtime subscriptions are not included in
+Current public release: `v0.10.1`. Realtime subscriptions are not included in
 this release.
 
 ## Features
@@ -75,7 +75,8 @@ this release.
 ### Admin UI
 
 - Embedded admin panel served from `/`.
-- First-admin setup flow for empty installs.
+- Fixed empty-install bootstrap admin: `admin@example.com` / `dublyo`.
+- First login must change the bootstrap password before admin access is allowed.
 - Project creation and API key management.
 - PocketBase-inspired collection editor and record editor.
 - Settings screens for SMTP, storage, cron, backups, and MCP tokens.
@@ -92,9 +93,10 @@ Use [Dublyo PaaS](https://dublyo.com) for the simplest production path:
 
 1. Choose the Dublyobase app template.
 2. Pick PostgreSQL `16`, `17`, or `18`.
-3. Set your domain and first admin email.
-4. Let Dublyo generate `JWT_SECRET`, database password, and admin password.
+3. Set your domain.
+4. Let Dublyo generate `JWT_SECRET` and the database password.
 5. Deploy the stack and open `https://your-domain/`.
+6. Log in with `admin@example.com` / `dublyo` and set a new admin password.
 
 The template runs two services: Postgres and Dublyobase. TLS and routing are
 handled by the Dublyo platform.
@@ -120,14 +122,12 @@ Before using Compose in production, edit `docker-compose.yml` and replace:
 - `POSTGRES_PASSWORD`
 - `DATABASE_URL`
 - `JWT_SECRET`
-- `ADMIN_EMAIL`
-- `ADMIN_PASSWORD`
 - `APP_URL`
 
 Use a pinned image tag in production:
 
 ```yaml
-image: ghcr.io/dublyo/dublyobase:v0.10.0
+image: ghcr.io/dublyo/dublyobase:v0.10.1
 ```
 
 ### Existing Postgres
@@ -139,16 +139,17 @@ docker run --rm -p 8080:8080 \
   -e DATABASE_URL="postgres://user:pass@host:5432/db?sslmode=require" \
   -e APP_URL="https://dublyobase.example.com" \
   -e JWT_SECRET="$(openssl rand -base64 32)" \
-  -e ADMIN_EMAIL="admin@example.com" \
-  -e ADMIN_PASSWORD="change-this-admin-password" \
   -v dublyobase-storage:/data/storage \
-  ghcr.io/dublyo/dublyobase:v0.10.0
+  ghcr.io/dublyo/dublyobase:v0.10.1
 ```
 
-`DATABASE_URL`, `APP_URL`, and `JWT_SECRET` are required. If `ADMIN_EMAIL` and
-`ADMIN_PASSWORD` are set together and no admin exists, Dublyobase seeds the first
-admin on startup. If they are omitted, open `/` and complete the setup flow while
-the instance is empty.
+`DATABASE_URL`, `APP_URL`, and `JWT_SECRET` are required. On an empty install,
+Dublyobase seeds `admin@example.com` / `dublyo` and forces a password change
+before the control panel or admin APIs can be used.
+
+Advanced deploys may set `ADMIN_EMAIL` and `ADMIN_PASSWORD` together to seed a
+custom first admin instead. Custom admin passwords must be at least 12
+characters.
 
 ## Configuration
 
@@ -162,8 +163,8 @@ can also be managed from the admin panel after setup.
 | `JWT_SECRET` | Yes |  | At least 32 characters; used for signing and secret encryption. |
 | `HOST` | No | `0.0.0.0` | HTTP bind host. |
 | `PORT` | No | `8080` | HTTP bind port. |
-| `ADMIN_EMAIL` | No |  | First admin email, paired with `ADMIN_PASSWORD`. |
-| `ADMIN_PASSWORD` | No |  | First admin password, paired with `ADMIN_EMAIL`. |
+| `ADMIN_EMAIL` | No | `admin@example.com` | Optional override for the first admin email. |
+| `ADMIN_PASSWORD` | No | `dublyo` | Optional override for the first admin password. Custom values require 12+ characters. |
 | `BCRYPT_COST` | No | `10` | Password hashing cost. |
 | `AUTH_DEV_TOKENS` | No | `false` | Returns auth action tokens in responses for development tests. |
 | `MAX_UPLOAD_MB` | No | `64` | Upload limit, 1 to 1024 MB. |
@@ -200,6 +201,7 @@ can also be managed from the admin panel after setup.
 | `GET /ready` | Readiness status during boot and migration. |
 | `POST /setup` | Create the first admin while no admin exists. |
 | `POST /admin/api/auth/login` | Admin login. |
+| `POST /admin/api/auth/change-password` | Change the current admin password and unlock forced-change sessions. |
 | `POST /admin/api/auth/logout` | Revoke the current admin session. |
 | `GET /admin/api/me` | Current admin session. |
 | `GET /admin/api/audit-log` | Newest-first admin audit log. |
@@ -285,6 +287,9 @@ can also be managed from the admin panel after setup.
 ## Security Notes
 
 - Use a strong `JWT_SECRET`; it signs tokens and encrypts stored runtime secrets.
+- Change the bootstrap `admin@example.com` / `dublyo` password immediately after
+  first login. Forced-change sessions cannot access admin APIs until the
+  password is changed.
 - Replace all sample passwords before exposing an instance.
 - Keep `AUTH_DEV_TOKENS=false` outside development.
 - Use HTTPS in production and set `APP_URL` to the public HTTPS URL.
@@ -317,8 +322,6 @@ Run locally against your own database:
 export DATABASE_URL="postgres://user:pass@localhost:5432/dublyobase?sslmode=disable"
 export APP_URL="http://localhost:8080"
 export JWT_SECRET="$(openssl rand -base64 32)"
-export ADMIN_EMAIL="admin@example.com"
-export ADMIN_PASSWORD="change-this-admin-password"
 go run . serve
 ```
 

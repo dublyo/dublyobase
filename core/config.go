@@ -195,7 +195,7 @@ func (c *Config) Validate() error {
 	if (c.AdminEmail == "") != (strings.TrimSpace(c.AdminPassword) == "") {
 		return fmt.Errorf("ADMIN_EMAIL and ADMIN_PASSWORD must be set together")
 	}
-	if c.AdminPassword != "" && len(c.AdminPassword) < minAdminPasswordSize {
+	if c.AdminPassword != "" && len(c.AdminPassword) < minAdminPasswordSize && !IsBootstrapAdminCredential(c.AdminEmail, c.AdminPassword) {
 		return fmt.Errorf("ADMIN_PASSWORD must be at least %d characters", minAdminPasswordSize)
 	}
 	if c.BcryptCost < bcrypt.MinCost || c.BcryptCost > bcrypt.MaxCost {

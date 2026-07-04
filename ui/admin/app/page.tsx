@@ -53,6 +53,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
+  changeAdminPassword,
   createAPIKey,
   createBackupJob,
   createCollection,
@@ -407,6 +408,10 @@ export default function AdminApp() {
       .then((response) => {
         setToken(saved);
         setAdmin(response.admin);
+        if (response.admin.mustChangePassword) {
+          health().then(setHealthState).catch(() => undefined);
+          return undefined;
+        }
         return refreshAll(saved);
       })
       .catch(() => {
@@ -480,6 +485,10 @@ export default function AdminApp() {
       sessionStorage.setItem(TOKEN_KEY, response.token);
       setToken(response.token);
       setAdmin(response.admin);
+      if (response.admin.mustChangePassword) {
+        showNotice("success", "Change the bootstrap password to continue.");
+        return;
+      }
       await refreshAll(response.token);
     } catch (error) {
       handleError(error);
@@ -520,6 +529,30 @@ export default function AdminApp() {
     setBackupJobs([]);
     setMCPTokens([]);
     setOneTimeMCPToken(null);
+  }
+
+  async function submitPasswordChange(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    const data = new FormData(event.currentTarget);
+    const currentPassword = String(data.get("currentPassword") ?? "");
+    const newPassword = String(data.get("newPassword") ?? "");
+    const confirmPassword = String(data.get("confirmPassword") ?? "");
+    if (newPassword !== confirmPassword) {
+      showNotice("error", "New passwords do not match");
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await changeAdminPassword(token, currentPassword, newPassword);
+      setAdmin(response.admin);
+      showNotice("success", "Password changed. Admin access unlocked.");
+      await refreshAll(token);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function submitProject(event: React.FormEvent<HTMLFormElement>) {
@@ -1073,6 +1106,10 @@ export default function AdminApp() {
     return <AuthScreen busy={busy} healthState={healthState} notice={notice} onLogin={submitLogin} onSetup={submitSetup} />;
   }
 
+  if (admin.mustChangePassword) {
+    return <PasswordChangeScreen admin={admin} busy={busy} healthState={healthState} notice={notice} onSubmit={submitPasswordChange} onLogout={signOut} />;
+  }
+
   return (
     <main className="pb-app">
       <header className="pb-app-header accent-surface">
@@ -1356,6 +1393,9 @@ function AuthScreen({
             Login
           </button>
         </form>
+        <div className="pb-inline-alert success">
+          Fresh install login: <strong>admin@example.com</strong> / <strong>dublyo</strong>. Change it immediately after login.
+        </div>
         <details className="pb-setup-details">
           <summary>Create first admin if setup is open</summary>
           <form onSubmit={onSetup} className="pb-form-stack compact">
@@ -1373,6 +1413,74 @@ function AuthScreen({
             </button>
           </form>
         </details>
+        <div className="pb-login-status">
+          <span>DB {healthState?.db ?? "checking"}</span>
+          <span>Storage {healthState?.storage ?? "checking"}</span>
+          <span>{healthState?.version ?? "unknown"}</span>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function PasswordChangeScreen({
+  admin,
+  busy,
+  healthState,
+  notice,
+  onSubmit,
+  onLogout,
+}: {
+  admin: Admin;
+  busy: boolean;
+  healthState: Health | null;
+  notice: Notice;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  onLogout: () => void;
+}) {
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  return (
+    <main className="pb-login-screen">
+      <section className="pb-login-card" aria-labelledby="password-change-title">
+        <div className="pb-login-logo">
+          <ShieldCheck className="h-6 w-6" />
+        </div>
+        <h1 id="password-change-title">Change admin password</h1>
+        <p className="pb-muted-copy">Signed in as {admin.email}. Set a new password before opening the control panel.</p>
+        {notice ? (
+          <div className={`pb-inline-alert ${notice.type === "error" ? "danger" : "success"}`}>
+            {notice.message}
+          </div>
+        ) : null}
+        <form onSubmit={onSubmit} className="pb-form-stack">
+          <label className="pb-field password-field">
+            <span>Current password</span>
+            <input name="currentPassword" type={showCurrent ? "text" : "password"} autoComplete="current-password" required />
+            <button type="button" className="pb-icon-btn password-toggle" onClick={() => setShowCurrent((value) => !value)} aria-label={showCurrent ? "Hide current password" : "Show current password"}>
+              {showCurrent ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </label>
+          <label className="pb-field password-field">
+            <span>New password</span>
+            <input name="newPassword" type={showNew ? "text" : "password"} autoComplete="new-password" minLength={12} required />
+            <button type="button" className="pb-icon-btn password-toggle" onClick={() => setShowNew((value) => !value)} aria-label={showNew ? "Hide new password" : "Show new password"}>
+              {showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </label>
+          <label className="pb-field">
+            <span>Confirm new password</span>
+            <input name="confirmPassword" type={showNew ? "text" : "password"} autoComplete="new-password" minLength={12} required />
+          </label>
+          <button type="submit" disabled={busy} className="pb-btn primary lg block">
+            {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Save password
+          </button>
+          <button type="button" onClick={onLogout} disabled={busy} className="pb-btn secondary block">
+            <LogOut className="h-4 w-4" />
+            Log out
+          </button>
+        </form>
         <div className="pb-login-status">
           <span>DB {healthState?.db ?? "checking"}</span>
           <span>Storage {healthState?.storage ?? "checking"}</span>
