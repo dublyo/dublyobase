@@ -178,6 +178,14 @@ export function updateCORSSettings(token: string, input: { adminOrigins: string[
   });
 }
 
+export function updateLogSettings(token: string, input: { retentionDays: number; retentionCount: number }) {
+  return request<InstanceSettings>("/admin/api/settings/logs", {
+    method: "PUT",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
 export function testStorageSettings(token: string) {
   return request<{ status: string }>("/admin/api/settings/storage/test", {
     method: "POST",
@@ -357,12 +365,15 @@ export function revokeAPIKey(token: string, project: string, id: string) {
   });
 }
 
-export function listAudit(token: string, input: { project?: string; page?: number; perPage?: number } = {}) {
+export function listAudit(token: string, input: { project?: string; page?: number; perPage?: number; search?: string; action?: string; target?: string } = {}) {
   const params = new URLSearchParams({
     page: String(input.page ?? 1),
     perPage: String(input.perPage ?? 30),
   });
   if (input.project) params.set("project", input.project);
+  if (input.search?.trim()) params.set("search", input.search.trim());
+  if (input.action?.trim()) params.set("action", input.action.trim());
+  if (input.target?.trim()) params.set("target", input.target.trim());
   return request<ApiEnvelope<AuditEntry>>(`/admin/api/audit-log?${params}`, { token }).then(normalizeEnvelope);
 }
 

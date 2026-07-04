@@ -210,7 +210,7 @@ func (s *server) trustsProxy(ipText string) bool {
 
 // setSSEHeaders configures a response for Server-Sent Events in a way that
 // survives the Cloudflare tunnel + Traefik: no buffering, no transform, flush
-// per event. (Used by realtime handlers in a later milestone.)
+// per event. (Used by the realtime handlers.)
 func setSSEHeaders(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")

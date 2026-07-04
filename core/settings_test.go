@@ -93,3 +93,19 @@ func TestNormalizeSettingsEmptySecretPreservesCurrent(t *testing.T) {
 		t.Fatal("empty S3 secret key must preserve current encrypted secret")
 	}
 }
+
+func TestNormalizeLogSettings(t *testing.T) {
+	settings, err := normalizeLogSettings(LogSettingsInput{RetentionDays: 45, RetentionCount: 5000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !settings.Configured || settings.RetentionDays != 45 || settings.RetentionCount != 5000 {
+		t.Fatalf("unexpected log settings: %+v", settings)
+	}
+	if _, err := normalizeLogSettings(LogSettingsInput{RetentionDays: 0, RetentionCount: 5000}); err == nil {
+		t.Fatal("retentionDays below bound must fail")
+	}
+	if _, err := normalizeLogSettings(LogSettingsInput{RetentionDays: 45, RetentionCount: 99}); err == nil {
+		t.Fatal("retentionCount below bound must fail")
+	}
+}

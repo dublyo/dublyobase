@@ -295,6 +295,13 @@ export type InstanceSettings = {
   smtp: SMTPSettings;
   storage: StorageSettings;
   cors: CORSSettings;
+  logs: LogSettings;
+};
+
+export type LogSettings = {
+  retentionDays: number;
+  retentionCount: number;
+  source: string;
 };
 
 export type CORSSettings = {

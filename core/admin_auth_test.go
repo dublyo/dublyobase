@@ -39,3 +39,23 @@ func TestAdminTokenGenerationAndHashing(t *testing.T) {
 		t.Fatalf("sha256 hex length = %d", len(hash))
 	}
 }
+
+func TestBootstrapAdminPasswordGeneration(t *testing.T) {
+	first, err := GenerateBootstrapAdminPassword()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := GenerateBootstrapAdminPassword()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("bootstrap passwords must be random per install")
+	}
+	if err := ValidateAdminPassword(first); err != nil {
+		t.Fatalf("generated bootstrap password must satisfy admin policy: %v", err)
+	}
+	if strings.Contains(first, "dublyo") || first == "dublyo" {
+		t.Fatalf("generated password must not use the old public bootstrap password: %q", first)
+	}
+}

@@ -209,12 +209,13 @@ func TestSetupUnavailableUntilAppReady(t *testing.T) {
 
 func TestBootstrapAdminRequiresPasswordChange(t *testing.T) {
 	app, _ := newIntegrationApp(t)
-	if err := core.SeedAdmin(context.Background(), app.Pool, app.Config, testLogger()); err != nil {
+	_, bootstrapPassword, err := core.CreateBootstrapAdmin(context.Background(), app.Pool, app.Config.BcryptCost, "", "")
+	if err != nil {
 		t.Fatal(err)
 	}
 	srv := NewServer(app)
 
-	rec := postJSON(srv.Handler, "/admin/api/auth/login", "", `{"email":"admin@example.com","password":"dublyo"}`)
+	rec := postJSON(srv.Handler, "/admin/api/auth/login", "", fmt.Sprintf(`{"email":"admin@example.com","password":%q}`, bootstrapPassword))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("bootstrap login: want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -244,7 +245,7 @@ func TestBootstrapAdminRequiresPasswordChange(t *testing.T) {
 		t.Fatalf("wrong current password: want 401, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	rec = postJSON(srv.Handler, "/admin/api/auth/change-password", loginBody.Token, `{"currentPassword":"dublyo","newPassword":"changed-pass-123"}`)
+	rec = postJSON(srv.Handler, "/admin/api/auth/change-password", loginBody.Token, fmt.Sprintf(`{"currentPassword":%q,"newPassword":"changed-pass-123"}`, bootstrapPassword))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"mustChangePassword":false`) {
 		t.Fatalf("change password: want unlocked admin, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -254,7 +255,7 @@ func TestBootstrapAdminRequiresPasswordChange(t *testing.T) {
 		t.Fatalf("admin API after password change: want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	rec = postJSON(srv.Handler, "/admin/api/auth/login", "", `{"email":"admin@example.com","password":"dublyo"}`)
+	rec = postJSON(srv.Handler, "/admin/api/auth/login", "", fmt.Sprintf(`{"email":"admin@example.com","password":%q}`, bootstrapPassword))
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("old bootstrap password after change: want 401, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -558,6 +559,14 @@ func TestAdminSettingsEndpoints(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "s3-secret-value") || !strings.Contains(rec.Body.String(), `"secretKeySet":true`) {
 		t.Fatalf("storage response must mask secret and show secretKeySet: %s", rec.Body.String())
+	}
+
+	rec = putJSON(srv.Handler, "/admin/api/settings/logs", token, `{"retentionDays":45,"retentionCount":5000}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update logs settings: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"retentionDays":45`) || !strings.Contains(rec.Body.String(), `"retentionCount":5000`) {
+		t.Fatalf("logs settings response missing retention values: %s", rec.Body.String())
 	}
 
 	var encryptedCount int

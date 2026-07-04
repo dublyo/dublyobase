@@ -24,8 +24,7 @@ const (
 	setupAdvisoryLockID  = int64(326_326_002)
 	minAdminPasswordSize = 12
 
-	BootstrapAdminEmail    = "admin@example.com"
-	BootstrapAdminPassword = "dublyo"
+	BootstrapAdminEmail = "admin@example.com"
 
 	AdminRoleOwner      = "owner"
 	AdminRoleSuperAdmin = "super_admin"
@@ -79,16 +78,20 @@ func ValidateAdminPassword(password string) error {
 	return nil
 }
 
-func IsBootstrapAdminCredential(email string, password string) bool {
-	return NormalizeEmail(email) == BootstrapAdminEmail && password == BootstrapAdminPassword
-}
-
 func GenerateAdminToken() (string, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return "", err
 	}
 	return adminTokenPrefix + base64.RawURLEncoding.EncodeToString(raw[:]), nil
+}
+
+func GenerateBootstrapAdminPassword() (string, error) {
+	var raw [24]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return "dbo-" + base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
 func HashToken(token string) string {
@@ -101,24 +104,25 @@ func CreateFirstAdmin(ctx context.Context, pool *pgxpool.Pool, email, password, 
 }
 
 func CreateFirstAdminWithCost(ctx context.Context, pool *pgxpool.Pool, email, password string, bcryptCost int, ip, userAgent string) (*Admin, error) {
-	return createFirstAdminWithOptions(ctx, pool, email, password, bcryptCost, false, false, ip, userAgent)
+	return createFirstAdminWithOptions(ctx, pool, email, password, bcryptCost, false, ip, userAgent)
 }
 
-func CreateBootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, bcryptCost int, ip, userAgent string) (*Admin, error) {
-	return createFirstAdminWithOptions(ctx, pool, BootstrapAdminEmail, BootstrapAdminPassword, bcryptCost, true, true, ip, userAgent)
+func CreateBootstrapAdmin(ctx context.Context, pool *pgxpool.Pool, bcryptCost int, ip, userAgent string) (*Admin, string, error) {
+	password, err := GenerateBootstrapAdminPassword()
+	if err != nil {
+		return nil, "", err
+	}
+	admin, err := createFirstAdminWithOptions(ctx, pool, BootstrapAdminEmail, password, bcryptCost, true, ip, userAgent)
+	return admin, password, err
 }
 
-func createFirstAdminWithOptions(ctx context.Context, pool *pgxpool.Pool, email, password string, bcryptCost int, allowBootstrapPassword bool, mustChangePassword bool, ip, userAgent string) (*Admin, error) {
+func createFirstAdminWithOptions(ctx context.Context, pool *pgxpool.Pool, email, password string, bcryptCost int, mustChangePassword bool, ip, userAgent string) (*Admin, error) {
 	email = NormalizeEmail(email)
 	if err := ValidateAdminEmail(email); err != nil {
 		return nil, err
 	}
-	if !allowBootstrapPassword {
-		if err := ValidateAdminPassword(password); err != nil {
-			return nil, err
-		}
-	} else if !IsBootstrapAdminCredential(email, password) {
-		return nil, fmt.Errorf("%w: bootstrap admin credentials are fixed", ErrValidation)
+	if err := ValidateAdminPassword(password); err != nil {
+		return nil, err
 	}
 
 	tx, err := pool.Begin(ctx)

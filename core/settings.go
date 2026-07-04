@@ -21,10 +21,16 @@ import (
 
 const secretCipherPrefix = "v1"
 
+const (
+	defaultLogRetentionDays  = 30
+	defaultLogRetentionCount = 100000
+)
+
 type PublicInstanceSettings struct {
 	SMTP    PublicSMTPSettings    `json:"smtp"`
 	Storage PublicStorageSettings `json:"storage"`
 	CORS    PublicCORSSettings    `json:"cors"`
+	Logs    PublicLogSettings     `json:"logs"`
 }
 
 type PublicSMTPSettings struct {
@@ -65,6 +71,17 @@ type CORSSettingsInput struct {
 	AllowWildcard bool     `json:"allowWildcard"`
 }
 
+type PublicLogSettings struct {
+	RetentionDays  int    `json:"retentionDays"`
+	RetentionCount int    `json:"retentionCount"`
+	Source         string `json:"source"`
+}
+
+type LogSettingsInput struct {
+	RetentionDays  int `json:"retentionDays"`
+	RetentionCount int `json:"retentionCount"`
+}
+
 type PublicS3Settings struct {
 	Endpoint       string `json:"endpoint"`
 	Bucket         string `json:"bucket"`
@@ -97,6 +114,7 @@ type storedInstanceSettings struct {
 	SMTP    storedSMTPSettings    `json:"smtp,omitempty"`
 	Storage storedStorageSettings `json:"storage,omitempty"`
 	CORS    storedCORSSettings    `json:"cors,omitempty"`
+	Logs    storedLogSettings     `json:"logs,omitempty"`
 }
 
 type storedSMTPSettings struct {
@@ -129,6 +147,12 @@ type storedS3Settings struct {
 type storedCORSSettings struct {
 	Configured   bool     `json:"configured,omitempty"`
 	AdminOrigins []string `json:"adminOrigins,omitempty"`
+}
+
+type storedLogSettings struct {
+	Configured     bool `json:"configured,omitempty"`
+	RetentionDays  int  `json:"retentionDays,omitempty"`
+	RetentionCount int  `json:"retentionCount,omitempty"`
 }
 
 func GetPublicInstanceSettings(ctx context.Context, pool *pgxpool.Pool, cfg *Config) (*PublicInstanceSettings, error) {
@@ -252,6 +276,43 @@ func UpdateCORSSettings(ctx context.Context, pool *pgxpool.Pool, cfg *Config, ad
 	return publicInstanceSettings(cfg, stored), nil
 }
 
+func UpdateLogSettings(ctx context.Context, pool *pgxpool.Pool, cfg *Config, adminID string, input LogSettingsInput, ip string, userAgent string) (*PublicInstanceSettings, error) {
+	next, err := normalizeLogSettings(input)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	stored, err := loadStoredInstanceSettingsTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	stored.Logs = next
+	if err := saveStoredInstanceSettings(ctx, tx, stored); err != nil {
+		return nil, err
+	}
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		AdminID:    &adminID,
+		Action:     "settings.logs.update",
+		TargetType: "settings",
+		TargetID:   "logs",
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data:       map[string]any{"retentionDays": next.RetentionDays, "retentionCount": next.RetentionCount},
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return publicInstanceSettings(cfg, stored), nil
+}
+
 func EffectiveSMTPConfig(ctx context.Context, pool *pgxpool.Pool, cfg *Config) (*Config, error) {
 	stored, err := loadStoredInstanceSettings(ctx, pool)
 	if err != nil {
@@ -322,6 +383,14 @@ func StoredS3RuntimeOptions(ctx context.Context, pool *pgxpool.Pool) (prefix str
 	return stored.Storage.S3.Prefix, stored.Storage.S3.UseSSL, stored.Storage.S3.ForcePathStyle, true, nil
 }
 
+func EffectiveLogSettings(ctx context.Context, pool *pgxpool.Pool) (PublicLogSettings, error) {
+	stored, err := loadStoredInstanceSettings(ctx, pool)
+	if err != nil {
+		return PublicLogSettings{}, err
+	}
+	return publicLogSettings(stored.Logs), nil
+}
+
 func loadStoredInstanceSettings(ctx context.Context, pool *pgxpool.Pool) (storedInstanceSettings, error) {
 	return loadStoredInstanceSettingsTx(ctx, pool)
 }
@@ -368,6 +437,7 @@ func publicInstanceSettings(cfg *Config, stored storedInstanceSettings) *PublicI
 		SMTP:    publicSMTPSettings(cfg, stored.SMTP),
 		Storage: publicStorageSettings(cfg, stored.Storage),
 		CORS:    publicCORSSettings(cfg, stored.CORS),
+		Logs:    publicLogSettings(stored.Logs),
 	}
 }
 
@@ -429,6 +499,21 @@ func publicStorageSettings(cfg *Config, stored storedStorageSettings) PublicStor
 	}
 }
 
+func publicLogSettings(stored storedLogSettings) PublicLogSettings {
+	if !stored.Configured {
+		return PublicLogSettings{
+			RetentionDays:  defaultLogRetentionDays,
+			RetentionCount: defaultLogRetentionCount,
+			Source:         "default",
+		}
+	}
+	return PublicLogSettings{
+		RetentionDays:  stored.RetentionDays,
+		RetentionCount: stored.RetentionCount,
+		Source:         "database",
+	}
+}
+
 func normalizeSMTPInput(cfg *Config, current storedSMTPSettings, input SMTPSettingsInput) (storedSMTPSettings, error) {
 	next := storedSMTPSettings{
 		Configured: true,
@@ -481,6 +566,20 @@ func normalizeSMTPInput(cfg *Config, current storedSMTPSettings, input SMTPSetti
 		return storedSMTPSettings{}, err
 	}
 	return next, nil
+}
+
+func normalizeLogSettings(input LogSettingsInput) (storedLogSettings, error) {
+	if input.RetentionDays < 1 || input.RetentionDays > 3650 {
+		return storedLogSettings{}, fmt.Errorf("%w: log retentionDays must be between 1 and 3650", ErrValidation)
+	}
+	if input.RetentionCount < 100 || input.RetentionCount > 1000000 {
+		return storedLogSettings{}, fmt.Errorf("%w: log retentionCount must be between 100 and 1000000", ErrValidation)
+	}
+	return storedLogSettings{
+		Configured:     true,
+		RetentionDays:  input.RetentionDays,
+		RetentionCount: input.RetentionCount,
+	}, nil
 }
 
 func normalizeStorageInput(cfg *Config, current storedStorageSettings, input StorageSettingsInput) (storedStorageSettings, error) {

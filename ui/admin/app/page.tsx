@@ -110,6 +110,7 @@ import {
   testStorageSettings,
   updateCollection,
   updateCORSSettings,
+  updateLogSettings,
   updateProjectCORSSettings,
   updateRecord,
   updateSMTPSettings,
@@ -307,6 +308,17 @@ const emptyMCPDraft = {
   expiresAt: "",
 };
 
+const emptyAuditFilters = {
+  search: "",
+  action: "",
+  target: "",
+};
+
+const emptyLogDraft = {
+  retentionDays: "30",
+  retentionCount: "100000",
+};
+
 export default function AdminApp() {
   const [token, setToken] = useState<string | null>(null);
   const [admin, setAdmin] = useState<Admin | null>(null);
@@ -332,6 +344,8 @@ export default function AdminApp() {
   const [oneTimeKey, setOneTimeKey] = useState<APIKey | null>(null);
   const [audit, setAudit] = useState<ApiEnvelope<AuditEntry>>({ items: [], page: 1, perPage: 25, totalItems: 0 });
   const [auditPerPage, setAuditPerPage] = useState<(typeof recordPageSizes)[number]>(25);
+  const [auditFilters, setAuditFilters] = useState(emptyAuditFilters);
+  const [logDraft, setLogDraft] = useState(emptyLogDraft);
   const [settings, setSettingsState] = useState<InstanceSettings | null>(null);
   const [adminUsers, setAdminUsers] = useState<Admin[]>([]);
   const [adminDraft, setAdminDraft] = useState(emptyAdminDraft);
@@ -435,7 +449,7 @@ export default function AdminApp() {
       const [collectionResponse, keysResponse, auditResponse] = await Promise.all([
         listCollections(authToken, projectSlug),
         listAPIKeys(authToken, projectSlug),
-        listAudit(authToken, { project: projectSlug, page: 1, perPage: auditPerPage }),
+        listAudit(authToken, { project: projectSlug, page: 1, perPage: auditPerPage, ...auditFilters }),
       ]);
       setCollections(collectionResponse.items);
       setCollectionsProject(projectSlug);
@@ -459,7 +473,7 @@ export default function AdminApp() {
         setRecords({ items: [], page: 1, perPage: recordPerPage, totalItems: 0 });
       }
     },
-    [auditPerPage, recordFilter, recordPerPage, recordSearch, selectedCollection],
+    [auditFilters, auditPerPage, recordFilter, recordPerPage, recordSearch, selectedCollection],
   );
 
   const refreshAll = useCallback(
@@ -485,6 +499,7 @@ export default function AdminApp() {
         setMCPTokens(mcpResponse.items);
         setSMTPDraft(settingsToSMTPDraft(settingsResponse));
         setStorageDraft(settingsToStorageDraft(settingsResponse));
+        setLogDraft(settingsToLogDraft(settingsResponse));
         const projectSlug = preferredProject || projectsResponse.items[0]?.slug || "";
         const projectModel = projectsResponse.items.find((project) => project.slug === projectSlug) ?? null;
         setCORSDraft(settingsToCORSDraft(settingsResponse, projectModel));
@@ -652,6 +667,8 @@ export default function AdminApp() {
     setAdminDraft(emptyAdminDraft);
     setOneTimeAdmin(null);
     setAudit({ items: [], page: 1, perPage: auditPerPage, totalItems: 0 });
+    setAuditFilters(emptyAuditFilters);
+    setLogDraft(emptyLogDraft);
     setCORSDraft(emptyCORSDraft);
     setCronJobs([]);
     setBackupJobs([]);
@@ -710,7 +727,7 @@ export default function AdminApp() {
     if (!token || !selectedProject) return;
     setBusy(true);
     try {
-      const response = await listAudit(token, { project: selectedProject, page, perPage });
+      const response = await listAudit(token, { project: selectedProject, page, perPage, ...auditFilters });
       setAudit(response);
     } catch (error) {
       handleError(error);
@@ -1043,6 +1060,25 @@ export default function AdminApp() {
       showNotice("success", "Storage settings saved");
       const healthResponse = await health();
       setHealthState(healthResponse);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveLogSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    setBusy(true);
+    try {
+      const response = await updateLogSettings(token, {
+        retentionDays: Number.parseInt(logDraft.retentionDays, 10) || 30,
+        retentionCount: Number.parseInt(logDraft.retentionCount, 10) || 100000,
+      });
+      setSettingsState(response);
+      setLogDraft(settingsToLogDraft(response));
+      showNotice("success", "Log retention saved");
     } catch (error) {
       handleError(error);
     } finally {
@@ -1503,6 +1539,12 @@ export default function AdminApp() {
         <LogsView
           audit={audit}
           auditPerPage={auditPerPage}
+          filters={auditFilters}
+          settings={settings}
+          logDraft={logDraft}
+          setLogDraft={setLogDraft}
+          onFilterChange={setAuditFilters}
+          onSaveLogSettings={saveLogSettings}
           onRefresh={() => void refreshAudit()}
           onPageChange={(page) => {
             void refreshAudit(page);
@@ -1511,6 +1553,7 @@ export default function AdminApp() {
             setAuditPerPage(pageSize);
             void refreshAudit(1, pageSize);
           }}
+          onCopy={copyText}
           version={healthState?.version ?? "unknown"}
         />
       ) : null}
@@ -2446,7 +2489,7 @@ function CollectionModal({
   onSubmit?: (event: React.FormEvent<HTMLFormElement>) => void;
   onSave?: () => void;
 }) {
-  const [tab, setTab] = useState<"fields" | "rules">("fields");
+  const [tab, setTab] = useState<"fields" | "rules" | "options">("fields");
   const title = mode === "create" ? "Create collection" : "Collection settings";
   const imported = collection ? collectionImportedFromOptions(collection) : false;
   const manageReady = collection ? collectionStandardSystemColumns(collection) : false;
@@ -2520,6 +2563,9 @@ function CollectionModal({
             <button type="button" role="tab" aria-selected={tab === "rules"} className={`pb-tab-item ${tab === "rules" ? "active" : ""}`} onClick={() => setTab("rules")}>
               API rules
             </button>
+            <button type="button" role="tab" aria-selected={tab === "options"} className={`pb-tab-item ${tab === "options" ? "active" : ""}`} onClick={() => setTab("options")}>
+              Options
+            </button>
           </div>
 
           {tab === "fields" ? (
@@ -2529,6 +2575,7 @@ function CollectionModal({
             </>
           ) : null}
           {tab === "rules" ? <RuleInputs rules={rules} onChange={setRules} /> : null}
+          {tab === "options" ? <CollectionOptionsPanel collection={collection} fields={fields} collections={collections} icon={icon} imported={imported} managed={Boolean(managed)} /> : null}
         </div>
 
         <footer className="pb-modal-footer">
@@ -2631,6 +2678,87 @@ function FieldRows({
   );
 }
 
+function CollectionOptionsPanel({
+  collection,
+  fields,
+  collections,
+  icon,
+  imported,
+  managed,
+}: {
+  collection?: Collection;
+  fields: Field[];
+  collections: Collection[];
+  icon: CollectionIconOption;
+  imported: boolean;
+  managed: boolean;
+}) {
+  const relationFields = fields.filter((field) => field.type === "relation");
+  const reverseRelations = collection ? collectionReverseRelations(collection.name, collections) : [];
+  const indexHints = collectionIndexHints(fields);
+  return (
+    <div className="pb-collection-options-panel">
+      <section>
+        <h3>Collection options</h3>
+        <div className="pb-info-grid compact">
+          <Info label="Type" value={collection?.type ?? "base"} />
+          <Info label="Icon" value={icon.type === "lucide" ? `lucide:${icon.name}` : `emoji:${icon.value}`} />
+          <Info label="Imported table" value={imported ? "yes" : "no"} />
+          <Info label="Managed schema" value={imported ? (managed ? "enabled" : "staged") : "native"} />
+          <Info label="Primary key" value={collection ? collectionPrimaryKeyFieldName(collection) : "id"} />
+          <Info label="Source table" value={collection ? collectionSourceTable(collection) : ""} />
+        </div>
+      </section>
+      <section>
+        <h3>Indexes and constraints</h3>
+        {indexHints.length === 0 ? (
+          <div className="pb-inline-alert info">No searchable, unique, or relation constraints are configured yet.</div>
+        ) : (
+          <div className="pb-index-list">
+            {indexHints.map((hint) => (
+              <div key={`${hint.kind}-${hint.field}`}>
+                <strong>{hint.kind}</strong>
+                <span>{hint.field}</span>
+                <em>{hint.detail}</em>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+      <section>
+        <h3>Relations</h3>
+        {relationFields.length === 0 && reverseRelations.length === 0 ? (
+          <div className="pb-inline-alert info">No relation fields point to or from this collection.</div>
+        ) : (
+          <div className="pb-relation-map">
+            {relationFields.map((field) => (
+              <div key={`out-${field.name}`}>
+                <Share2 className="h-4 w-4" />
+                <span>
+                  <strong>{field.name}</strong>
+                  <em>
+                    {relationCardinality(field)} to {relationTargetName(field) || "unconfigured"}
+                    {typeof field.options?.reverseName === "string" && field.options.reverseName ? ` · reverse ${field.options.reverseName}` : ""}
+                  </em>
+                </span>
+              </div>
+            ))}
+            {reverseRelations.map((relation) => (
+              <div key={`in-${relation.collection}-${relation.field}`}>
+                <Share2 className="h-4 w-4" />
+                <span>
+                  <strong>{relation.collection}.{relation.field}</strong>
+                  <em>{relation.multiple ? "many" : "single"} records point here</em>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field: Field; collections: Collection[]; onChange: (field: Field) => void; readOnly?: boolean }) {
   const searchSupported = canSearchField(field);
   const relationTarget = field.type === "relation" ? collections.find((collection) => collection.name === field.options?.collection) : undefined;
@@ -2699,7 +2827,11 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
     typeOptions = (
       <div className="pb-field-options two">
         <div className="pb-inline-alert info pb-relation-hint">
-          Relation fields store record ids from another collection. Choose the target collection, then optionally choose the display field used by record forms and API previews.
+          Relation fields store record ids from another collection. Max select controls cardinality: 1 is many-to-one, 1 with unique is one-to-one, and more than 1 stores multiple related records.
+        </div>
+        <div className="pb-info-grid compact">
+          <Info label="Cardinality" value={relationCardinality(field)} />
+          <Info label="Reverse label" value={String(field.options?.reverseName ?? "")} />
         </div>
         <label className="pb-field">
           <span>Target collection</span>
@@ -2741,6 +2873,14 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
             Unique relation
           </label>
         </div>
+        <label className="pb-field">
+          <span>On target delete</span>
+          <select value={String(field.options?.onDelete ?? "")} onChange={(event) => onChange(setFieldOption(field, "onDelete", event.target.value))}>
+            <option value="">Restrict</option>
+            <option value="set_null">Set null</option>
+            <option value="cascade">Cascade</option>
+          </select>
+        </label>
         <label className="pb-field">
           <span>Reverse field name</span>
           <input value={String(field.options?.reverseName ?? "")} onChange={(event) => onChange(setFieldOption(field, "reverseName", event.target.value))} placeholder={`${field.name || "field"}_records`} />
@@ -3176,15 +3316,146 @@ function JSONFieldEditor({ value, onChange }: { value: unknown; onChange: (value
 }
 
 function APIPreviewModal({ project, collection, onClose, onCopy }: { project: string; collection: Collection; onClose: () => void; onCopy: (text: string) => void }) {
+  const [tab, setTab] = useState("list");
   const basePath = `/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection.name)}`;
+  const authBase = `/api/projects/${encodeURIComponent(project)}/auth`;
+  const realtimePath = `/api/projects/${encodeURIComponent(project)}/realtime?collection=${encodeURIComponent(collection.name)}&events=create,update,delete`;
   const searchField = collection.fields.find((field) => field.searchable && canSearchField(field))?.name ?? "title";
-  const filterSample = encodeURIComponent(JSON.stringify({ [searchField]: { _icontains: "hello" } }));
-  const sample = `GET ${basePath}/records?page=1&perPage=25&search=hello
-GET ${basePath}/records?filter=${filterSample}
-GET ${basePath}/records?filter[${searchField}][_icontains]=hello
-POST ${basePath}/records
-PATCH ${basePath}/records/{id}
-DELETE ${basePath}/records/{id}`;
+  const filterObject = { [searchField]: { _icontains: "hello" } };
+  const sampleBody = sampleRecordPayload(collection);
+  const updateBody = sampleUpdatePayload(collection);
+  const fileField = collection.fields.find((field) => field.type === "file")?.name ?? "attachment";
+  const examples: Record<string, { title: string; detail: string; code: string; params?: string[] }> = {
+    list: {
+      title: "List/Search records",
+      detail: "Supports page/perPage, selected-field search, Directus-style JSON filters, fields projection, and sort.",
+      code: `curl -G "${basePath}/records" \\
+  -H "Authorization: Bearer $DUBLYO_TOKEN" \\
+  --data-urlencode "page=1" \\
+  --data-urlencode "perPage=25" \\
+  --data-urlencode "sort=-created" \\
+  --data-urlencode "search=hello" \\
+  --data-urlencode 'filter=${JSON.stringify(filterObject)}' \\
+  --data-urlencode "fields=id,${searchField},created"`,
+      params: ["page", "perPage", "sort", "search", "filter", "fields"],
+    },
+    view: {
+      title: "View one record",
+      detail: "Reads a single record by primary key while preserving collection RLS rules.",
+      code: `curl "${basePath}/records/{id}" \\
+  -H "Authorization: Bearer $DUBLYO_TOKEN"`,
+      params: ["id"],
+    },
+    create: {
+      title: "Create record",
+      detail: "Writable fields are validated by collection field options before insert.",
+      code: `curl -X POST "${basePath}/records" \\
+  -H "Authorization: Bearer $DUBLYO_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  --data '${JSON.stringify(sampleBody, null, 2)}'`,
+    },
+    update: {
+      title: "Update record",
+      detail: "Patch accepts partial JSON. Hidden, primary-key, and system fields remain protected.",
+      code: `curl -X PATCH "${basePath}/records/{id}" \\
+  -H "Authorization: Bearer $DUBLYO_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  --data '${JSON.stringify(updateBody, null, 2)}'`,
+    },
+    delete: {
+      title: "Delete record",
+      detail: "Deletes the record only when delete rules allow the caller.",
+      code: `curl -X DELETE "${basePath}/records/{id}" \\
+  -H "Authorization: Bearer $DUBLYO_TOKEN"`,
+    },
+    realtime: {
+      title: "Realtime records",
+      detail: "Server-Sent Events stream create/update/delete events and re-check record visibility before sending payloads.",
+      code: `const source = new EventSource("${realtimePath}&token=" + encodeURIComponent(accessToken));
+source.addEventListener("ready", (event) => console.log(JSON.parse(event.data)));
+source.addEventListener("record.create", (event) => console.log(JSON.parse(event.data)));
+source.addEventListener("record.update", (event) => console.log(JSON.parse(event.data)));
+source.addEventListener("record.delete", (event) => console.log(JSON.parse(event.data)));`,
+      params: ["collection", "events", "token or Authorization"],
+    },
+    files: {
+      title: "Files",
+      detail: "Upload to file fields with multipart form data; protected files use short-lived file tokens.",
+      code: `curl -X POST "${`/api/projects/${encodeURIComponent(project)}/files/${encodeURIComponent(collection.name)}/{recordId}/${encodeURIComponent(fileField)}`}" \\
+  -H "Authorization: Bearer $DUBLYO_TOKEN" \\
+  -F "file=@./image.png"
+
+curl -X POST "${`/api/projects/${encodeURIComponent(project)}/files/${encodeURIComponent(collection.name)}/{recordId}/${encodeURIComponent(fileField)}/{fileId}/token`}" \\
+  -H "Authorization: Bearer $DUBLYO_TOKEN"`,
+    },
+    auth: {
+      title: "App auth",
+      detail: "Email/password auth uses the project's system users collection and SMTP-backed verification/reset flows.",
+      code: `POST ${authBase}/signup
+{"email":"user@example.com","password":"password-123"}
+
+POST ${authBase}/login
+{"email":"user@example.com","password":"password-123"}
+
+POST ${authBase}/refresh
+{"refreshToken":"..."}
+
+GET ${authBase}/me
+Authorization: Bearer $ACCESS_TOKEN
+
+POST ${authBase}/request-verification
+{"email":"user@example.com"}
+
+POST ${authBase}/request-password-reset
+{"email":"user@example.com"}`,
+    },
+    sdk: {
+      title: "JavaScript fetch",
+      detail: "Drop-in browser/server example. Use a service key only on trusted servers.",
+      code: `const base = "${typeof window !== "undefined" ? window.location.origin : ""}${basePath}";
+
+export async function list${pascalCase(collection.name)}(token) {
+  const params = new URLSearchParams({
+    page: "1",
+    perPage: "25",
+    filter: JSON.stringify(${JSON.stringify(filterObject)}),
+  });
+  const res = await fetch(\`\${base}/records?\${params}\`, {
+    headers: { Authorization: \`Bearer \${token}\` },
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}`,
+    },
+    responses: {
+      title: "Response shapes",
+      detail: "Core response envelopes returned by the REST API.",
+      code: `// List
+{
+  "items": [${JSON.stringify(sampleBody)}],
+  "page": 1,
+  "perPage": 25,
+  "totalItems": 1
+}
+
+// Record event
+{
+  "project": "${project}",
+  "collection": "${collection.name}",
+  "action": "create",
+  "id": "{id}",
+  "record": ${JSON.stringify(sampleBody, null, 2)},
+  "ts": "2026-07-04T00:00:00Z"
+}
+
+// Error
+{
+  "error": "validation_failed",
+  "message": "validation failed: field is required"
+}`,
+    },
+  };
+  const active = examples[tab] ?? examples.list;
   return (
     <div className="pb-modal-layer" role="presentation">
       <section className="pb-modal api-preview-modal" role="dialog" aria-modal="true" aria-labelledby="api-preview-title">
@@ -3202,11 +3473,37 @@ DELETE ${basePath}/records/{id}`;
               <span>{collection.fields.length} fields</span>
             </div>
           </div>
-          <pre className="pb-code-box">{sample}</pre>
-          <button type="button" className="pb-btn secondary" onClick={() => onCopy(sample)}>
-            <Copy className="h-4 w-4" />
-            Copy
-          </button>
+          <div className="pb-api-preview-layout">
+            <nav className="pb-api-tabs" aria-label="API preview operations">
+              {Object.entries(examples).map(([key, item]) => (
+                <button key={key} type="button" className={key === tab ? "active" : ""} onClick={() => setTab(key)}>
+                  {item.title}
+                </button>
+              ))}
+            </nav>
+            <div className="pb-api-preview-panel">
+              <div className="pb-section-title-row">
+                <div>
+                  <h3>{active.title}</h3>
+                  <p className="pb-muted-copy">{active.detail}</p>
+                </div>
+                <button type="button" className="pb-btn secondary" onClick={() => onCopy(active.code)}>
+                  <Copy className="h-4 w-4" />
+                  Copy
+                </button>
+              </div>
+              {active.params?.length ? (
+                <div className="pb-chip-row api-param-row">
+                  {active.params.map((param) => (
+                    <span key={param} className="pb-chip">
+                      {param}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <pre className="pb-code-box api-code">{active.code}</pre>
+            </div>
+          </div>
         </div>
       </section>
     </div>
@@ -3216,22 +3513,38 @@ DELETE ${basePath}/records/{id}`;
 function LogsView({
   audit,
   auditPerPage,
+  filters,
+  settings,
+  logDraft,
+  setLogDraft,
+  onFilterChange,
+  onSaveLogSettings,
   onRefresh,
   onPageChange,
   onPageSizeChange,
+  onCopy,
   version,
 }: {
   audit: ApiEnvelope<AuditEntry>;
   auditPerPage: (typeof recordPageSizes)[number];
+  filters: typeof emptyAuditFilters;
+  settings: InstanceSettings | null;
+  logDraft: typeof emptyLogDraft;
+  setLogDraft: React.Dispatch<React.SetStateAction<typeof emptyLogDraft>>;
+  onFilterChange: React.Dispatch<React.SetStateAction<typeof emptyAuditFilters>>;
+  onSaveLogSettings: (event: React.FormEvent<HTMLFormElement>) => void;
   onRefresh: () => void;
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: (typeof recordPageSizes)[number]) => void;
+  onCopy: (text: string) => void;
   version: string;
 }) {
+  const [selectedEntry, setSelectedEntry] = useState<AuditEntry | null>(null);
   const page = audit.page ?? 1;
   const perPage = audit.perPage ?? auditPerPage;
   const totalItems = audit.totalItems ?? audit.items.length;
   const totalPages = Math.max(1, Math.ceil(totalItems / Math.max(1, perPage)));
+  const actionOptions = Array.from(new Set(audit.items.map((entry) => entry.action))).sort();
   return (
     <section className="pb-page single">
       <div className="pb-page-content full-height">
@@ -3246,6 +3559,72 @@ function LogsView({
             </button>
           </div>
         </header>
+        <form
+          className="pb-record-toolbar logs-toolbar"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onPageChange(1);
+          }}
+        >
+          <label className="pb-record-control search">
+            <Search className="h-4 w-4" />
+            <input value={filters.search} onChange={(event) => onFilterChange((current) => ({ ...current, search: event.target.value }))} placeholder="Search action, target, IP, user agent, data" />
+          </label>
+          <label className="pb-record-control action-filter">
+            <ListFilter className="h-4 w-4" />
+            <input list="audit-actions" value={filters.action} onChange={(event) => onFilterChange((current) => ({ ...current, action: event.target.value }))} placeholder="Action" />
+            <datalist id="audit-actions">
+              {actionOptions.map((action) => (
+                <option key={action} value={action} />
+              ))}
+            </datalist>
+          </label>
+          <label className="pb-record-control target-filter">
+            <Database className="h-4 w-4" />
+            <input value={filters.target} onChange={(event) => onFilterChange((current) => ({ ...current, target: event.target.value }))} placeholder="Target type or id" />
+          </label>
+          <button type="submit" className="pb-btn sm secondary">
+            Apply
+          </button>
+          <button
+            type="button"
+            className="pb-btn sm transparent"
+            onClick={() => {
+              onFilterChange(emptyAuditFilters);
+              window.setTimeout(() => onPageChange(1), 0);
+            }}
+          >
+            Clear
+          </button>
+        </form>
+        <form className="pb-log-retention-panel" onSubmit={onSaveLogSettings}>
+          <div>
+            <strong>Retention</strong>
+            <span>
+              Keep audit logs for {settings?.logs.retentionDays ?? 30} days, capped at {formatCount(settings?.logs.retentionCount ?? 100000)} rows.
+              Source: {settings?.logs.source ?? "default"}.
+            </span>
+          </div>
+          <label className="pb-field compact">
+            <span>Days</span>
+            <input
+              inputMode="numeric"
+              value={logDraft.retentionDays}
+              onChange={(event) => setLogDraft((draft) => ({ ...draft, retentionDays: event.target.value }))}
+            />
+          </label>
+          <label className="pb-field compact">
+            <span>Rows</span>
+            <input
+              inputMode="numeric"
+              value={logDraft.retentionCount}
+              onChange={(event) => setLogDraft((draft) => ({ ...draft, retentionCount: event.target.value }))}
+            />
+          </label>
+          <button type="submit" className="pb-btn sm secondary">
+            Save
+          </button>
+        </form>
         <div className="pb-table-wrap">
           <table className="pb-records-table">
             <thead>
@@ -3259,7 +3638,7 @@ function LogsView({
             </thead>
             <tbody>
               {audit.items.map((entry) => (
-                <tr key={entry.id}>
+                <tr key={entry.id} className="clickable-row" onClick={() => setSelectedEntry(entry)}>
                   <td>{entry.action}</td>
                   <td>
                     {entry.targetType} {entry.targetId}
@@ -3310,7 +3689,70 @@ function LogsView({
         </div>
         <PageFooter left={`Showing ${audit.items.length} of ${totalItems}`} version={version} />
       </div>
+      {selectedEntry ? <AuditDetailDrawer entry={selectedEntry} onClose={() => setSelectedEntry(null)} onCopy={onCopy} /> : null}
     </section>
+  );
+}
+
+function AuditDetailDrawer({ entry, onClose, onCopy }: { entry: AuditEntry; onClose: () => void; onCopy: (text: string) => void }) {
+  const json = JSON.stringify(entry, null, 2);
+  const rows = [
+    ["id", entry.id],
+    ["adminId", entry.adminId ?? ""],
+    ["action", entry.action],
+    ["targetType", entry.targetType],
+    ["targetId", entry.targetId],
+    ["ip", entry.ip],
+    ["userAgent", entry.userAgent],
+    ["createdAt", entry.createdAt],
+    ["data", JSON.stringify(entry.data, null, 2)],
+  ];
+  function downloadJSON() {
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `dublyobase-log-${entry.id}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+  return (
+    <aside className="pb-detail-drawer" aria-label="Log details">
+      <header>
+        <div>
+          <h2>{entry.action}</h2>
+          <span>{formatDate(entry.createdAt)}</span>
+        </div>
+        <button type="button" className="pb-icon-btn" onClick={onClose} aria-label="Close log details">
+          <X className="h-4 w-4" />
+        </button>
+      </header>
+      <div className="pb-detail-actions">
+        <button type="button" className="pb-btn sm secondary" onClick={() => onCopy(json)}>
+          <Copy className="h-4 w-4" />
+          Copy JSON
+        </button>
+        <button type="button" className="pb-btn sm outline" onClick={downloadJSON}>
+          <Download className="h-4 w-4" />
+          Download JSON
+        </button>
+      </div>
+      <dl className="pb-detail-list">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>
+              <code>{value || "-"}</code>
+              <button type="button" className="pb-icon-btn" onClick={() => onCopy(value)} aria-label={`Copy ${label}`}>
+                <Copy className="h-3.5 w-3.5" />
+              </button>
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </aside>
   );
 }
 
@@ -3689,6 +4131,62 @@ function AuthSettingsPanel({
   "email": "user@example.com",
   "password": "password-123"
 }`}</pre>
+        </div>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Token durations</h2>
+        <div className="pb-inline-alert info">Current durations are fixed in the backend; editable project auth settings can use this same surface later without moving the API.</div>
+        <div className="pb-info-grid compact">
+          <Info label="Access token" value="1 hour" />
+          <Info label="Refresh token" value="7 days" />
+          <Info label="Email verification" value="24 hours" />
+          <Info label="Password reset" value="1 hour" />
+        </div>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Email templates</h2>
+        <div className="pb-template-grid">
+          <details open>
+            <summary>Verification email</summary>
+            <label className="pb-field">
+              <span>Subject</span>
+              <input value={`${project?.name ?? "App"} email verification`} readOnly />
+            </label>
+            <label className="pb-field">
+              <span>Body variables</span>
+              <textarea value="{APP_NAME}, {EMAIL}, {TOKEN}, {LINK}" readOnly rows={2} />
+            </label>
+          </details>
+          <details>
+            <summary>Password reset email</summary>
+            <label className="pb-field">
+              <span>Subject</span>
+              <input value={`${project?.name ?? "App"} password reset`} readOnly />
+            </label>
+            <label className="pb-field">
+              <span>Body variables</span>
+              <textarea value="{APP_NAME}, {EMAIL}, {TOKEN}, {LINK}" readOnly rows={2} />
+            </label>
+          </details>
+        </div>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Providers and factors</h2>
+        <div className="pb-provider-grid">
+          {[
+            ["OAuth providers", "Skeleton ready; provider callback routes are planned for the next auth milestone."],
+            ["One-time password", "Planned after OAuth so email delivery and rate limits share one path."],
+            ["Multi-factor auth", "Planned after OTP and recovery-code policy are designed."],
+            ["Email change", "Admin email change exists; app-user email change is planned for project auth settings."],
+          ].map(([label, note]) => (
+            <div key={label} className="pb-provider-tile disabled">
+              <ShieldCheck className="h-4 w-4" />
+              <span>
+                <strong>{label}</strong>
+                <em>{note}</em>
+              </span>
+            </div>
+          ))}
         </div>
       </section>
     </div>
@@ -5143,6 +5641,44 @@ function renderValue(value: unknown) {
   return JSON.stringify(value);
 }
 
+function sampleRecordPayload(collection: Collection): RecordItem {
+  const out: RecordItem = {};
+  for (const field of collection.fields.filter(isRecordFormField)) {
+    if (field.hidden || field.type === "password") continue;
+    out[field.name] = sampleValueForField(field);
+  }
+  return out;
+}
+
+function sampleUpdatePayload(collection: Collection): RecordItem {
+  const first = collection.fields.find((field) => isRecordFormField(field) && !field.hidden && field.type !== "password");
+  return first ? { [first.name]: sampleValueForField(first) } : {};
+}
+
+function sampleValueForField(field: Field): unknown {
+  if (field.type === "number") return field.options?.onlyInt ? 10 : 10.5;
+  if (field.type === "bool") return true;
+  if (field.type === "date") return "2026-07-04T00:00:00Z";
+  if (field.type === "email") return "user@example.com";
+  if (field.type === "url") return "https://example.com";
+  if (field.type === "select") {
+    const values = optionValues(field.options);
+    return fieldIsMultiple(field) ? values.slice(0, 2) : values[0] || "draft";
+  }
+  if (field.type === "json") return { source: "api" };
+  if (field.type === "relation") return fieldIsMultiple(field) ? ["record-id-1", "record-id-2"] : "record-id";
+  if (field.type === "editor") return "<p>Hello world</p>";
+  return "Hello world";
+}
+
+function pascalCase(value: string) {
+  return value
+    .split(/[^a-zA-Z0-9]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
+}
+
 function collectionIconFromOptions(collection: Collection): CollectionIconOption {
   return normalizeCollectionIcon(normalizeCollectionOptions(collection.options).icon, collection.type);
 }
@@ -5464,6 +6000,42 @@ function collectionRelationEdges(collections: Collection[]): RelationEdge[] {
   );
 }
 
+function collectionReverseRelations(collectionName: string, collections: Collection[]) {
+  return collections.flatMap((collection) =>
+    collection.fields
+      .filter((field) => field.type === "relation" && relationTargetName(field) === collectionName)
+      .map((field) => ({
+        collection: collection.name,
+        field: field.name,
+        multiple: fieldIsMultiple(field),
+      })),
+  );
+}
+
+function relationCardinality(field: Field) {
+  if (Boolean(field.options?.unique) && !fieldIsMultiple(field)) return "one-to-one";
+  return fieldIsMultiple(field) ? "many-to-one/many" : "many-to-one";
+}
+
+function collectionIndexHints(fields: Field[]) {
+  const hints: Array<{ kind: string; field: string; detail: string }> = [];
+  for (const field of fields) {
+    if (field.searchable && canSearchField(field)) {
+      hints.push({ kind: "search", field: field.name, detail: "Included in record search" });
+    }
+    if (field.type === "relation") {
+      hints.push({ kind: field.options?.unique ? "unique relation" : "relation", field: field.name, detail: `Targets ${relationTargetName(field) || "unconfigured collection"}` });
+    }
+    if (field.type === "email" && optionValues(field.options, "onlyDomains").length > 0) {
+      hints.push({ kind: "email constraint", field: field.name, detail: `Only ${optionValues(field.options, "onlyDomains").join(", ")}` });
+    }
+    if (field.type === "select") {
+      hints.push({ kind: "select constraint", field: field.name, detail: `${optionValues(field.options).length} allowed values` });
+    }
+  }
+  return hints;
+}
+
 function fieldMetaSummary(field: Field) {
   const parts = [];
   if (field.hidden) parts.push("hidden");
@@ -5683,6 +6255,13 @@ function settingsToStorageDraft(settings: InstanceSettings): typeof emptyStorage
   };
 }
 
+function settingsToLogDraft(settings: InstanceSettings): typeof emptyLogDraft {
+  return {
+    retentionDays: String(settings.logs.retentionDays || 30),
+    retentionCount: String(settings.logs.retentionCount || 100000),
+  };
+}
+
 function settingsToCORSDraft(settings: InstanceSettings | null, project: Project | null): typeof emptyCORSDraft {
   return {
     adminOrigins: (settings?.cors.adminOrigins ?? []).join("\n"),
@@ -5724,6 +6303,11 @@ function formatBytes(value: number) {
     unit += 1;
   }
   return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatCount(value: number) {
+  if (!Number.isFinite(value)) return "-";
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
 }
 
 function parseHeadersJSON(value: string): Record<string, string> {

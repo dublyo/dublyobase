@@ -32,6 +32,14 @@ func runOpsTick(ctx context.Context, app *App) {
 	if err := RunDueCronJobs(runCtx, app.Pool, time.Now().UTC()); err != nil {
 		app.Log.Warn("cron worker failed", "err", err)
 	}
+	logSettings, err := EffectiveLogSettings(runCtx, app.Pool)
+	if err != nil {
+		app.Log.Warn("log retention settings failed", "err", err)
+	} else if deleted, err := PruneAuditLog(runCtx, app.Pool, logSettings.RetentionDays, logSettings.RetentionCount); err != nil {
+		app.Log.Warn("log retention failed", "err", err)
+	} else if deleted > 0 {
+		app.Log.Info("log retention pruned audit rows", "deleted", deleted)
+	}
 	storageCfg, err := EffectiveStorageConfig(runCtx, app.Pool, app.Config)
 	if err != nil {
 		app.Log.Warn("backup worker storage config failed", "err", err)

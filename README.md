@@ -91,8 +91,10 @@ installs get the latest tested main build.
 
 - Embedded admin panel served from `/_/`.
 - Root `/` returns a generic restricted-service warning page.
-- Fixed empty-install bootstrap admin: `admin@example.com` / `dublyo`.
-- First login must change the bootstrap password before admin access is allowed.
+- Empty installs generate a one-time `admin@example.com` bootstrap password in
+  the container logs.
+- First login must change generated bootstrap passwords before admin access is
+  allowed.
 - Project creation and API key management.
 - PocketBase-inspired collection editor and record editor.
 - Settings screens for SMTP, storage, cron, backups, and MCP tokens.
@@ -110,9 +112,10 @@ Use [Dublyo PaaS](https://dublyo.com) for the simplest production path:
 1. Choose the Dublyobase app template.
 2. Pick PostgreSQL `16`, `17`, or `18`.
 3. Set your domain.
-4. Let Dublyo generate `JWT_SECRET` and the database password.
+4. Let Dublyo generate `JWT_SECRET`, the database password, and initial admin
+   credentials.
 5. Deploy the stack and open `https://your-domain/_/`.
-6. Log in with `admin@example.com` / `dublyo` and set a new admin password.
+6. Log in with the generated admin credential and set a new admin password.
 
 The template runs two services: Postgres and Dublyobase. TLS and routing are
 handled by the Dublyo platform.
@@ -174,9 +177,10 @@ docker run --rm -p 8080:8080 \
   ghcr.io/dublyo/dublyobase:main
 ```
 
-`DATABASE_URL`, `APP_URL`, and `JWT_SECRET` are required. On an empty install,
-Dublyobase seeds `admin@example.com` / `dublyo` and forces a password change
-before the control panel or admin APIs can be used.
+`DATABASE_URL`, `APP_URL`, and `JWT_SECRET` are required. On an empty install
+without `ADMIN_EMAIL`/`ADMIN_PASSWORD`, Dublyobase seeds `admin@example.com` with
+a generated one-time password, writes it once to the container logs, and forces a
+password change before the control panel or admin APIs can be used.
 
 Advanced deploys may set `ADMIN_EMAIL` and `ADMIN_PASSWORD` together to seed a
 custom first admin instead. Custom admin passwords must be at least 12
@@ -194,8 +198,8 @@ can also be managed from the admin panel after setup.
 | `JWT_SECRET` | Yes |  | At least 32 characters; used for signing and secret encryption. |
 | `HOST` | No | `0.0.0.0` | HTTP bind host. |
 | `PORT` | No | `8080` | HTTP bind port. |
-| `ADMIN_EMAIL` | No | `admin@example.com` | Optional override for the first admin email. |
-| `ADMIN_PASSWORD` | No | `dublyo` | Optional override for the first admin password. Custom values require 12+ characters. |
+| `ADMIN_EMAIL` | No | generated bootstrap email `admin@example.com` | Optional override for the first admin email. |
+| `ADMIN_PASSWORD` | No | generated one-time password | Optional override for the first admin password. Values require 12+ characters. |
 | `BCRYPT_COST` | No | `10` | Password hashing cost. |
 | `AUTH_DEV_TOKENS` | No | `false` | Returns auth action tokens in responses for development tests. |
 | `MAX_UPLOAD_MB` | No | `64` | Upload limit, 1 to 1024 MB. |
@@ -217,7 +221,7 @@ can also be managed from the admin panel after setup.
 | `MIGRATE_ON_START` | No | `true` | Run migrations at startup. |
 | `TRUST_PROXY_HEADERS` | No | `false` | Respect proxy headers from trusted proxies. Enable only behind a trusted proxy. |
 | `TRUSTED_PROXY_CIDRS` | No | private ranges | Comma-separated trusted proxy CIDRs. |
-| `CORS_ORIGINS` | No | `*` | Comma-separated allowed origins. |
+| `CORS_ORIGINS` | No | `APP_URL` origin | Comma-separated allowed origins. Runtime admin and project CORS can be managed in the panel. |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error`. |
 | `LOG_FORMAT` | No | `json` | `json` or `text`. |
 | `ENABLE_PGVECTOR` | No | `false` | Enables pgvector-related migrations when configured. |
@@ -229,13 +233,14 @@ can also be managed from the admin panel after setup.
 | Route | Description |
 |---|---|
 | `GET /health` | Health, database, storage, and version status. |
-| `GET /ready` | Readiness status during boot and migration. |
-| `POST /setup` | Create the first admin while no admin exists. |
+| `GET /ready` | Readiness status after the public listener is available. |
+| `POST /setup` | Manual first-admin creation only while no admin exists and the app is ready. Empty installs are seeded automatically. |
 | `POST /admin/api/auth/login` | Admin login. |
 | `POST /admin/api/auth/change-password` | Change the current admin password and unlock forced-change sessions. |
 | `POST /admin/api/auth/logout` | Revoke the current admin session. |
 | `GET /admin/api/me` | Current admin session. |
-| `GET /admin/api/audit-log` | Newest-first admin audit log. |
+| `GET /admin/api/audit-log` | Newest-first admin audit log with pagination and filters. |
+| `PUT /admin/api/settings/logs` | Configure audit log retention by age and row count. |
 
 ### Projects
 
@@ -343,9 +348,9 @@ avoid logging those URLs.
 ## Security Notes
 
 - Use a strong `JWT_SECRET`; it signs tokens and encrypts stored runtime secrets.
-- Change the bootstrap `admin@example.com` / `dublyo` password immediately after
-  first login. Forced-change sessions cannot access admin APIs until the
-  password is changed.
+- For empty installs, copy the generated bootstrap password from container logs
+  once and change it immediately after first login. Forced-change sessions cannot
+  access admin APIs until the password is changed.
 - Replace all sample passwords before exposing an instance.
 - Keep `AUTH_DEV_TOKENS=false` outside development.
 - Use HTTPS in production and set `APP_URL` to the public HTTPS URL.

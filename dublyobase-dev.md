@@ -1,11 +1,13 @@
 # dublyobase — Development Plan
 
 > An open-source, **Postgres-backed BaaS** in the spirit of PocketBase, modernized
-> for Postgres (RLS, pgvector, LISTEN/NOTIFY realtime). Ships as a **single Docker
+> for Postgres (RLS, pgvector, SSE realtime today, database-backed fanout planned).
+> Ships as a **single Docker
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.10.0 — M9 ops automation, backups, and scoped remote MCP complete
+**Status:** v0.10.x — M9 ops automation, scoped remote MCP, realtime SSE, and
+admin hardening complete
 (self-closing setup, opaque hashed admin sessions, protected admin/project APIs,
 project schema/role provisioning, collection metadata, transactional schema sync,
 records CRUD, API keys, RLS-backed rules, production SPA fallback hardening,
@@ -14,9 +16,10 @@ logout-all token invalidation, reset/verify tokens, local file fields/uploads,
 resumable chunk uploads, protected file tokens, thumbnails, delete cleanup, audit
 log, SMTP delivery for verify/reset emails, embedded Next/Tailwind admin panel,
 runtime SMTP/storage settings, S3-compatible storage, HTTP cron jobs, pg_dump
-backup jobs, scoped MCP tokens, a remote HTTP MCP endpoint, and real Postgres
-integration tests).
-Next: **M10 (realtime + webhooks)**.
+backup jobs, scoped MCP tokens, a remote HTTP MCP endpoint, generated bootstrap
+credentials, Directus-style filters/search, API Preview v2, SSE record events,
+and real Postgres integration tests).
+Next: **M10 (database-backed realtime fanout + webhooks)**.
 **Repo:** `github.com/dublyo/dublyobase` · **Image:** `ghcr.io/dublyo/dublyobase`
 **Local dev:** `/Users/dribrahimm/0-PostgresProject/dublyobase`
 
@@ -40,7 +43,8 @@ Plausible. They are **constraints, not preferences**.
    never require `docker exec`. No `CREATE DATABASE`; avoid `CREATE EXTENSION` unless
    superuser. Assume the DB exists. Migration runs are serialized with
    `pg_advisory_lock` so replicas can boot concurrently.
-4. **Cloudflare-tunnel-safe HTTP**: trust `X-Forwarded-Proto/-For` (`TRUST_PROXY_HEADERS`);
+4. **Cloudflare-tunnel-safe HTTP**: trust `X-Forwarded-Proto/-For` only when
+   explicitly enabled (`TRUST_PROXY_HEADERS`);
    standard WS upgrade (the logging middleware passes `http.Hijacker` /
    `ResponseController` through — keep it that way); WS idle-timeout ~90s + 30s
    heartbeats (tunnels die past ~100s); SSE flush per event + `Cache-Control:
@@ -51,10 +55,12 @@ Plausible. They are **constraints, not preferences**.
    JSON logs to **stdout**, never files; no `curl`/`npm` at runtime.
 6. **`/health` contract**: `200 {status:ok, db, storage, version}` / `503 degraded`,
    answer <3 s, **generic error strings only** (detail goes to logs — this route is
-   public); **`/ready`** = `503 {status:migrating}` until boot completes. The HTTP
-   listener starts **before** migrations so probes never see connection-refused.
-7. **Realtime = Postgres `LISTEN/NOTIFY`**, no Redis. One LISTEN conn per process,
-   fan out to WS/SSE subscribers by topic; rate-limit per subscriber.
+   public). Startup performs migrate + seed before binding the public listener so
+   the first visible state cannot expose an unseeded setup window. After bind,
+   **`/ready`** returns `200 {status:ready}`.
+7. **Realtime = in-process SSE today, Postgres fanout next**, no Redis. Current
+   SSE subscribers are per-process and rate-limited; M10 adds database-backed
+   `LISTEN/NOTIFY` fanout and WebSocket parity for multi-replica deployments.
 8. **RLS is the killer feature.** Auto-generated per-collection policies, overridable
    in the admin UI. Deny → `403 {error:rls_denied, policy}`, never a mystery 500.
 9. **Extensibility via outbound webhooks**, not embedded JS. No scripting runtime in v1.
@@ -62,7 +68,8 @@ Plausible. They are **constraints, not preferences**.
     (`db` + `app`), `restart: unless-stopped`, db healthcheck + `depends_on:
     service_healthy`, **`PGDATA=/var/lib/postgresql/data` pinned** (postgres:18 moved
     its volume layout — without the pin, data lands in an anonymous volume and is
-    lost on recreate), Traefik label to 8080, `ADMIN_EMAIL`/`ADMIN_PASSWORD` seeded.
+    lost on recreate), Traefik label to 8080, generated bootstrap credentials logged
+    once unless `ADMIN_EMAIL`/`ADMIN_PASSWORD` are explicitly provided.
 11. **CI/release**: every published image is **test-gated** (`image` job `needs: test`
     with a real Postgres service). Tags: `:vX.Y.Z` + `:latest` on version tags,
     `:main` + `:main-<sha>` on main, nightly rebuild of `:main`. Templates pin exact
@@ -81,8 +88,10 @@ Plausible. They are **constraints, not preferences**.
 
 **One stateless Go process** serving everything on `:8080`, talking to an **external
 Postgres** given by `DATABASE_URL`. State lives in Postgres and the `/data` volume
-(local file storage). Multiple replicas are safe: migrations take an advisory lock,
-seeds are conflict-tolerant, realtime is coordinated through `LISTEN/NOTIFY`.
+(local file storage). Multiple replicas are safe for migrations and writes:
+migrations take an advisory lock, seeds are conflict-tolerant, and cron/backup
+workers use advisory locks. Realtime events currently fan out inside one process;
+M10 moves event fanout to Postgres `LISTEN/NOTIFY` for multi-replica subscribers.
 
 ```
    Internet ── Cloudflare Tunnel ── Traefik (TLS) ──► dublyobase :8080  (one Go binary)
@@ -115,8 +124,8 @@ golang-jwt/v5 · fexpr (rules) · stdlib SMTP · **Next.js static export + Tailw
 DATABASE_URL   required   postgres://user:pass@host:5432/db?sslmode=disable
 APP_URL        required   https://app.dublyo.xyz — every link/callback/webhook uses this
 JWT_SECRET     required   >=32 chars (trimmed); refuse to start if missing/short
-ADMIN_EMAIL    optional   seed first admin on empty DB (with ADMIN_PASSWORD)
-ADMIN_PASSWORD optional
+ADMIN_EMAIL    optional   seed first admin email on empty DB (with ADMIN_PASSWORD)
+ADMIN_PASSWORD optional   seed first admin password; 12+ chars when set
 BCRYPT_COST    default 10      app-user bcrypt cost (valid bcrypt range)
 AUTH_DEV_TOKENS default false  expose reset/verify dev tokens only for local tests
 STORAGE_TYPE   local|s3   default local
@@ -124,8 +133,8 @@ STORAGE_LOCAL_PATH        default /data/storage
 MAX_UPLOAD_MB  default 64      max multipart upload size and resumable final object size
 S3_ENDPOINT S3_BUCKET S3_ACCESS_KEY S3_SECRET_KEY S3_REGION
 MIGRATE_ON_START    default true    (strict bool; typos exit 1)
-TRUST_PROXY_HEADERS default true
-CORS_ORIGINS        default *       (comma-separated exact origins)
+TRUST_PROXY_HEADERS default false
+CORS_ORIGINS        default APP_URL origin (comma-separated exact origins)
 LOG_LEVEL  debug|info|warn|error    default info
 LOG_FORMAT json|text                default json
 ENABLE_PGVECTOR default false       (true only if the extension is installed)
@@ -150,10 +159,10 @@ correct HTTP status (400/401/403/404/409/422/429/500). RLS denials are
 | Area | Routes |
 |---|---|
 | Meta | `GET /health` · `GET /ready` (implemented) |
-| Setup | `POST /setup` — creates first admin **only while `_dbo.admins` is empty**, then 410 forever; rate-limited |
+| Setup | `POST /setup` — manual first-admin creation **only while `_dbo.admins` is empty** and the app is ready; empty installs are automatically seeded with a generated one-time bootstrap password |
 | Admin auth | `POST /admin/api/auth/login` (email+password → opaque session token) · `POST .../logout` · `GET .../me` |
 | Control plane | `GET/POST /admin/api/projects` · `GET/PATCH/DELETE /admin/api/projects/{slug}` — **every `/admin/api/*` route behind auth middleware** (postbase's fatal bug: UI-only gating) |
-| Audit | `GET /admin/api/audit-log?project=&page=&perPage=` — admin-auth required, newest first, secret-like data redacted |
+| Audit | `GET /admin/api/audit-log?project=&action=&target=&search=&page=&perPage=` — admin-auth required, newest first, secret-like data redacted |
 | Collections | `GET/POST /api/projects/{slug}/collections` · `GET/PATCH/DELETE .../collections/{name}` (admin-auth for writes) |
 | Records | `GET/POST /api/projects/{slug}/collections/{name}/records` · `GET/PATCH/DELETE .../records/{id}` |
 | App auth | `POST /api/projects/{slug}/auth/signup` · `/auth/login` · `/auth/refresh` · `/auth/logout` · `/auth/logout-all` · `GET /auth/me` · `/auth/request-password-reset` · `/auth/confirm-password-reset` · `/auth/request-verification` · `/auth/confirm-verification` · OAuth: `GET /api/projects/{slug}/auth/oauth/{provider}` + `/callback` (later auth milestone) |
@@ -161,7 +170,7 @@ correct HTTP status (400/401/403/404/409/422/429/500). RLS denials are
 | Cron jobs | `GET/POST /admin/api/cron-jobs` · `GET /admin/api/cron-jobs/{id}/runs` · `POST /admin/api/cron-jobs/{id}/run` |
 | Backups | `GET/POST /admin/api/backups` · `GET /admin/api/backups/{id}/runs` · `POST /admin/api/backups/{id}/run` |
 | MCP | `GET/POST/DELETE /admin/api/mcp/tokens` · `POST /mcp` (`initialize`, `tools/list`, `tools/call`) |
-| Realtime | `GET /api/projects/{slug}/realtime` (SSE) · `GET .../realtime/ws` (WebSocket); subscribe topics `collection` or `collection/recordId` (M10) |
+| Realtime | `GET /api/projects/{slug}/realtime` (SSE implemented; in-process fanout today) · `GET .../realtime/ws` (M10); subscribe by `collection` and `events=create,update,delete` |
 | Webhooks | `GET/POST/DELETE /admin/api/projects/{slug}/hooks` (M10) |
 
 **Records list params:** `?page=1&perPage=30` (max 500), `sort=-created,title`,
@@ -224,8 +233,9 @@ outside the tx.
 - **Seeds / one-time writes**: always `ON CONFLICT DO NOTHING` + count-guard.
 - **Cron-like work** (log retention, webhook retries): `pg_try_advisory_lock` per
   task — winner runs, losers skip; never assume a single instance.
-- **Realtime**: events flow through `LISTEN/NOTIFY`, so every replica sees writes
-  regardless of which one handled the mutation.
+- **Realtime**: current SSE fanout is per process. M10 moves record events through
+  `LISTEN/NOTIFY` so every replica sees writes regardless of which one handled the
+  mutation.
 - **Graceful shutdown**: `srv.Shutdown` is awaited (drain in-flight, incl. SSE/WS)
   before the pool closes.
 
@@ -393,7 +403,7 @@ against a disposable PostgreSQL 16 cluster.
   collections and records through scoped tools, Postgres integration test is green
   against a real remote database, and UI/backend builds pass.
 
-### M10 — Realtime + webhooks  →  v0.11.0
+### M10 — Database-backed realtime fanout + webhooks  →  v0.11.0
 - [ ] `NOTIFY dbo_events, <json>` triggers on collection tables; one LISTEN conn
       per process; WS (+SSE fallback) endpoint with 30s heartbeat, 90s idle timeout,
       per-subscriber buffer with slow-client drop; subscribe respects list rules
@@ -405,7 +415,8 @@ against a disposable PostgreSQL 16 cluster.
 
 ### M11 — Ops hardening → v1.0.0
 - [ ] Backup archive download/restore doc
-- [ ] Log retention cron (advisory-lock guarded); request/audit log viewer in panel
+- [x] Log retention worker (advisory-lock guarded) and filtered audit log viewer
+      with row details/export in panel
 - [ ] pgvector opt-in (`ENABLE_PGVECTOR` gates a `vector` field type; docs: DBA runs
       `CREATE EXTENSION vector` first)
 - [ ] Docs site content (README quickstart, self-host guide, API reference from spec)
@@ -435,10 +446,10 @@ against a disposable PostgreSQL 16 cluster.
 ## 10. v1.0 test checklist (tip 13)
 
 - [x] Cold start → `/health` 200 in <30 s (verified vs postgres:16)
-- [x] Fresh Postgres → migrations run → admin seeded from ENV
+- [x] Fresh Postgres → migrations run → generated bootstrap admin seeded
 - [x] Missing/typo'd required ENV → exit 1 with clear message
 - [x] Restart/second replica → no data loss, no re-init, no race (advisory-lock test)
-- [x] `/ready` reports `migrating` during boot (listener starts pre-migration)
+- [x] Public listener binds only after migrate + seed, closing the setup race
 - [ ] Realtime WS open 5 min with heartbeat through the tunnel (M10)
 - [ ] 50 MB upload without proxy timeout, constant memory (M5)
 - [ ] OAuth callback with `APP_URL=https://foo.dublyo.xyz` redirects correctly

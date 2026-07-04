@@ -149,7 +149,7 @@ func TestSeedAdminNeverOverwrites(t *testing.T) {
 	}
 }
 
-func TestSeedAdminDefaultsToBootstrapCredential(t *testing.T) {
+func TestSeedAdminDefaultsToGeneratedBootstrapCredential(t *testing.T) {
 	pool := testPool(t)
 	dropDbo(t, pool)
 	ctx := context.Background()
@@ -167,6 +167,6 @@ func TestSeedAdminDefaultsToBootstrapCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	if email != BootstrapAdminEmail || !mustChange {
-		t.Fatalf("seeded admin = %q mustChange=%v, want bootstrap forced-change admin", email, mustChange)
+		t.Fatalf("seeded admin = %q mustChange=%v, want generated forced-change bootstrap admin", email, mustChange)
 	}
 }

@@ -70,6 +70,7 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("PUT /admin/api/settings/storage", s.requireAdminReady(http.HandlerFunc(s.adminUpdateStorageSettings)))
 	mux.Handle("POST /admin/api/settings/storage/test", s.requireAdminReady(http.HandlerFunc(s.adminTestStorageSettings)))
 	mux.Handle("PUT /admin/api/settings/cors", s.requireAdminReady(http.HandlerFunc(s.adminUpdateCORSSettings)))
+	mux.Handle("PUT /admin/api/settings/logs", s.requireAdminReady(http.HandlerFunc(s.adminUpdateLogSettings)))
 	mux.Handle("GET /admin/api/cron-jobs", s.requireAdminReady(http.HandlerFunc(s.adminListCronJobs)))
 	mux.Handle("POST /admin/api/cron-jobs", s.requireAdminReady(http.HandlerFunc(s.adminCreateCronJob)))
 	mux.Handle("GET /admin/api/cron-jobs/{id}/runs", s.requireAdminReady(http.HandlerFunc(s.adminListCronRuns)))
@@ -265,7 +266,7 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ready is 503 while migrations run, 200 once the app can serve traffic.
+// ready is 503 until startup work has completed, then 200 once the app can serve traffic.
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	if !s.app.Ready() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "migrating"})

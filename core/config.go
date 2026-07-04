@@ -64,7 +64,7 @@ type Config struct {
 	S3ForcePathStyle bool        // S3_FORCE_PATH_STYLE (default true)
 
 	MigrateOnStart        bool     // MIGRATE_ON_START (default true)
-	TrustProxyHeaders     bool     // TRUST_PROXY_HEADERS (default true)
+	TrustProxyHeaders     bool     // TRUST_PROXY_HEADERS (default false)
 	TrustedProxyCIDRs     []string // TRUSTED_PROXY_CIDRS (comma-separated; default private Docker/LAN ranges)
 	CORSOrigins           []string // CORS_ORIGINS (comma-separated; default APP_URL origin)
 	CORSOriginsConfigured bool     // true when CORS_ORIGINS was explicitly provided
@@ -209,7 +209,7 @@ func (c *Config) Validate() error {
 	if (c.AdminEmail == "") != (strings.TrimSpace(c.AdminPassword) == "") {
 		return fmt.Errorf("ADMIN_EMAIL and ADMIN_PASSWORD must be set together")
 	}
-	if c.AdminPassword != "" && len(c.AdminPassword) < minAdminPasswordSize && !IsBootstrapAdminCredential(c.AdminEmail, c.AdminPassword) {
+	if c.AdminPassword != "" && len(c.AdminPassword) < minAdminPasswordSize {
 		return fmt.Errorf("ADMIN_PASSWORD must be at least %d characters", minAdminPasswordSize)
 	}
 	if c.BcryptCost < bcrypt.MinCost || c.BcryptCost > bcrypt.MaxCost {

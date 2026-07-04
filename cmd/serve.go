@@ -58,18 +58,9 @@ func runServe() error {
 
 	app := core.NewApp(cfg, pool, log)
 
-	// 3. Start listening BEFORE migrations so /health answers and /ready can
-	//    honestly report {status: migrating} during boot — otherwise health
-	//    probes see connection-refused and orchestrators kill a migrating
-	//    container.
-	srv := apis.NewServer(app)
-	serveErr := make(chan error, 1)
-	go func() {
-		log.Info("listening", "addr", cfg.Addr())
-		serveErr <- srv.ListenAndServe()
-	}()
-
-	// 4. Migrate + seed, then flip ready.
+	// 3. Migrate + seed before binding the public listener. This avoids any
+	// setup-window ambiguity during cold boot and guarantees the first visible
+	// admin state is the seeded state.
 	if cfg.MigrateOnStart {
 		if err := core.Migrate(ctx, pool, log); err != nil {
 			log.Error("migration failed", "err", err)
@@ -88,6 +79,14 @@ func runServe() error {
 	app.SetReady(true)
 	go core.StartOpsWorker(ctx, app, time.Minute)
 	log.Info("ready")
+
+	// 4. Start serving after the app is ready.
+	srv := apis.NewServer(app)
+	serveErr := make(chan error, 1)
+	go func() {
+		log.Info("listening", "addr", cfg.Addr())
+		serveErr <- srv.ListenAndServe()
+	}()
 
 	// 5. Wait for shutdown or a server error; drain connections fully before
 	//    closing the pool (Shutdown must be awaited, not fired-and-forgotten).

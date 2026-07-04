@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +48,17 @@ type AuditLogListResult struct {
 	TotalItems int             `json:"totalItems"`
 }
 
+type AuditLogFilter struct {
+	Project string
+	Action  string
+	Target  string
+	Search  string
+	Page    int
+	PerPage int
+}
+
+const auditRetentionAdvisoryLockID = int64(326_326_009)
+
 func InsertAudit(ctx context.Context, exec auditExecer, event AuditEvent) error {
 	data := []byte(`{}`)
 	if event.Data != nil {
@@ -71,6 +83,12 @@ func InsertAudit(ctx context.Context, exec auditExecer, event AuditEvent) error 
 }
 
 func ListAuditLog(ctx context.Context, pool *pgxpool.Pool, projectSlug string, page int, perPage int) (*AuditLogListResult, error) {
+	return ListAuditLogFiltered(ctx, pool, AuditLogFilter{Project: projectSlug, Page: page, PerPage: perPage})
+}
+
+func ListAuditLogFiltered(ctx context.Context, pool *pgxpool.Pool, filter AuditLogFilter) (*AuditLogListResult, error) {
+	page := filter.Page
+	perPage := filter.PerPage
 	if page < 1 {
 		page = 1
 	}
@@ -80,15 +98,44 @@ func ListAuditLog(ctx context.Context, pool *pgxpool.Pool, projectSlug string, p
 	if perPage > 500 {
 		perPage = 500
 	}
-	projectSlug = NormalizeProjectSlug(projectSlug)
+	projectSlug := NormalizeProjectSlug(filter.Project)
 	args := []any{}
-	where := ""
+	clauses := []string{}
 	if projectSlug != "" {
 		if err := ValidateProjectSlug(projectSlug); err != nil {
 			return nil, err
 		}
 		args = append(args, projectSlug)
-		where = `where (data->>'project' = $1 or data->>'slug' = $1)`
+		clauses = append(clauses, `(data->>'project' = $1 or data->>'slug' = $1)`)
+	}
+	action := strings.TrimSpace(filter.Action)
+	if action != "" {
+		if len(action) > 120 {
+			return nil, fmt.Errorf("%w: audit action filter is too long", ErrValidation)
+		}
+		args = append(args, action)
+		clauses = append(clauses, `action = $`+strconv.Itoa(len(args)))
+	}
+	target := strings.TrimSpace(filter.Target)
+	if target != "" {
+		if len(target) > 160 {
+			return nil, fmt.Errorf("%w: audit target filter is too long", ErrValidation)
+		}
+		args = append(args, "%"+strings.ToLower(target)+"%")
+		clauses = append(clauses, `(lower(target_type) like $`+strconv.Itoa(len(args))+` or lower(target_id) like $`+strconv.Itoa(len(args))+`)`)
+	}
+	search := strings.TrimSpace(filter.Search)
+	if search != "" {
+		if len(search) > 200 {
+			return nil, fmt.Errorf("%w: audit search is too long", ErrValidation)
+		}
+		args = append(args, "%"+strings.ToLower(search)+"%")
+		pos := strconv.Itoa(len(args))
+		clauses = append(clauses, `(lower(action) like $`+pos+` or lower(target_type) like $`+pos+` or lower(target_id) like $`+pos+` or lower(ip) like $`+pos+` or lower(user_agent) like $`+pos+` or lower(data::text) like $`+pos+`)`)
+	}
+	where := ""
+	if len(clauses) > 0 {
+		where = "where " + strings.Join(clauses, " and ")
 	}
 
 	result := &AuditLogListResult{Items: make([]AuditLogEntry, 0), Page: page, PerPage: perPage}
@@ -140,6 +187,55 @@ func ListAuditLog(ctx context.Context, pool *pgxpool.Pool, projectSlug string, p
 		result.Items = append(result.Items, entry)
 	}
 	return result, rows.Err()
+}
+
+func PruneAuditLog(ctx context.Context, pool *pgxpool.Pool, retentionDays int, retentionCount int) (int64, error) {
+	if retentionDays < 1 {
+		retentionDays = defaultLogRetentionDays
+	}
+	if retentionCount < 100 {
+		retentionCount = defaultLogRetentionCount
+	}
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Release()
+
+	var locked bool
+	if err := conn.QueryRow(ctx, `select pg_try_advisory_lock($1)`, auditRetentionAdvisoryLockID).Scan(&locked); err != nil {
+		return 0, err
+	}
+	if !locked {
+		return 0, nil
+	}
+	defer conn.Exec(context.Background(), `select pg_advisory_unlock($1)`, auditRetentionAdvisoryLockID)
+
+	ageTag, err := conn.Exec(ctx, `
+		delete from _dbo.audit_log
+		where created_at < now() - ($1::text || ' days')::interval`,
+		retentionDays,
+	)
+	if err != nil {
+		return 0, err
+	}
+	countTag, err := conn.Exec(ctx, `
+		delete from _dbo.audit_log
+		where id in (
+			select id
+			from (
+				select id, row_number() over (order by created_at desc, id desc) as rn
+				from _dbo.audit_log
+			) ranked
+			where rn > $1
+		)`,
+		retentionCount,
+	)
+	if err != nil {
+		return ageTag.RowsAffected(), err
+	}
+	return ageTag.RowsAffected() + countTag.RowsAffected(), nil
 }
 
 func redactAuditData(data map[string]any) map[string]any {

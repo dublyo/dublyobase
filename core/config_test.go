@@ -95,17 +95,13 @@ func TestLoadConfigAllowsExplicitWildcardCORS(t *testing.T) {
 	}
 }
 
-func TestLoadConfigAllowsFixedBootstrapAdmin(t *testing.T) {
+func TestLoadConfigRejectsOldFixedBootstrapAdmin(t *testing.T) {
 	setRequired(t)
 	t.Setenv("ADMIN_EMAIL", BootstrapAdminEmail)
-	t.Setenv("ADMIN_PASSWORD", BootstrapAdminPassword)
+	t.Setenv("ADMIN_PASSWORD", "dublyo")
 
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("bootstrap admin config should be valid: %v", err)
-	}
-	if !IsBootstrapAdminCredential(cfg.AdminEmail, cfg.AdminPassword) {
-		t.Fatalf("unexpected bootstrap config: %q", cfg.AdminEmail)
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "ADMIN_PASSWORD") {
+		t.Fatalf("old fixed bootstrap password must be rejected, got: %v", err)
 	}
 }
 

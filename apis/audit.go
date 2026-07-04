@@ -7,12 +7,17 @@ import (
 )
 
 func (s *server) adminListAuditLog(w http.ResponseWriter, r *http.Request) {
-	result, err := core.ListAuditLog(
+	result, err := core.ListAuditLogFiltered(
 		r.Context(),
 		s.app.Pool,
-		r.URL.Query().Get("project"),
-		queryInt(r, "page", 1),
-		queryInt(r, "perPage", 30),
+		core.AuditLogFilter{
+			Project: r.URL.Query().Get("project"),
+			Action:  r.URL.Query().Get("action"),
+			Target:  r.URL.Query().Get("target"),
+			Search:  r.URL.Query().Get("search"),
+			Page:    queryInt(r, "page", 1),
+			PerPage: queryInt(r, "perPage", 30),
+		},
 	)
 	if err != nil {
 		writeCoreError(w, err)
