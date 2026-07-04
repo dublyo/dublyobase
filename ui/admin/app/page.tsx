@@ -513,6 +513,21 @@ export default function AdminApp() {
   }, [collectionsProject, handleError, selectedCollection, selectedCollectionModel, selectedProject, token]);
 
   useEffect(() => {
+    if (!token || view !== "settings" || settingsSection !== "crons") return;
+    let cancelled = false;
+    listCronJobs(token)
+      .then((response) => {
+        if (!cancelled) setCronJobs(response.items);
+      })
+      .catch((error) => {
+        if (!cancelled) handleError(error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [handleError, settingsSection, token, view]);
+
+  useEffect(() => {
     if (!selectedCollectionModel) {
       setEditingFields([]);
       setEditingRules(emptyRules);
