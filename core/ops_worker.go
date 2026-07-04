@@ -32,6 +32,9 @@ func runOpsTick(ctx context.Context, app *App) {
 	if err := RunDueCronJobs(runCtx, app.Pool, time.Now().UTC()); err != nil {
 		app.Log.Warn("cron worker failed", "err", err)
 	}
+	if err := RunDueWebhookDeliveries(runCtx, app.Pool, app.Config, time.Now().UTC()); err != nil {
+		app.Log.Warn("webhook worker failed", "err", err)
+	}
 	logSettings, err := EffectiveLogSettings(runCtx, app.Pool)
 	if err != nil {
 		app.Log.Warn("log retention settings failed", "err", err)
@@ -39,6 +42,13 @@ func runOpsTick(ctx context.Context, app *App) {
 		app.Log.Warn("log retention failed", "err", err)
 	} else if deleted > 0 {
 		app.Log.Info("log retention pruned audit rows", "deleted", deleted)
+	}
+	if logSettings.RetentionDays > 0 {
+		if deleted, err := PruneRequestLogs(runCtx, app.Pool, logSettings.RetentionDays, logSettings.RetentionCount); err != nil {
+			app.Log.Warn("request log retention failed", "err", err)
+		} else if deleted > 0 {
+			app.Log.Info("log retention pruned request rows", "deleted", deleted)
+		}
 	}
 	storageCfg, err := EffectiveStorageConfig(runCtx, app.Pool, app.Config)
 	if err != nil {

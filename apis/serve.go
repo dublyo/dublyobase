@@ -25,6 +25,7 @@ type server struct {
 	mcpLimiter            *rateLimiter
 	realtimeLimiter       *rateLimiter
 	realtime              *realtimeHub
+	realtimeSourceID      string
 }
 
 // NewServer builds the HTTP server for an App.
@@ -38,6 +39,7 @@ func NewServer(app *core.App) *http.Server {
 		mcpLimiter:            newRateLimiter(120, time.Minute),
 		realtimeLimiter:       newRateLimiter(60, time.Minute),
 		realtime:              newRealtimeHub(),
+		realtimeSourceID:      newRealtimeSourceID(),
 	}
 
 	mux := http.NewServeMux()
@@ -55,6 +57,12 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("POST /admin/api/projects", s.requireAdminReady(http.HandlerFunc(s.adminCreateProject)))
 	mux.Handle("GET /admin/api/projects/{slug}", s.requireAdminReady(http.HandlerFunc(s.adminGetProject)))
 	mux.Handle("PUT /admin/api/projects/{slug}/cors", s.requireAdminReady(http.HandlerFunc(s.adminUpdateProjectCORS)))
+	mux.Handle("GET /admin/api/projects/{slug}/auth-settings", s.requireAdminReady(http.HandlerFunc(s.adminGetProjectAuthSettings)))
+	mux.Handle("PUT /admin/api/projects/{slug}/auth-settings", s.requireAdminReady(http.HandlerFunc(s.adminUpdateProjectAuthSettings)))
+	mux.Handle("GET /admin/api/projects/{slug}/webhooks", s.requireAdminReady(http.HandlerFunc(s.adminListWebhooks)))
+	mux.Handle("POST /admin/api/projects/{slug}/webhooks", s.requireAdminReady(http.HandlerFunc(s.adminCreateWebhook)))
+	mux.Handle("DELETE /admin/api/projects/{slug}/webhooks/{id}", s.requireAdminReady(http.HandlerFunc(s.adminDeleteWebhook)))
+	mux.Handle("GET /admin/api/projects/{slug}/webhooks/{id}/deliveries", s.requireAdminReady(http.HandlerFunc(s.adminListWebhookDeliveries)))
 	mux.Handle("GET /admin/api/projects/{slug}/api-keys", s.requireAdminReady(http.HandlerFunc(s.adminListAPIKeys)))
 	mux.Handle("POST /admin/api/projects/{slug}/api-keys", s.requireAdminReady(http.HandlerFunc(s.adminCreateAPIKey)))
 	mux.Handle("DELETE /admin/api/projects/{slug}/api-keys/{id}", s.requireAdminReady(http.HandlerFunc(s.adminRevokeAPIKey)))
@@ -64,6 +72,7 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("POST /admin/api/projects/{slug}/schema/import", s.requireAdminReady(http.HandlerFunc(s.adminImportSchemaTables)))
 	mux.Handle("POST /admin/api/projects/{slug}/sql", s.requireAdminReady(http.HandlerFunc(s.adminRunSQL)))
 	mux.Handle("GET /admin/api/audit-log", s.requireAdminReady(http.HandlerFunc(s.adminListAuditLog)))
+	mux.Handle("GET /admin/api/request-logs", s.requireAdminReady(http.HandlerFunc(s.adminListRequestLogs)))
 	mux.Handle("GET /admin/api/settings", s.requireAdminReady(http.HandlerFunc(s.adminGetSettings)))
 	mux.Handle("PUT /admin/api/settings/smtp", s.requireAdminReady(http.HandlerFunc(s.adminUpdateSMTPSettings)))
 	mux.Handle("POST /admin/api/settings/smtp/test", s.requireAdminReady(http.HandlerFunc(s.adminTestSMTPSettings)))
@@ -79,6 +88,8 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("POST /admin/api/backups", s.requireAdminReady(http.HandlerFunc(s.adminCreateBackupJob)))
 	mux.Handle("GET /admin/api/backups/{id}/runs", s.requireAdminReady(http.HandlerFunc(s.adminListBackupRuns)))
 	mux.Handle("POST /admin/api/backups/{id}/run", s.requireAdminReady(http.HandlerFunc(s.adminRunBackupJob)))
+	mux.Handle("GET /admin/api/backups/{id}/runs/{runId}/download", s.requireAdminReady(http.HandlerFunc(s.adminDownloadBackupRun)))
+	mux.Handle("POST /admin/api/restores", s.requireAdminReady(http.HandlerFunc(s.adminRestoreBackup)))
 	mux.Handle("GET /admin/api/mcp/tokens", s.requireAdminReady(http.HandlerFunc(s.adminListMCPTokens)))
 	mux.Handle("POST /admin/api/mcp/tokens", s.requireAdminReady(http.HandlerFunc(s.adminCreateMCPToken)))
 	mux.Handle("DELETE /admin/api/mcp/tokens/{id}", s.requireAdminReady(http.HandlerFunc(s.adminRevokeMCPToken)))
@@ -87,17 +98,22 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("POST /auth/verify", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.authVerifySubmit)))
 	mux.Handle("GET /auth/reset-password", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.authResetPasswordPage)))
 	mux.Handle("POST /auth/reset-password", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.authResetPasswordSubmit)))
+	mux.Handle("GET /auth/email-change", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.authEmailChangePage)))
+	mux.Handle("POST /auth/email-change", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.authEmailChangeSubmit)))
 	mux.Handle("POST /api/projects/{slug}/auth/signup", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appSignup)))
 	mux.Handle("POST /api/projects/{slug}/auth/login", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogin)))
 	mux.Handle("POST /api/projects/{slug}/auth/refresh", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRefresh)))
 	mux.Handle("POST /api/projects/{slug}/auth/logout", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogout)))
 	mux.Handle("POST /api/projects/{slug}/auth/logout-all", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogoutAll)))
 	mux.Handle("GET /api/projects/{slug}/auth/me", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appMe)))
+	mux.Handle("POST /api/projects/{slug}/auth/request-email-change", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRequestEmailChange)))
+	mux.Handle("POST /api/projects/{slug}/auth/confirm-email-change", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appConfirmEmailChange)))
 	mux.Handle("POST /api/projects/{slug}/auth/request-verification", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRequestVerification)))
 	mux.Handle("POST /api/projects/{slug}/auth/confirm-verification", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appConfirmVerification)))
 	mux.Handle("POST /api/projects/{slug}/auth/request-password-reset", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRequestPasswordReset)))
 	mux.Handle("POST /api/projects/{slug}/auth/confirm-password-reset", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appConfirmPasswordReset)))
 	mux.Handle("GET /api/projects/{slug}/realtime", s.limitByIP("realtime", s.realtimeLimiter, http.HandlerFunc(s.realtimeStream)))
+	mux.HandleFunc("POST /api/projects/{slug}/batch", s.batchRecords)
 	mux.Handle("GET /api/projects/{slug}/collections", s.requireAdminReady(http.HandlerFunc(s.listCollections)))
 	mux.Handle("POST /api/projects/{slug}/collections", s.requireAdminReady(http.HandlerFunc(s.createCollection)))
 	mux.Handle("GET /api/projects/{slug}/collections/{name}", s.requireAdminReady(http.HandlerFunc(s.getCollection)))
@@ -117,7 +133,7 @@ func NewServer(app *core.App) *http.Server {
 	mux.HandleFunc("GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}", s.downloadFile)
 	mux.Handle("/", adminUIHandler(ui.DistFS()))
 
-	return &http.Server{
+	srv := &http.Server{
 		Addr:              app.Config.Addr(),
 		Handler:           s.withMiddleware(mux),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -126,6 +142,10 @@ func NewServer(app *core.App) *http.Server {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+	fanoutCtx, cancelFanout := context.WithCancel(context.Background())
+	srv.RegisterOnShutdown(cancelFanout)
+	go s.runRealtimeFanout(fanoutCtx)
+	return srv
 }
 
 // adminUIHandler serves static admin assets, exposes the admin SPA only below

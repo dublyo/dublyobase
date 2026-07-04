@@ -559,7 +559,7 @@ Before tagging `v0.4.0`, run the full suite against PostgreSQL 16, 17, and 18.
 12. Map `record_not_found`, `invalid_filter`, `invalid_rule`, and `rls_denied`.
 13. Add unit tests.
 14. Add real Postgres integration tests.
-15. Update README and roadmap only after implementation is complete.
+15. Update README and docs only after implementation is complete.
 16. Run real PostgreSQL 16/17/18 validation before tagging `v0.4.0`.
 
 ## Acceptance Criteria

@@ -19,6 +19,10 @@ type emailRequest struct {
 	Email string `json:"email"`
 }
 
+type emailChangeRequest struct {
+	NewEmail string `json:"newEmail"`
+}
+
 type confirmVerificationRequest struct {
 	Email string `json:"email"`
 	Token string `json:"token"`
@@ -149,6 +153,58 @@ func (s *server) appMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user": user})
 }
 
+func (s *server) appRequestEmailChange(w http.ResponseWriter, r *http.Request) {
+	project, user, err := core.ResolveAppAccessToken(r.Context(), s.app.Pool, s.app.Config, r.PathValue("slug"), bearerToken(r), time.Now())
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	var req emailChangeRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := core.RequestEmailChange(
+		r.Context(),
+		s.app.Pool,
+		s.app.Config,
+		project.Slug,
+		user.ID,
+		req.NewEmail,
+		s.clientIP(r),
+		r.UserAgent(),
+		time.Now(),
+	)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	s.deliverAuthTokenEmail(r.Context(), project.Slug, result)
+	writeJSON(w, http.StatusAccepted, result)
+}
+
+func (s *server) appConfirmEmailChange(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	user, err := core.ConfirmEmailChange(
+		r.Context(),
+		s.app.Pool,
+		r.PathValue("slug"),
+		req.Token,
+		s.clientIP(r),
+		r.UserAgent(),
+		time.Now(),
+	)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": user})
+}
+
 func (s *server) appRequestVerification(w http.ResponseWriter, r *http.Request) {
 	var req emailRequest
 	if !decodeJSON(w, r, &req) {
@@ -252,7 +308,12 @@ func (s *server) deliverAuthTokenEmail(ctx context.Context, projectSlug string, 
 		msgCfg = effectiveCfg
 		mailer = core.NewMailer(effectiveCfg)
 	}
-	msg, err := core.BuildAuthTokenEmail(msgCfg, result.Type, projectSlug, result.ProjectName, result.Email, result.Token)
+	authSettings, err := core.GetProjectAuthSettings(ctx, s.app.Pool, projectSlug)
+	if err != nil {
+		s.app.Log.Warn("auth email project settings load failed", "project", projectSlug, "type", result.Type, "err", err)
+		return
+	}
+	msg, err := core.BuildAuthTokenEmailWithSettings(msgCfg, authSettings, result.Type, projectSlug, result.ProjectName, result.Email, result.NewEmail, result.Token)
 	if err != nil {
 		s.app.Log.Warn("auth email build failed", "project", projectSlug, "type", result.Type, "err", err)
 		return
@@ -348,6 +409,52 @@ func (s *server) authResetPasswordPage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *server) authEmailChangePage(w http.ResponseWriter, r *http.Request) {
+	input := authActionInput{
+		Project: r.URL.Query().Get("project"),
+		Email:   r.URL.Query().Get("email"),
+		Token:   r.URL.Query().Get("token"),
+	}
+	s.writeAuthActionPage(w, http.StatusOK, authActionPageData{
+		Kind:        "email_change",
+		Project:     input.Project,
+		ProjectName: s.authActionProjectName(r.Context(), input.Project),
+		Email:       input.Email,
+		Token:       input.Token,
+	})
+}
+
+func (s *server) authEmailChangeSubmit(w http.ResponseWriter, r *http.Request) {
+	input, ok := parseAuthActionForm(w, r)
+	if !ok {
+		return
+	}
+	user, err := core.ConfirmEmailChange(
+		r.Context(),
+		s.app.Pool,
+		input.Project,
+		input.Token,
+		s.clientIP(r),
+		r.UserAgent(),
+		time.Now(),
+	)
+	data := authActionPageData{
+		Kind:        "email_change",
+		Project:     input.Project,
+		ProjectName: s.authActionProjectName(r.Context(), input.Project),
+		Email:       input.Email,
+		Token:       input.Token,
+	}
+	if err != nil {
+		data.Error = "This email change link is invalid or expired."
+		s.writeAuthActionPage(w, http.StatusUnauthorized, data)
+		return
+	}
+	data.Email = user.Email
+	data.Success = "Your email has been changed."
+	s.writeAuthActionPage(w, http.StatusOK, data)
+}
+
 func (s *server) authResetPasswordSubmit(w http.ResponseWriter, r *http.Request) {
 	input, ok := parseAuthActionForm(w, r)
 	if !ok {
@@ -431,6 +538,11 @@ func (s *server) writeAuthActionPage(w http.ResponseWriter, status int, data aut
 		description = "Choose a new password for your account."
 		button = "Change password"
 		passwordField = `<label>New password<input name="password" type="password" minlength="8" autocomplete="new-password" required></label>`
+	} else if data.Kind == "email_change" {
+		action = "/auth/email-change"
+		title = "Confirm email change"
+		description = "Confirm this new email address for your account."
+		button = "Confirm email"
 	}
 	projectName := strings.TrimSpace(data.ProjectName)
 	if projectName == "" {

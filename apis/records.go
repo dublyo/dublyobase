@@ -24,13 +24,15 @@ func (s *server) listRecords(w http.ResponseWriter, r *http.Request) {
 		filter = directusFilterQuery(r)
 	}
 	opts := core.RecordListOptions{
-		Page:    queryInt(r, "page", 1),
-		PerPage: perPage,
-		Offset:  queryInt(r, "offset", 0),
-		Sort:    r.URL.Query().Get("sort"),
-		Filter:  filter,
-		Search:  r.URL.Query().Get("search"),
-		Fields:  r.URL.Query().Get("fields"),
+		Page:      queryInt(r, "page", 1),
+		PerPage:   perPage,
+		Offset:    queryInt(r, "offset", 0),
+		Sort:      r.URL.Query().Get("sort"),
+		Filter:    filter,
+		Search:    r.URL.Query().Get("search"),
+		Fields:    r.URL.Query().Get("fields"),
+		Expand:    r.URL.Query().Get("expand"),
+		SkipTotal: queryBool(r, "skipTotal"),
 	}
 	result, err := core.ListRecords(r.Context(), s.app.Pool, auth, r.PathValue("name"), opts)
 	if err != nil {
@@ -115,6 +117,7 @@ func (s *server) createRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publishRealtimeRecord(r.Context(), auth.Project.Slug, r.PathValue("name"), realtimeActionCreate, "", record)
+	s.enqueueRecordWebhooks(r, auth, r.PathValue("name"), realtimeActionCreate, record)
 	writeJSON(w, http.StatusCreated, record)
 }
 
@@ -123,7 +126,7 @@ func (s *server) getRecord(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	record, err := core.GetRecord(r.Context(), s.app.Pool, auth, r.PathValue("name"), r.PathValue("id"))
+	record, err := core.GetRecordWithOptions(r.Context(), s.app.Pool, auth, r.PathValue("name"), r.PathValue("id"), r.URL.Query().Get("expand"))
 	if err != nil {
 		writeCoreError(w, err)
 		return
@@ -146,6 +149,7 @@ func (s *server) updateRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publishRealtimeRecord(r.Context(), auth.Project.Slug, r.PathValue("name"), realtimeActionUpdate, r.PathValue("id"), record)
+	s.enqueueRecordWebhooks(r, auth, r.PathValue("name"), realtimeActionUpdate, record)
 	writeJSON(w, http.StatusOK, record)
 }
 
@@ -160,6 +164,7 @@ func (s *server) deleteRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publishRealtimeRecord(r.Context(), auth.Project.Slug, r.PathValue("name"), realtimeActionDelete, r.PathValue("id"), deleted)
+	s.enqueueRecordWebhooks(r, auth, r.PathValue("name"), realtimeActionDelete, deleted)
 	if id, _ := deleted["id"].(string); id != "" {
 		storageCfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
 		if err != nil {
@@ -190,4 +195,9 @@ func queryInt(r *http.Request, name string, def int) int {
 		return def
 	}
 	return v
+}
+
+func queryBool(r *http.Request, name string) bool {
+	raw := strings.ToLower(strings.TrimSpace(r.URL.Query().Get(name)))
+	return raw == "1" || raw == "true" || raw == "yes"
 }

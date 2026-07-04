@@ -391,7 +391,7 @@ Release validation:
 11. Update `ResolveRecordAuth` to verify `token_key`.
 12. Add HTTP handlers and routes.
 13. Add permanent tests for auth lifecycle and RLS integration.
-14. Update README, roadmap, and deploy template env docs.
+14. Update README, docs, and deploy template env docs.
 15. Run local and PostgreSQL 16/17/18 validation.
 16. Commit, push, tag `v0.5.0`, wait for CI/GHCR, then deploy/test through
     Portainer.

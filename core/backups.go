@@ -58,6 +58,19 @@ type BackupRun struct {
 	Error      string     `json:"error"`
 }
 
+type RestoreJob struct {
+	ID         string     `json:"id"`
+	AdminID    *string    `json:"adminId,omitempty"`
+	Mode       string     `json:"mode"`
+	Source     string     `json:"source"`
+	FileName   string     `json:"fileName"`
+	Status     string     `json:"status"`
+	Output     string     `json:"output"`
+	Error      string     `json:"error"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+}
+
 func ValidateBackupJobInput(input *BackupJobInput) error {
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
@@ -199,6 +212,25 @@ func ListBackupRuns(ctx context.Context, pool *pgxpool.Pool, jobID string, limit
 	return out, rows.Err()
 }
 
+func OpenBackupRun(ctx context.Context, pool *pgxpool.Pool, cfg *Config, jobID string, runID string) (*BackupRun, *StoredObject, error) {
+	run, err := getBackupRun(ctx, pool, jobID, runID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if run.Status != "success" || strings.TrimSpace(run.StorageKey) == "" {
+		return nil, nil, fmt.Errorf("%w: backup run has no downloadable artifact", ErrValidation)
+	}
+	store, err := NewObjectStore(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	obj, err := store.Get(ctx, run.StorageKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	return run, obj, nil
+}
+
 func RunBackupJob(ctx context.Context, pool *pgxpool.Pool, cfg *Config, adminID string, jobID string, ip string, userAgent string) (*BackupRun, error) {
 	job, err := getBackupJob(ctx, pool, jobID)
 	if err != nil {
@@ -218,6 +250,52 @@ func RunBackupJob(ctx context.Context, pool *pgxpool.Pool, cfg *Config, adminID 
 		Data:       map[string]any{"name": job.Name, "scope": job.Scope, "status": run.Status, "storageKey": run.StorageKey},
 	})
 	return run, nil
+}
+
+func RunRestoreFile(ctx context.Context, pool *pgxpool.Pool, cfg *Config, adminID string, mode string, fileName string, filePath string, confirm string, ip string, userAgent string) (*RestoreJob, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "dry_run"
+	}
+	if mode != "dry_run" && mode != "restore" {
+		return nil, fmt.Errorf("%w: restore mode must be dry_run or restore", ErrValidation)
+	}
+	if mode == "restore" && strings.TrimSpace(confirm) != "RESTORE_DATABASE" {
+		return nil, fmt.Errorf("%w: restore requires confirm=RESTORE_DATABASE", ErrValidation)
+	}
+	if strings.TrimSpace(filePath) == "" {
+		return nil, fmt.Errorf("%w: restore file is required", ErrValidation)
+	}
+	job, err := createRestoreJob(ctx, pool, adminID, mode, "upload", filepath.Base(fileName))
+	if err != nil {
+		return nil, err
+	}
+	output, runErr := runRestoreCommand(ctx, cfg, mode, filePath)
+	if err := finishRestoreJob(ctx, pool, job.ID, output, runErr); err != nil {
+		return nil, err
+	}
+	job.Output = output
+	status := "success"
+	if runErr != nil {
+		status = "error"
+		job.Error = runErr.Error()
+	}
+	job.Status = status
+	now := time.Now().UTC()
+	job.FinishedAt = &now
+	_ = InsertAudit(ctx, pool, AuditEvent{
+		AdminID:    &adminID,
+		Action:     "backup.restore." + mode,
+		TargetType: "restore_job",
+		TargetID:   job.ID,
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data:       map[string]any{"mode": mode, "status": status, "fileName": filepath.Base(fileName)},
+	})
+	if runErr != nil {
+		return job, runErr
+	}
+	return job, nil
 }
 
 func RunDueBackupJobs(ctx context.Context, pool *pgxpool.Pool, cfg *Config, now time.Time) error {
@@ -282,6 +360,74 @@ func getBackupJob(ctx context.Context, pool *pgxpool.Pool, id string) (*BackupJo
 		return nil, err
 	}
 	return job, nil
+}
+
+func getBackupRun(ctx context.Context, pool *pgxpool.Pool, jobID string, runID string) (*BackupRun, error) {
+	run, err := scanBackupRun(pool.QueryRow(ctx, `
+		select id, job_id, status, started_at, finished_at, storage_key, size_bytes, error
+		from _dbo.backup_runs
+		where job_id = $1 and id = $2`,
+		jobID,
+		runID,
+	))
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, ErrValidation
+		}
+		return nil, err
+	}
+	return run, nil
+}
+
+func runRestoreCommand(ctx context.Context, cfg *Config, mode string, filePath string) (string, error) {
+	args := []string{}
+	if mode == "dry_run" {
+		args = []string{"--list", filePath}
+	} else {
+		args = []string{"--clean", "--if-exists", "--no-owner", "--no-privileges", "--dbname", cfg.DatabaseURL, filePath}
+	}
+	cmd := exec.CommandContext(ctx, "pg_restore", args...)
+	cmd.Env = append(os.Environ(), "PGCONNECT_TIMEOUT=15")
+	output, err := cmd.CombinedOutput()
+	out := strings.TrimSpace(string(output))
+	if len(out) > 20000 {
+		out = out[:20000]
+	}
+	if err != nil {
+		return out, fmt.Errorf("pg_restore failed: %s", out)
+	}
+	return out, nil
+}
+
+func createRestoreJob(ctx context.Context, pool *pgxpool.Pool, adminID string, mode string, source string, fileName string) (*RestoreJob, error) {
+	return scanRestoreJob(pool.QueryRow(ctx, `
+		insert into _dbo.restore_jobs (admin_id, mode, source, file_name, status)
+		values ($1, $2, $3, $4, 'running')
+		returning id, admin_id, mode, source, file_name, status, output, error, created_at, finished_at`,
+		nullString(adminID),
+		mode,
+		source,
+		fileName,
+	))
+}
+
+func finishRestoreJob(ctx context.Context, pool *pgxpool.Pool, jobID string, output string, runErr error) error {
+	status := "success"
+	errText := ""
+	if runErr != nil {
+		status = "error"
+		errText = runErr.Error()
+	}
+	_, err := pool.Exec(ctx, `
+		update _dbo.restore_jobs
+		set status = $1, output = $2, error = $3, finished_at = now()
+		where id = $4`,
+		status,
+		output,
+		errText,
+		jobID,
+	)
+	return err
 }
 
 func executeBackupJob(ctx context.Context, pool *pgxpool.Pool, cfg *Config, job *BackupJob) (*BackupRun, error) {
@@ -403,4 +549,14 @@ func scanBackupRun(row backupRunScanner) (*BackupRun, error) {
 		return nil, err
 	}
 	return &run, nil
+}
+
+type restoreJobScanner interface{ Scan(dest ...any) error }
+
+func scanRestoreJob(row restoreJobScanner) (*RestoreJob, error) {
+	var job RestoreJob
+	if err := row.Scan(&job.ID, &job.AdminID, &job.Mode, &job.Source, &job.FileName, &job.Status, &job.Output, &job.Error, &job.CreatedAt, &job.FinishedAt); err != nil {
+		return nil, err
+	}
+	return &job, nil
 }

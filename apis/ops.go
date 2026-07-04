@@ -1,7 +1,12 @@
 package apis
 
 import (
+	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/dublyo/dublyobase/core"
 )
@@ -149,4 +154,81 @@ func (s *server) adminRunBackupJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, run)
+}
+
+func (s *server) adminDownloadBackupRun(w http.ResponseWriter, r *http.Request) {
+	storageCfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	run, obj, err := core.OpenBackupRun(r.Context(), s.app.Pool, storageCfg, r.PathValue("id"), r.PathValue("runId"))
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	defer obj.Body.Close()
+	name := filepath.Base(run.StorageKey)
+	if name == "." || name == "/" || strings.TrimSpace(name) == "" {
+		name = run.ID + ".dump"
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename=%q`, name))
+	if obj.Info.Size > 0 {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", obj.Info.Size))
+	}
+	if _, err := io.Copy(w, obj.Body); err != nil {
+		s.app.Log.Warn("backup download stream failed", "run", run.ID, "err", err)
+	}
+}
+
+func (s *server) adminRestoreBackup(w http.ResponseWriter, r *http.Request) {
+	auth := adminAuth(r)
+	if err := r.ParseMultipartForm(256 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_multipart", "restore requires multipart form data")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeCoreError(w, fmt.Errorf("%w: restore file is required", core.ErrValidation))
+		return
+	}
+	defer file.Close()
+	tmp, err := os.CreateTemp("", "dublyobase-restore-*.dump")
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := io.Copy(tmp, io.LimitReader(file, 512<<20)); err != nil {
+		tmp.Close()
+		writeCoreError(w, err)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	job, err := core.RunRestoreFile(
+		r.Context(),
+		s.app.Pool,
+		s.app.Config,
+		auth.Admin.ID,
+		r.FormValue("mode"),
+		header.Filename,
+		tmpPath,
+		r.FormValue("confirm"),
+		s.clientIP(r),
+		r.UserAgent(),
+	)
+	if err != nil {
+		if job != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, job)
+			return
+		}
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, job)
 }

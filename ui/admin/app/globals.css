@@ -2228,6 +2228,23 @@ button:disabled {
   align-items: start;
 }
 
+.pb-provider-tile.oauth {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.pb-provider-tile-head {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.pb-provider-tile-head .pb-checkline {
+  margin-top: 0;
+  white-space: nowrap;
+}
+
 .pb-provider-tile.disabled {
   opacity: 0.75;
 }

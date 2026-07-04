@@ -50,8 +50,10 @@ installs get the latest tested main build.
   are sent to a subscriber.
 - Delete events are service-subscriber only in this release to avoid leaking
   private tombstones before a durable visibility cache exists.
-- Current fanout is in-process for single app replicas; database-backed fanout
-  for multi-node deployments remains a future hardening step.
+- Record events are persisted in Postgres and relayed to local SSE subscribers
+  by each app replica, so multi-node deployments can receive writes handled by
+  another replica. WebSocket parity is still future work; SSE is the supported
+  realtime transport.
 
 ### App Auth
 
@@ -59,6 +61,10 @@ installs get the latest tested main build.
 - Email/password signup and login.
 - Access tokens, refresh sessions, rotation, logout, and logout-all.
 - Email verification and password reset flows.
+- App-user email change flow with confirmation email.
+- Project-level token duration and email template settings.
+- OAuth provider settings skeleton for callback URLs and credentials. OAuth
+  callback execution, OTP, and MFA are not enabled yet.
 - SMTP delivery for verification and reset emails.
 - Service API keys for backend-to-backend access.
 
@@ -98,7 +104,10 @@ installs get the latest tested main build.
 - Project creation and API key management.
 - PocketBase-inspired collection editor and record editor.
 - Settings screens for SMTP, storage, cron, backups, and MCP tokens.
-- Audit log with secret-like values redacted.
+- PocketBase-style API Preview with REST, auth, file upload, realtime, batch,
+  SDK/fetch, curl, query parameter, and response-shape examples.
+- Audit and request logs with pagination, filters, detail drawers, JSON export,
+  metadata, and retention controls.
 
 ## Deploy
 
@@ -240,6 +249,7 @@ can also be managed from the admin panel after setup.
 | `POST /admin/api/auth/logout` | Revoke the current admin session. |
 | `GET /admin/api/me` | Current admin session. |
 | `GET /admin/api/audit-log` | Newest-first admin audit log with pagination and filters. |
+| `GET /admin/api/request-logs` | Newest-first request log with pagination, filters, metadata, and detail payloads. |
 | `PUT /admin/api/settings/logs` | Configure audit log retention by age and row count. |
 
 ### Projects
@@ -268,6 +278,7 @@ can also be managed from the admin panel after setup.
 | `GET /api/projects/{slug}/collections/{name}/records/{id}` | Get a record. |
 | `PATCH /api/projects/{slug}/collections/{name}/records/{id}` | Update a record. |
 | `DELETE /api/projects/{slug}/collections/{name}/records/{id}` | Delete a record. |
+| `POST /api/projects/{slug}/batch` | Run up to 50 bounded record operations sequentially. |
 | `GET /api/projects/{slug}/realtime` | SSE stream for record create/update/delete events. |
 | `GET /admin/api/projects/{slug}/collections/export` | Export collection schema JSON. |
 | `POST /admin/api/projects/{slug}/collections/import` | Preview or apply collection schema imports. |
@@ -310,6 +321,9 @@ avoid logging those URLs.
 | `POST /api/projects/{slug}/auth/confirm-verification` | Confirm verification token. |
 | `POST /api/projects/{slug}/auth/request-password-reset` | Request password reset email. |
 | `POST /api/projects/{slug}/auth/confirm-password-reset` | Confirm reset token and set a new password. |
+| `POST /api/projects/{slug}/auth/request-email-change` | Request app-user email change confirmation. |
+| `POST /api/projects/{slug}/auth/confirm-email-change` | Confirm app-user email change. |
+| `GET /auth/email-change` | Browser confirmation page for app-user email changes. |
 
 ### Files
 
@@ -340,6 +354,14 @@ avoid logging those URLs.
 | `POST /admin/api/backups` | Create a backup job. |
 | `GET /admin/api/backups/{id}/runs` | List backup runs. |
 | `POST /admin/api/backups/{id}/run` | Run a backup job immediately. |
+| `GET /admin/api/backups/{id}/runs/{runId}/download` | Download a completed backup archive from configured storage. |
+| `POST /admin/api/restores` | Upload a backup archive for dry-run validation or confirmed restore. |
+| `GET /admin/api/projects/{slug}/auth-settings` | Read project auth token durations, templates, and provider skeleton settings. |
+| `PUT /admin/api/projects/{slug}/auth-settings` | Save project auth settings. |
+| `GET /admin/api/projects/{slug}/webhooks` | List outbound webhooks. |
+| `POST /admin/api/projects/{slug}/webhooks` | Create a signed outbound webhook. |
+| `DELETE /admin/api/projects/{slug}/webhooks/{id}` | Delete an outbound webhook. |
+| `GET /admin/api/projects/{slug}/webhooks/{id}/deliveries` | List webhook delivery attempts. |
 | `GET /admin/api/mcp/tokens` | List MCP tokens. |
 | `POST /admin/api/mcp/tokens` | Create a scoped MCP token. |
 | `DELETE /admin/api/mcp/tokens/{id}` | Revoke an MCP token. |
@@ -358,8 +380,7 @@ avoid logging those URLs.
 - Prefer project-scoped backups for app tenants and full backups for instance
   administrators.
 - S3 and SMTP secrets are masked in API responses and audit logs.
-- Keep one Dublyobase app replica for realtime-sensitive projects until
-  database-backed realtime fanout lands.
+- Use SSE for realtime-sensitive projects; WebSocket parity remains future work.
 
 ## Local Development
 

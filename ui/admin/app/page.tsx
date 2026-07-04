@@ -79,10 +79,13 @@ import {
   createMCPToken,
   createProject,
   createRecord,
+  createWebhook,
   deleteCollection,
   deleteRecord,
+  deleteWebhook,
   discoverSchema,
   exportCollections,
+  getProjectAuthSettings,
   health,
   getSettings,
   importCollections,
@@ -98,11 +101,15 @@ import {
   listMCPTokens,
   listProjects,
   listRecords,
+  listRequestLogs,
+  listWebhookDeliveries,
+  listWebhooks,
   login,
   logout,
   me,
   revokeAPIKey,
   revokeMCPToken,
+  restoreBackup,
   runBackupJob,
   runCronJob,
   runSQL,
@@ -111,13 +118,15 @@ import {
   updateCollection,
   updateCORSSettings,
   updateLogSettings,
+  updateProjectAuthSettings,
   updateProjectCORSSettings,
   updateRecord,
   updateSMTPSettings,
   updateStorageSettings,
   uploadFile,
+  backupDownloadURL,
 } from "../src/lib/api";
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SchemaImportItem, SQLResult } from "../src/lib/types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InstanceSettings, MCPToken, Project, ProjectAuthSettings, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "../src/lib/types";
 
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
@@ -185,6 +194,7 @@ const settingsItems = [
   { id: "admins", label: "Admin users", group: "System" },
   { id: "backups", label: "Backups", group: "System" },
   { id: "crons", label: "Crons", group: "System" },
+  { id: "webhooks", label: "Webhooks", group: "System" },
   { id: "mcp", label: "MCP access", group: "System" },
   { id: "exportCollections", label: "Export collections", group: "Sync" },
   { id: "importCollections", label: "Import collections", group: "Sync" },
@@ -314,9 +324,25 @@ const emptyAuditFilters = {
   target: "",
 };
 
+const emptyRequestFilters = {
+  search: "",
+  method: "",
+  status: "",
+};
+
 const emptyLogDraft = {
   retentionDays: "30",
   retentionCount: "100000",
+};
+
+const emptyWebhookDraft = {
+  name: "",
+  url: "",
+  events: "records.*",
+  enabled: true,
+  timeoutSeconds: "10",
+  maxAttempts: "5",
+  secret: "",
 };
 
 export default function AdminApp() {
@@ -345,8 +371,13 @@ export default function AdminApp() {
   const [audit, setAudit] = useState<ApiEnvelope<AuditEntry>>({ items: [], page: 1, perPage: 25, totalItems: 0 });
   const [auditPerPage, setAuditPerPage] = useState<(typeof recordPageSizes)[number]>(25);
   const [auditFilters, setAuditFilters] = useState(emptyAuditFilters);
+  const [logMode, setLogMode] = useState<"audit" | "requests">("audit");
+  const [requestLogs, setRequestLogs] = useState<ApiEnvelope<RequestLogEntry>>({ items: [], page: 1, perPage: 25, totalItems: 0 });
+  const [requestPerPage, setRequestPerPage] = useState<(typeof recordPageSizes)[number]>(25);
+  const [requestFilters, setRequestFilters] = useState(emptyRequestFilters);
   const [logDraft, setLogDraft] = useState(emptyLogDraft);
   const [settings, setSettingsState] = useState<InstanceSettings | null>(null);
+  const [authSettings, setAuthSettings] = useState<ProjectAuthSettings | null>(null);
   const [adminUsers, setAdminUsers] = useState<Admin[]>([]);
   const [adminDraft, setAdminDraft] = useState(emptyAdminDraft);
   const [oneTimeAdmin, setOneTimeAdmin] = useState<{ email: string; password: string } | null>(null);
@@ -354,6 +385,13 @@ export default function AdminApp() {
   const [cronRuns, setCronRuns] = useState<Record<string, CronRun[]>>({});
   const [backupJobs, setBackupJobs] = useState<BackupJob[]>([]);
   const [backupRuns, setBackupRuns] = useState<Record<string, BackupRun[]>>({});
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoreMode, setRestoreMode] = useState<"dry_run" | "restore">("dry_run");
+  const [restoreConfirm, setRestoreConfirm] = useState("");
+  const [restoreResult, setRestoreResult] = useState<RestoreJob | null>(null);
+  const [webhooks, setWebhooks] = useState<Webhook[]>([]);
+  const [webhookDraft, setWebhookDraft] = useState(emptyWebhookDraft);
+  const [webhookDeliveries, setWebhookDeliveries] = useState<Record<string, WebhookDelivery[]>>({});
   const [mcpTokens, setMCPTokens] = useState<MCPToken[]>([]);
   const [oneTimeMCPToken, setOneTimeMCPToken] = useState<MCPToken | null>(null);
   const [busy, setBusy] = useState(false);
@@ -446,15 +484,21 @@ export default function AdminApp() {
   const loadProjectData = useCallback(
     async (authToken: string, projectSlug: string, preferredCollection?: string) => {
       if (!projectSlug) return;
-      const [collectionResponse, keysResponse, auditResponse] = await Promise.all([
+      const [collectionResponse, keysResponse, auditResponse, requestResponse, authResponse, webhookResponse] = await Promise.all([
         listCollections(authToken, projectSlug),
         listAPIKeys(authToken, projectSlug),
         listAudit(authToken, { project: projectSlug, page: 1, perPage: auditPerPage, ...auditFilters }),
+        listRequestLogs(authToken, { project: projectSlug, page: 1, perPage: requestPerPage, ...requestFilters, status: Number(requestFilters.status) || undefined }),
+        getProjectAuthSettings(authToken, projectSlug),
+        listWebhooks(authToken, projectSlug),
       ]);
       setCollections(collectionResponse.items);
       setCollectionsProject(projectSlug);
       setApiKeys(keysResponse.items);
       setAudit(auditResponse);
+      setRequestLogs(requestResponse);
+      setAuthSettings(authResponse);
+      setWebhooks(webhookResponse.items);
       const targetCollection = preferredCollection ?? selectedCollection;
       const currentExists = collectionResponse.items.some((collection) => collection.name === targetCollection);
       const nextCollection = currentExists ? targetCollection : collectionResponse.items[0]?.name || "";
@@ -473,7 +517,7 @@ export default function AdminApp() {
         setRecords({ items: [], page: 1, perPage: recordPerPage, totalItems: 0 });
       }
     },
-    [auditFilters, auditPerPage, recordFilter, recordPerPage, recordSearch, selectedCollection],
+    [auditFilters, auditPerPage, recordFilter, recordPerPage, recordSearch, requestFilters, requestPerPage, selectedCollection],
   );
 
   const refreshAll = useCallback(
@@ -512,6 +556,9 @@ export default function AdminApp() {
           setSelectedCollection("");
           setRecords({ items: [], page: 1, perPage: recordPerPage, totalItems: 0 });
           setAudit({ items: [], page: 1, perPage: auditPerPage, totalItems: 0 });
+          setRequestLogs({ items: [], page: 1, perPage: requestPerPage, totalItems: 0 });
+          setAuthSettings(null);
+          setWebhooks([]);
         }
       } catch (error) {
         handleError(error);
@@ -519,7 +566,7 @@ export default function AdminApp() {
         setBusy(false);
       }
     },
-    [auditPerPage, handleError, loadProjectData, recordPerPage, selectedProject, token],
+    [auditPerPage, handleError, loadProjectData, recordPerPage, requestPerPage, selectedProject, token],
   );
 
   useEffect(() => {
@@ -668,10 +715,16 @@ export default function AdminApp() {
     setOneTimeAdmin(null);
     setAudit({ items: [], page: 1, perPage: auditPerPage, totalItems: 0 });
     setAuditFilters(emptyAuditFilters);
+    setRequestLogs({ items: [], page: 1, perPage: requestPerPage, totalItems: 0 });
+    setRequestFilters(emptyRequestFilters);
+    setAuthSettings(null);
     setLogDraft(emptyLogDraft);
     setCORSDraft(emptyCORSDraft);
     setCronJobs([]);
     setBackupJobs([]);
+    setRestoreResult(null);
+    setWebhooks([]);
+    setWebhookDeliveries({});
     setMCPTokens([]);
     setSelectedUploadFile(null);
     setOneTimeMCPToken(null);
@@ -729,6 +782,40 @@ export default function AdminApp() {
     try {
       const response = await listAudit(token, { project: selectedProject, page, perPage, ...auditFilters });
       setAudit(response);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshRequestLogs(page = requestLogs.page ?? 1, perPage = requestPerPage) {
+    if (!token || !selectedProject) return;
+    setBusy(true);
+    try {
+      const response = await listRequestLogs(token, {
+        project: selectedProject,
+        page,
+        perPage,
+        search: requestFilters.search,
+        method: requestFilters.method,
+        status: Number.parseInt(requestFilters.status, 10) || undefined,
+      });
+      setRequestLogs(response);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAuthSettings(next: ProjectAuthSettings) {
+    if (!token || !selectedProject) return;
+    setBusy(true);
+    try {
+      const response = await updateProjectAuthSettings(token, selectedProject, next);
+      setAuthSettings(response);
+      showNotice("success", "Auth settings saved");
     } catch (error) {
       handleError(error);
     } finally {
@@ -1216,6 +1303,70 @@ export default function AdminApp() {
     }
   }
 
+  async function submitRestore(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !restoreFile) return;
+    setBusy(true);
+    try {
+      const response = await restoreBackup(token, { file: restoreFile, mode: restoreMode, confirm: restoreConfirm });
+      setRestoreResult(response);
+      showNotice(response.status === "success" ? "success" : "error", `Restore ${response.mode} finished with ${response.status}`);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitWebhook(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !selectedProject) return;
+    setBusy(true);
+    try {
+      const created = await createWebhook(token, selectedProject, {
+        name: webhookDraft.name,
+        url: webhookDraft.url,
+        events: splitDraftList(webhookDraft.events),
+        enabled: webhookDraft.enabled,
+        timeoutSeconds: Number.parseInt(webhookDraft.timeoutSeconds, 10) || 10,
+        maxAttempts: Number.parseInt(webhookDraft.maxAttempts, 10) || 5,
+        secret: webhookDraft.secret || undefined,
+      });
+      setWebhookDraft(emptyWebhookDraft);
+      setWebhooks((items) => [created, ...items]);
+      showNotice("success", created.secret ? `Webhook created. Secret: ${created.secret}` : "Webhook created");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeWebhook(hook: Webhook) {
+    if (!token || !selectedProject) return;
+    if (!window.confirm(`Delete webhook ${hook.name}?`)) return;
+    setBusy(true);
+    try {
+      await deleteWebhook(token, selectedProject, hook.id);
+      setWebhooks((items) => items.filter((item) => item.id !== hook.id));
+      showNotice("success", "Webhook deleted");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadWebhookRuns(hook: Webhook) {
+    if (!token || !selectedProject) return;
+    try {
+      const response = await listWebhookDeliveries(token, selectedProject, hook.id);
+      setWebhookDeliveries((current) => ({ ...current, [hook.id]: response.items }));
+    } catch (error) {
+      handleError(error);
+    }
+  }
+
   async function submitMCPToken(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!token) return;
@@ -1460,6 +1611,10 @@ export default function AdminApp() {
             setCollectionsProject("");
             setApiKeys([]);
             setAudit({ items: [], page: 1, perPage: auditPerPage, totalItems: 0 });
+            setRequestLogs({ items: [], page: 1, perPage: requestPerPage, totalItems: 0 });
+            setAuthSettings(null);
+            setWebhooks([]);
+            setWebhookDeliveries({});
             setCORSDraft(settingsToCORSDraft(settings, projects.find((project) => project.slug === slug) ?? null));
             setSelectedCollection("");
             setSelectedRecordId("");
@@ -1537,21 +1692,32 @@ export default function AdminApp() {
 
       {view === "logs" ? (
         <LogsView
+          mode={logMode}
+          setMode={setLogMode}
           audit={audit}
           auditPerPage={auditPerPage}
           filters={auditFilters}
+          requestLogs={requestLogs}
+          requestPerPage={requestPerPage}
+          requestFilters={requestFilters}
           settings={settings}
           logDraft={logDraft}
           setLogDraft={setLogDraft}
           onFilterChange={setAuditFilters}
+          onRequestFilterChange={setRequestFilters}
           onSaveLogSettings={saveLogSettings}
-          onRefresh={() => void refreshAudit()}
+          onRefresh={() => void (logMode === "audit" ? refreshAudit() : refreshRequestLogs())}
           onPageChange={(page) => {
             void refreshAudit(page);
           }}
+          onRequestPageChange={(page) => void refreshRequestLogs(page)}
           onPageSizeChange={(pageSize) => {
             setAuditPerPage(pageSize);
             void refreshAudit(1, pageSize);
+          }}
+          onRequestPageSizeChange={(pageSize) => {
+            setRequestPerPage(pageSize);
+            void refreshRequestLogs(1, pageSize);
           }}
           onCopy={copyText}
           version={healthState?.version ?? "unknown"}
@@ -1570,6 +1736,9 @@ export default function AdminApp() {
           healthState={healthState}
           appUrl={typeof window !== "undefined" ? window.location.origin : ""}
           settings={settings}
+          authSettings={authSettings}
+          setAuthSettings={setAuthSettings}
+          onSaveAuthSettings={saveAuthSettings}
           onOpenAuth={() => changeSettings("auth")}
           onOpenMail={() => changeSettings("mail")}
           onOpenFiles={() => changeSettings("files")}
@@ -1606,6 +1775,21 @@ export default function AdminApp() {
           onCreateBackup={submitBackupJob}
           onRunBackup={runBackup}
           onLoadBackupRuns={loadBackupRuns}
+          restoreFile={restoreFile}
+          setRestoreFile={setRestoreFile}
+          restoreMode={restoreMode}
+          setRestoreMode={setRestoreMode}
+          restoreConfirm={restoreConfirm}
+          setRestoreConfirm={setRestoreConfirm}
+          restoreResult={restoreResult}
+          onSubmitRestore={submitRestore}
+          webhooks={webhooks}
+          webhookDraft={webhookDraft}
+          setWebhookDraft={setWebhookDraft}
+          webhookDeliveries={webhookDeliveries}
+          onCreateWebhook={submitWebhook}
+          onDeleteWebhook={removeWebhook}
+          onLoadWebhookDeliveries={loadWebhookRuns}
           mcpTokens={mcpTokens}
           oneTimeMCPToken={oneTimeMCPToken}
           mcpDraft={mcpDraft}
@@ -3321,6 +3505,7 @@ function APIPreviewModal({ project, collection, onClose, onCopy }: { project: st
   const authBase = `/api/projects/${encodeURIComponent(project)}/auth`;
   const realtimePath = `/api/projects/${encodeURIComponent(project)}/realtime?collection=${encodeURIComponent(collection.name)}&events=create,update,delete`;
   const searchField = collection.fields.find((field) => field.searchable && canSearchField(field))?.name ?? "title";
+  const relationField = collection.fields.find((field) => field.type === "relation")?.name ?? "author";
   const filterObject = { [searchField]: { _icontains: "hello" } };
   const sampleBody = sampleRecordPayload(collection);
   const updateBody = sampleUpdatePayload(collection);
@@ -3328,7 +3513,7 @@ function APIPreviewModal({ project, collection, onClose, onCopy }: { project: st
   const examples: Record<string, { title: string; detail: string; code: string; params?: string[] }> = {
     list: {
       title: "List/Search records",
-      detail: "Supports page/perPage, selected-field search, Directus-style JSON filters, fields projection, and sort.",
+      detail: "Supports page/perPage, selected-field search, Directus-style JSON filters, fields projection, expand, skipTotal, and sort.",
       code: `curl -G "${basePath}/records" \\
   -H "Authorization: Bearer $DUBLYO_TOKEN" \\
   --data-urlencode "page=1" \\
@@ -3336,15 +3521,18 @@ function APIPreviewModal({ project, collection, onClose, onCopy }: { project: st
   --data-urlencode "sort=-created" \\
   --data-urlencode "search=hello" \\
   --data-urlencode 'filter=${JSON.stringify(filterObject)}' \\
-  --data-urlencode "fields=id,${searchField},created"`,
-      params: ["page", "perPage", "sort", "search", "filter", "fields"],
+  --data-urlencode "fields=id,${searchField},created" \\
+  --data-urlencode "expand=${relationField}" \\
+  --data-urlencode "skipTotal=false"`,
+      params: ["page", "perPage", "sort", "search", "filter", "fields", "expand", "skipTotal"],
     },
     view: {
       title: "View one record",
-      detail: "Reads a single record by primary key while preserving collection RLS rules.",
-      code: `curl "${basePath}/records/{id}" \\
-  -H "Authorization: Bearer $DUBLYO_TOKEN"`,
-      params: ["id"],
+      detail: "Reads a single record by primary key while preserving collection RLS rules. Use expand for first-level relation records.",
+      code: `curl -G "${basePath}/records/{id}" \\
+  -H "Authorization: Bearer $DUBLYO_TOKEN" \\
+  --data-urlencode "expand=${relationField}"`,
+      params: ["id", "expand"],
     },
     create: {
       title: "Create record",
@@ -3367,6 +3555,21 @@ function APIPreviewModal({ project, collection, onClose, onCopy }: { project: st
       detail: "Deletes the record only when delete rules allow the caller.",
       code: `curl -X DELETE "${basePath}/records/{id}" \\
   -H "Authorization: Bearer $DUBLYO_TOKEN"`,
+    },
+    batch: {
+      title: "Batch records",
+      detail: "Runs bounded record operations sequentially. Atomic database transactions are intentionally disabled until transaction-scoped rules are complete.",
+      code: `curl -X POST "${`/api/projects/${encodeURIComponent(project)}/batch`}" \\
+  -H "Authorization: Bearer $DUBLYO_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  --data '{
+    "operations": [
+      { "method": "POST", "collection": "${collection.name}", "body": ${JSON.stringify(sampleBody)} },
+      { "method": "PATCH", "collection": "${collection.name}", "id": "{id}", "body": ${JSON.stringify(updateBody)} },
+      { "method": "GET", "collection": "${collection.name}", "id": "{id}" }
+    ]
+  }'`,
+      params: ["operations", "method", "collection", "id", "body"],
     },
     realtime: {
       title: "Realtime records",
@@ -3407,24 +3610,51 @@ POST ${authBase}/request-verification
 {"email":"user@example.com"}
 
 POST ${authBase}/request-password-reset
-{"email":"user@example.com"}`,
+{"email":"user@example.com"}
+
+POST ${authBase}/request-email-change
+Authorization: Bearer $ACCESS_TOKEN
+{"newEmail":"new@example.com"}
+
+POST ${authBase}/confirm-email-change
+{"token":"email_change_..."}`,
     },
     sdk: {
       title: "JavaScript fetch",
-      detail: "Drop-in browser/server example. Use a service key only on trusted servers.",
-      code: `const base = "${typeof window !== "undefined" ? window.location.origin : ""}${basePath}";
+      detail: "Drop-in browser/server example with list, view, create, update, delete, realtime, and batch helpers. Use service keys only on trusted servers.",
+      code: `const base = "${typeof window !== "undefined" ? window.location.origin : ""}/api/projects/${project}";
 
 export async function list${pascalCase(collection.name)}(token) {
   const params = new URLSearchParams({
     page: "1",
     perPage: "25",
     filter: JSON.stringify(${JSON.stringify(filterObject)}),
+    expand: "${relationField}",
   });
-  const res = await fetch(\`\${base}/records?\${params}\`, {
+  const res = await fetch(\`\${base}/collections/${collection.name}/records?\${params}\`, {
     headers: { Authorization: \`Bearer \${token}\` },
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+export async function create${pascalCase(collection.name)}(token, data) {
+  const res = await fetch(\`\${base}/collections/${collection.name}/records\`, {
+    method: "POST",
+    headers: { Authorization: \`Bearer \${token}\`, "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export function subscribe${pascalCase(collection.name)}(token, onEvent) {
+  const url = \`\${base}/realtime?collection=${collection.name}&events=create,update,delete&token=\${encodeURIComponent(token)}\`;
+  const source = new EventSource(url);
+  ["record.create", "record.update", "record.delete"].forEach((event) => {
+    source.addEventListener(event, (message) => onEvent(event, JSON.parse(message.data)));
+  });
+  return () => source.close();
 }`,
     },
     responses: {
@@ -3452,6 +3682,13 @@ export async function list${pascalCase(collection.name)}(token) {
 {
   "error": "validation_failed",
   "message": "validation failed: field is required"
+}
+
+// Batch
+{
+  "results": [
+    { "status": 200, "body": ${JSON.stringify(sampleBody)} }
+  ]
 }`,
     },
   };
@@ -3511,39 +3748,59 @@ export async function list${pascalCase(collection.name)}(token) {
 }
 
 function LogsView({
+  mode,
+  setMode,
   audit,
   auditPerPage,
   filters,
+  requestLogs,
+  requestPerPage,
+  requestFilters,
   settings,
   logDraft,
   setLogDraft,
   onFilterChange,
+  onRequestFilterChange,
   onSaveLogSettings,
   onRefresh,
   onPageChange,
+  onRequestPageChange,
   onPageSizeChange,
+  onRequestPageSizeChange,
   onCopy,
   version,
 }: {
+  mode: "audit" | "requests";
+  setMode: (mode: "audit" | "requests") => void;
   audit: ApiEnvelope<AuditEntry>;
   auditPerPage: (typeof recordPageSizes)[number];
   filters: typeof emptyAuditFilters;
+  requestLogs: ApiEnvelope<RequestLogEntry>;
+  requestPerPage: (typeof recordPageSizes)[number];
+  requestFilters: typeof emptyRequestFilters;
   settings: InstanceSettings | null;
   logDraft: typeof emptyLogDraft;
   setLogDraft: React.Dispatch<React.SetStateAction<typeof emptyLogDraft>>;
   onFilterChange: React.Dispatch<React.SetStateAction<typeof emptyAuditFilters>>;
+  onRequestFilterChange: React.Dispatch<React.SetStateAction<typeof emptyRequestFilters>>;
   onSaveLogSettings: (event: React.FormEvent<HTMLFormElement>) => void;
   onRefresh: () => void;
   onPageChange: (page: number) => void;
+  onRequestPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: (typeof recordPageSizes)[number]) => void;
+  onRequestPageSizeChange: (pageSize: (typeof recordPageSizes)[number]) => void;
   onCopy: (text: string) => void;
   version: string;
 }) {
   const [selectedEntry, setSelectedEntry] = useState<AuditEntry | null>(null);
+  const [selectedRequest, setSelectedRequest] = useState<RequestLogEntry | null>(null);
   const page = audit.page ?? 1;
   const perPage = audit.perPage ?? auditPerPage;
   const totalItems = audit.totalItems ?? audit.items.length;
   const totalPages = Math.max(1, Math.ceil(totalItems / Math.max(1, perPage)));
+  const requestPage = requestLogs.page ?? 1;
+  const requestItems = requestLogs.totalItems ?? requestLogs.items.length;
+  const requestPages = Math.max(1, Math.ceil(requestItems / Math.max(1, requestLogs.perPage ?? requestPerPage)));
   const actionOptions = Array.from(new Set(audit.items.map((entry) => entry.action))).sort();
   return (
     <section className="pb-page single">
@@ -3553,50 +3810,101 @@ function LogsView({
             <span>Logs</span>
           </nav>
           <div className="pb-header-primary-btns">
+            <div className="pb-segmented">
+              <button type="button" className={mode === "audit" ? "active" : ""} onClick={() => setMode("audit")}>
+                Audit
+              </button>
+              <button type="button" className={mode === "requests" ? "active" : ""} onClick={() => setMode("requests")}>
+                Requests
+              </button>
+            </div>
             <button type="button" onClick={onRefresh} className="pb-btn outline">
               <RefreshCw className="h-4 w-4" />
               Refresh
             </button>
           </div>
         </header>
-        <form
-          className="pb-record-toolbar logs-toolbar"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onPageChange(1);
-          }}
-        >
-          <label className="pb-record-control search">
-            <Search className="h-4 w-4" />
-            <input value={filters.search} onChange={(event) => onFilterChange((current) => ({ ...current, search: event.target.value }))} placeholder="Search action, target, IP, user agent, data" />
-          </label>
-          <label className="pb-record-control action-filter">
-            <ListFilter className="h-4 w-4" />
-            <input list="audit-actions" value={filters.action} onChange={(event) => onFilterChange((current) => ({ ...current, action: event.target.value }))} placeholder="Action" />
-            <datalist id="audit-actions">
-              {actionOptions.map((action) => (
-                <option key={action} value={action} />
-              ))}
-            </datalist>
-          </label>
-          <label className="pb-record-control target-filter">
-            <Database className="h-4 w-4" />
-            <input value={filters.target} onChange={(event) => onFilterChange((current) => ({ ...current, target: event.target.value }))} placeholder="Target type or id" />
-          </label>
-          <button type="submit" className="pb-btn sm secondary">
-            Apply
-          </button>
-          <button
-            type="button"
-            className="pb-btn sm transparent"
-            onClick={() => {
-              onFilterChange(emptyAuditFilters);
-              window.setTimeout(() => onPageChange(1), 0);
+        {mode === "audit" ? (
+          <form
+            className="pb-record-toolbar logs-toolbar"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onPageChange(1);
             }}
           >
-            Clear
-          </button>
-        </form>
+            <label className="pb-record-control search">
+              <Search className="h-4 w-4" />
+              <input value={filters.search} onChange={(event) => onFilterChange((current) => ({ ...current, search: event.target.value }))} placeholder="Search action, target, IP, user agent, data" />
+            </label>
+            <label className="pb-record-control action-filter">
+              <ListFilter className="h-4 w-4" />
+              <input list="audit-actions" value={filters.action} onChange={(event) => onFilterChange((current) => ({ ...current, action: event.target.value }))} placeholder="Action" />
+              <datalist id="audit-actions">
+                {actionOptions.map((action) => (
+                  <option key={action} value={action} />
+                ))}
+              </datalist>
+            </label>
+            <label className="pb-record-control target-filter">
+              <Database className="h-4 w-4" />
+              <input value={filters.target} onChange={(event) => onFilterChange((current) => ({ ...current, target: event.target.value }))} placeholder="Target type or id" />
+            </label>
+            <button type="submit" className="pb-btn sm secondary">
+              Apply
+            </button>
+            <button
+              type="button"
+              className="pb-btn sm transparent"
+              onClick={() => {
+                onFilterChange(emptyAuditFilters);
+                window.setTimeout(() => onPageChange(1), 0);
+              }}
+            >
+              Clear
+            </button>
+          </form>
+        ) : (
+          <form
+            className="pb-record-toolbar logs-toolbar"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onRequestPageChange(1);
+            }}
+          >
+            <label className="pb-record-control search">
+              <Search className="h-4 w-4" />
+              <input value={requestFilters.search} onChange={(event) => onRequestFilterChange((current) => ({ ...current, search: event.target.value }))} placeholder="Search path, IP, user agent, metadata" />
+            </label>
+            <label className="pb-record-control action-filter">
+              <ListFilter className="h-4 w-4" />
+              <select value={requestFilters.method} onChange={(event) => onRequestFilterChange((current) => ({ ...current, method: event.target.value }))}>
+                <option value="">Any method</option>
+                {["GET", "POST", "PUT", "PATCH", "DELETE"].map((method) => (
+                  <option key={method} value={method}>
+                    {method}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="pb-record-control target-filter">
+              <Hash className="h-4 w-4" />
+              <input value={requestFilters.status} onChange={(event) => onRequestFilterChange((current) => ({ ...current, status: event.target.value }))} placeholder="Status" />
+            </label>
+            <button type="submit" className="pb-btn sm secondary">
+              Apply
+            </button>
+            <button
+              type="button"
+              className="pb-btn sm transparent"
+              onClick={() => {
+                onRequestFilterChange(emptyRequestFilters);
+                window.setTimeout(() => onRequestPageChange(1), 0);
+              }}
+            >
+              Clear
+            </button>
+          </form>
+        )}
         <form className="pb-log-retention-panel" onSubmit={onSaveLogSettings}>
           <div>
             <strong>Retention</strong>
@@ -3625,7 +3933,7 @@ function LogsView({
             Save
           </button>
         </form>
-        <div className="pb-table-wrap">
+        {mode === "audit" ? <div className="pb-table-wrap">
           <table className="pb-records-table">
             <thead>
               <tr>
@@ -3657,8 +3965,40 @@ function LogsView({
               ) : null}
             </tbody>
           </table>
-        </div>
-        <div className="pb-record-pagination" aria-label="Audit log pagination">
+        </div> : <div className="pb-table-wrap">
+          <table className="pb-records-table">
+            <thead>
+              <tr>
+                <th>Method</th>
+                <th>Path</th>
+                <th>Status</th>
+                <th>Duration</th>
+                <th>IP</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {requestLogs.items.map((entry) => (
+                <tr key={entry.id} className="clickable-row" onClick={() => setSelectedRequest(entry)}>
+                  <td>{entry.method}</td>
+                  <td className="truncate-cell">{entry.path}</td>
+                  <td>{entry.status}</td>
+                  <td>{entry.durationMs}ms</td>
+                  <td>{entry.ip || "-"}</td>
+                  <td>{formatDate(entry.createdAt)}</td>
+                </tr>
+              ))}
+              {requestLogs.items.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="pb-empty-cell">
+                    <EmptyState label="No request logs yet." />
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>}
+        {mode === "audit" ? <div className="pb-record-pagination" aria-label="Audit log pagination">
           <label className="pb-page-size-control">
             <span>Per page</span>
             <select
@@ -3686,10 +4026,39 @@ function LogsView({
               Next
             </button>
           </div>
-        </div>
-        <PageFooter left={`Showing ${audit.items.length} of ${totalItems}`} version={version} />
+        </div> : <div className="pb-record-pagination" aria-label="Request log pagination">
+          <label className="pb-page-size-control">
+            <span>Per page</span>
+            <select
+              value={requestPerPage}
+              onChange={(event) => {
+                const next = Number(event.target.value) as (typeof recordPageSizes)[number];
+                onRequestPageSizeChange(next);
+              }}
+            >
+              {recordPageSizes.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="pb-pagination-actions">
+            <button type="button" className="pb-btn outline" disabled={requestPage <= 1} onClick={() => onRequestPageChange(requestPage - 1)}>
+              Previous
+            </button>
+            <span>
+              Page {requestPage} of {requestPages}
+            </span>
+            <button type="button" className="pb-btn outline" disabled={requestPage >= requestPages} onClick={() => onRequestPageChange(requestPage + 1)}>
+              Next
+            </button>
+          </div>
+        </div>}
+        <PageFooter left={mode === "audit" ? `Showing ${audit.items.length} of ${totalItems}` : `Showing ${requestLogs.items.length} of ${requestItems}`} version={version} />
       </div>
       {selectedEntry ? <AuditDetailDrawer entry={selectedEntry} onClose={() => setSelectedEntry(null)} onCopy={onCopy} /> : null}
+      {selectedRequest ? <RequestLogDetailDrawer entry={selectedRequest} onClose={() => setSelectedRequest(null)} onCopy={onCopy} /> : null}
     </section>
   );
 }
@@ -3756,6 +4125,63 @@ function AuditDetailDrawer({ entry, onClose, onCopy }: { entry: AuditEntry; onCl
   );
 }
 
+function RequestLogDetailDrawer({ entry, onClose, onCopy }: { entry: RequestLogEntry; onClose: () => void; onCopy: (text: string) => void }) {
+  const json = JSON.stringify(entry, null, 2);
+  const rows = [
+    ["id", entry.id],
+    ["project", entry.projectSlug],
+    ["method", entry.method],
+    ["path", entry.path],
+    ["status", String(entry.status)],
+    ["durationMs", String(entry.durationMs)],
+    ["ip", entry.ip],
+    ["userAgent", entry.userAgent],
+    ["requestId", entry.requestId],
+    ["createdAt", entry.createdAt],
+    ["metadata", JSON.stringify(entry.metadata, null, 2)],
+  ];
+  function downloadJSON() {
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `request-log-${entry.id}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  return (
+    <aside className="pb-detail-drawer" aria-label="Request log detail">
+      <div className="pb-detail-header">
+        <div>
+          <h2>{entry.method} {entry.status}</h2>
+          <span>{formatDate(entry.createdAt)}</span>
+        </div>
+        <button type="button" className="pb-icon-btn" onClick={onClose} aria-label="Close">
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="pb-detail-actions">
+        <button type="button" className="pb-btn sm secondary" onClick={() => onCopy(json)}>
+          <Copy className="h-4 w-4" />
+          Copy JSON
+        </button>
+        <button type="button" className="pb-btn sm outline" onClick={downloadJSON}>
+          <Download className="h-4 w-4" />
+          Download
+        </button>
+      </div>
+      <dl className="pb-detail-list">
+        {rows.map(([key, value]) => (
+          <div key={key}>
+            <dt>{key}</dt>
+            <dd>{value || "-"}</dd>
+          </div>
+        ))}
+      </dl>
+    </aside>
+  );
+}
+
 function SettingsWorkspace(props: {
   section: SettingsSection;
   onChangeSection: (section: SettingsSection) => void;
@@ -3767,6 +4193,9 @@ function SettingsWorkspace(props: {
   healthState: Health | null;
   appUrl: string;
   settings: InstanceSettings | null;
+  authSettings: ProjectAuthSettings | null;
+  setAuthSettings: React.Dispatch<React.SetStateAction<ProjectAuthSettings | null>>;
+  onSaveAuthSettings: (settings: ProjectAuthSettings) => void;
   onOpenAuth: () => void;
   onOpenMail: () => void;
   onOpenFiles: () => void;
@@ -3803,6 +4232,21 @@ function SettingsWorkspace(props: {
   onCreateBackup: (event: React.FormEvent<HTMLFormElement>) => void;
   onRunBackup: (job: BackupJob) => void;
   onLoadBackupRuns: (job: BackupJob) => void;
+  restoreFile: File | null;
+  setRestoreFile: React.Dispatch<React.SetStateAction<File | null>>;
+  restoreMode: "dry_run" | "restore";
+  setRestoreMode: React.Dispatch<React.SetStateAction<"dry_run" | "restore">>;
+  restoreConfirm: string;
+  setRestoreConfirm: React.Dispatch<React.SetStateAction<string>>;
+  restoreResult: RestoreJob | null;
+  onSubmitRestore: (event: React.FormEvent<HTMLFormElement>) => void;
+  webhooks: Webhook[];
+  webhookDraft: typeof emptyWebhookDraft;
+  setWebhookDraft: React.Dispatch<React.SetStateAction<typeof emptyWebhookDraft>>;
+  webhookDeliveries: Record<string, WebhookDelivery[]>;
+  onCreateWebhook: (event: React.FormEvent<HTMLFormElement>) => void;
+  onDeleteWebhook: (hook: Webhook) => void;
+  onLoadWebhookDeliveries: (hook: Webhook) => void;
   mcpTokens: MCPToken[];
   oneTimeMCPToken: MCPToken | null;
   mcpDraft: typeof emptyMCPDraft;
@@ -3893,6 +4337,7 @@ function SettingsWorkspace(props: {
           {props.section === "admins" ? <AdminUsersPanel {...props} /> : null}
           {props.section === "backups" ? <BackupsView {...props} onOpenExport={() => props.onChangeSection("exportCollections")} /> : null}
           {props.section === "crons" ? <CronsView {...props} /> : null}
+          {props.section === "webhooks" ? <WebhooksView {...props} /> : null}
           {props.section === "mcp" ? <MCPAccessView {...props} /> : null}
           {props.section === "exportCollections" ? <ExportCollectionsView {...props} /> : null}
           {props.section === "importCollections" ? <ImportCollectionsView {...props} /> : null}
@@ -4053,15 +4498,57 @@ function AuthSettingsPanel({
   project,
   appUrl,
   settings,
+  authSettings,
+  setAuthSettings,
+  onSaveAuthSettings,
   onOpenMail,
 }: {
   project: Project | null;
   appUrl: string;
   settings: InstanceSettings | null;
+  authSettings: ProjectAuthSettings | null;
+  setAuthSettings: React.Dispatch<React.SetStateAction<ProjectAuthSettings | null>>;
+  onSaveAuthSettings: (settings: ProjectAuthSettings) => void;
   onOpenMail: () => void;
 }) {
   const projectSlug = project?.slug || "{project}";
   const base = `${appUrl}/api/projects/${projectSlug}`;
+  const draft = authSettings ?? defaultAuthSettingsForProject(project);
+  function updateDraft(patch: Partial<ProjectAuthSettings>) {
+    setAuthSettings({ ...draft, ...patch });
+  }
+  function updateTemplate(key: keyof ProjectAuthSettings["templates"], value: string) {
+    setAuthSettings({ ...draft, templates: { ...draft.templates, [key]: value } });
+  }
+  const oauthProviders = [
+    { id: "google", label: "Google", authURL: "https://accounts.google.com/o/oauth2/v2/auth", tokenURL: "https://oauth2.googleapis.com/token", userInfoURL: "https://openidconnect.googleapis.com/v1/userinfo", scopes: "openid email profile" },
+    { id: "github", label: "GitHub", authURL: "https://github.com/login/oauth/authorize", tokenURL: "https://github.com/login/oauth/access_token", userInfoURL: "https://api.github.com/user", scopes: "read:user user:email" },
+    { id: "apple", label: "Apple", authURL: "https://appleid.apple.com/auth/authorize", tokenURL: "https://appleid.apple.com/auth/token", userInfoURL: "", scopes: "name email" },
+    { id: "oidc", label: "OIDC", authURL: "", tokenURL: "", userInfoURL: "", scopes: "openid email profile" },
+  ];
+  function providerConfig(id: string): Record<string, unknown> {
+    const value = draft.providers?.[id];
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  }
+  function providerString(id: string, key: string, fallback = "") {
+    const value = providerConfig(id)[key];
+    return typeof value === "string" ? value : fallback;
+  }
+  function providerBool(id: string, key: string) {
+    return providerConfig(id)[key] === true;
+  }
+  function updateProvider(id: string, patch: Record<string, unknown>) {
+    setAuthSettings({
+      ...draft,
+      providers: {
+        ...draft.providers,
+        [id]: {
+          ...providerConfig(id),
+          ...patch,
+        },
+      },
+    });
+  }
   const routes = [
     ["POST", `${base}/auth/signup`, "Create an app user"],
     ["POST", `${base}/auth/login`, "Email/password login"],
@@ -4071,6 +4558,8 @@ function AuthSettingsPanel({
     ["POST", `${base}/auth/confirm-verification`, "Confirm verification token"],
     ["POST", `${base}/auth/request-password-reset`, "Send password reset email"],
     ["POST", `${base}/auth/confirm-password-reset`, "Set a new password"],
+    ["POST", `${base}/auth/request-email-change`, "Send email change confirmation"],
+    ["POST", `${base}/auth/confirm-email-change`, "Confirm email change"],
   ];
   return (
     <div className="pb-settings-stack">
@@ -4135,13 +4624,16 @@ function AuthSettingsPanel({
       </section>
       <section className="pb-settings-block">
         <h2>Token durations</h2>
-        <div className="pb-inline-alert info">Current durations are fixed in the backend; editable project auth settings can use this same surface later without moving the API.</div>
-        <div className="pb-info-grid compact">
-          <Info label="Access token" value="1 hour" />
-          <Info label="Refresh token" value="7 days" />
-          <Info label="Email verification" value="24 hours" />
-          <Info label="Password reset" value="1 hour" />
+        <div className="pb-grid-form four">
+          <LabeledInput label="Access minutes" value={String(draft.accessTokenMinutes)} onChange={(value) => updateDraft({ accessTokenMinutes: Number.parseInt(value, 10) || 60 })} />
+          <LabeledInput label="Refresh days" value={String(draft.refreshTokenDays)} onChange={(value) => updateDraft({ refreshTokenDays: Number.parseInt(value, 10) || 7 })} />
+          <LabeledInput label="Verify hours" value={String(draft.verifyTokenHours)} onChange={(value) => updateDraft({ verifyTokenHours: Number.parseInt(value, 10) || 24 })} />
+          <LabeledInput label="Reset hours" value={String(draft.resetTokenHours)} onChange={(value) => updateDraft({ resetTokenHours: Number.parseInt(value, 10) || 1 })} />
         </div>
+        <label className="pb-checkline switchline">
+          <input type="checkbox" checked={draft.emailChangeEnabled} onChange={(event) => updateDraft({ emailChangeEnabled: event.target.checked })} />
+          Allow app users to change email after confirmation
+        </label>
       </section>
       <section className="pb-settings-block">
         <h2>Email templates</h2>
@@ -4150,34 +4642,78 @@ function AuthSettingsPanel({
             <summary>Verification email</summary>
             <label className="pb-field">
               <span>Subject</span>
-              <input value={`${project?.name ?? "App"} email verification`} readOnly />
+              <input value={draft.templates.verifySubject ?? ""} onChange={(event) => updateTemplate("verifySubject", event.target.value)} />
             </label>
             <label className="pb-field">
-              <span>Body variables</span>
-              <textarea value="{APP_NAME}, {EMAIL}, {TOKEN}, {LINK}" readOnly rows={2} />
+              <span>Body</span>
+              <textarea value={draft.templates.verifyBody ?? ""} onChange={(event) => updateTemplate("verifyBody", event.target.value)} rows={6} />
             </label>
           </details>
           <details>
             <summary>Password reset email</summary>
             <label className="pb-field">
               <span>Subject</span>
-              <input value={`${project?.name ?? "App"} password reset`} readOnly />
+              <input value={draft.templates.resetSubject ?? ""} onChange={(event) => updateTemplate("resetSubject", event.target.value)} />
             </label>
             <label className="pb-field">
-              <span>Body variables</span>
-              <textarea value="{APP_NAME}, {EMAIL}, {TOKEN}, {LINK}" readOnly rows={2} />
+              <span>Body</span>
+              <textarea value={draft.templates.resetBody ?? ""} onChange={(event) => updateTemplate("resetBody", event.target.value)} rows={6} />
             </label>
           </details>
+          <details>
+            <summary>Email change</summary>
+            <label className="pb-field">
+              <span>Subject</span>
+              <input value={draft.templates.emailChangeSubject ?? ""} onChange={(event) => updateTemplate("emailChangeSubject", event.target.value)} />
+            </label>
+            <label className="pb-field">
+              <span>Body</span>
+              <textarea value={draft.templates.emailChangeBody ?? ""} onChange={(event) => updateTemplate("emailChangeBody", event.target.value)} rows={6} />
+            </label>
+          </details>
+        </div>
+        <div className="pb-inline-alert info">Template variables: {"{APP_NAME}"}, {"{PROJECT}"}, {"{EMAIL}"}, {"{NEW_EMAIL}"}, {"{TOKEN}"}, {"{LINK}"}.</div>
+        <div className="pb-row-actions">
+          <button type="button" className="pb-btn primary" disabled={!project} onClick={() => onSaveAuthSettings(draft)}>
+            <Save className="h-4 w-4" />
+            Save auth settings
+          </button>
         </div>
       </section>
       <section className="pb-settings-block">
         <h2>Providers and factors</h2>
+        <div className="pb-inline-alert info">OAuth provider settings can be saved now so projects can document callback URLs and credentials before full OAuth execution is enabled.</div>
         <div className="pb-provider-grid">
+          {oauthProviders.map((provider) => {
+            const clientSecret = providerString(provider.id, "clientSecret");
+            return (
+              <div key={provider.id} className="pb-provider-tile oauth">
+                <div className="pb-provider-tile-head">
+                  <ShieldCheck className="h-4 w-4" />
+                  <span>
+                    <strong>{provider.label}</strong>
+                    <em>{`${appUrl}/api/projects/${projectSlug}/auth/oauth/${provider.id}/callback`}</em>
+                  </span>
+                  <label className="pb-checkline">
+                    <input type="checkbox" checked={providerBool(provider.id, "enabled")} onChange={(event) => updateProvider(provider.id, { enabled: event.target.checked })} />
+                    Enabled
+                  </label>
+                </div>
+                <div className="pb-grid-form two compact">
+                  <LabeledInput label="Client ID" value={providerString(provider.id, "clientId")} onChange={(value) => updateProvider(provider.id, { clientId: value })} />
+                  <LabeledInput label={clientSecret === "[set]" ? "Client secret (saved)" : "Client secret"} value={clientSecret === "[set]" ? "" : clientSecret} onChange={(value) => updateProvider(provider.id, { clientSecret: value })} />
+                  <LabeledInput label="Auth URL" value={providerString(provider.id, "authURL", provider.authURL)} onChange={(value) => updateProvider(provider.id, { authURL: value })} />
+                  <LabeledInput label="Token URL" value={providerString(provider.id, "tokenURL", provider.tokenURL)} onChange={(value) => updateProvider(provider.id, { tokenURL: value })} />
+                  <LabeledInput label="User info URL" value={providerString(provider.id, "userInfoURL", provider.userInfoURL)} onChange={(value) => updateProvider(provider.id, { userInfoURL: value })} />
+                  <LabeledInput label="Scopes" value={providerString(provider.id, "scopes", provider.scopes)} onChange={(value) => updateProvider(provider.id, { scopes: value })} />
+                </div>
+              </div>
+            );
+          })}
           {[
-            ["OAuth providers", "Skeleton ready; provider callback routes are planned for the next auth milestone."],
             ["One-time password", "Planned after OAuth so email delivery and rate limits share one path."],
             ["Multi-factor auth", "Planned after OTP and recovery-code policy are designed."],
-            ["Email change", "Admin email change exists; app-user email change is planned for project auth settings."],
+            ["Email change", draft.emailChangeEnabled ? "Enabled for app users." : "Disabled for app users."],
           ].map(([label, note]) => (
             <div key={label} className="pb-provider-tile disabled">
               <ShieldCheck className="h-4 w-4" />
@@ -4504,10 +5040,32 @@ function BackupsView(props: {
   onCreateBackup: (event: React.FormEvent<HTMLFormElement>) => void;
   onRunBackup: (job: BackupJob) => void;
   onLoadBackupRuns: (job: BackupJob) => void;
+  restoreFile: File | null;
+  setRestoreFile: React.Dispatch<React.SetStateAction<File | null>>;
+  restoreMode: "dry_run" | "restore";
+  setRestoreMode: React.Dispatch<React.SetStateAction<"dry_run" | "restore">>;
+  restoreConfirm: string;
+  setRestoreConfirm: React.Dispatch<React.SetStateAction<string>>;
+  restoreResult: RestoreJob | null;
+  onSubmitRestore: (event: React.FormEvent<HTMLFormElement>) => void;
+  token: string;
   onLoadCollectionExport: () => void;
   onOpenExport: () => void;
 }) {
   const schema = props.project?.schemaName ?? "proj_app";
+  async function downloadBackupRun(job: BackupJob, run: BackupRun) {
+    const response = await fetch(backupDownloadURL(job.id, run.id), {
+      headers: { Authorization: `Bearer ${props.token}` },
+    });
+    if (!response.ok) return;
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = run.storageKey.split("/").pop() || `${run.id}.dump`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
   return (
     <div className="pb-settings-stack">
       <section className="pb-settings-block">
@@ -4597,6 +5155,11 @@ function BackupsView(props: {
                         <button type="button" className="pb-btn sm primary" onClick={() => props.onRunBackup(job)}>
                           Run
                         </button>
+                        {latest?.status === "success" ? (
+                          <button type="button" className="pb-btn sm outline" onClick={() => void downloadBackupRun(job, latest)}>
+                            <Download className="h-3.5 w-3.5" />
+                          </button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -4613,6 +5176,33 @@ function BackupsView(props: {
           </table>
         </div>
         <RunHistory runs={Object.values(props.backupRuns).flat()} />
+      </section>
+      <section className="pb-settings-block">
+        <h2>Restore / dry-run</h2>
+        <div className="pb-inline-alert warning">Dry-run lists a custom-format pg_dump archive. Restore is destructive and requires confirmation.</div>
+        <form className="pb-grid-form two" onSubmit={props.onSubmitRestore}>
+          <label className="pb-field">
+            <span>Backup file</span>
+            <input type="file" accept=".dump,.backup,.sql" onChange={(event) => props.setRestoreFile(event.target.files?.[0] ?? null)} />
+          </label>
+          <label className="pb-field">
+            <span>Mode</span>
+            <select value={props.restoreMode} onChange={(event) => props.setRestoreMode(event.target.value as "dry_run" | "restore")}>
+              <option value="dry_run">Dry run</option>
+              <option value="restore">Restore database</option>
+            </select>
+          </label>
+          {props.restoreMode === "restore" ? (
+            <LabeledInput label="Confirmation" value={props.restoreConfirm} onChange={props.setRestoreConfirm} placeholder="RESTORE_DATABASE" />
+          ) : null}
+          <button type="submit" className="pb-btn primary" disabled={!props.restoreFile}>
+            <UploadCloud className="h-4 w-4" />
+            {props.restoreMode === "restore" ? "Restore" : "Dry run"}
+          </button>
+        </form>
+        {props.restoreResult ? (
+          <pre className="pb-code-box">{props.restoreResult.output || props.restoreResult.error || props.restoreResult.status}</pre>
+        ) : null}
       </section>
     </div>
   );
@@ -4884,6 +5474,97 @@ function RunHistory({ runs }: { runs: Array<CronRun | BackupRun> }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function WebhooksView(props: {
+  webhooks: Webhook[];
+  webhookDraft: typeof emptyWebhookDraft;
+  setWebhookDraft: React.Dispatch<React.SetStateAction<typeof emptyWebhookDraft>>;
+  webhookDeliveries: Record<string, WebhookDelivery[]>;
+  onCreateWebhook: (event: React.FormEvent<HTMLFormElement>) => void;
+  onDeleteWebhook: (hook: Webhook) => void;
+  onLoadWebhookDeliveries: (hook: Webhook) => void;
+}) {
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>Webhooks</h2>
+        <div className="pb-inline-alert info">Send signed HTTP POST deliveries for record create, update and delete events. Events can be records.*, records.create, or collection.create.</div>
+        <form onSubmit={props.onCreateWebhook} className="pb-grid-form ops-grid">
+          <LabeledInput label="Name" value={props.webhookDraft.name} onChange={(value) => props.setWebhookDraft((draft) => ({ ...draft, name: value }))} placeholder="frontend cache purge" />
+          <LabeledInput label="URL" value={props.webhookDraft.url} onChange={(value) => props.setWebhookDraft((draft) => ({ ...draft, url: value }))} placeholder="https://example.com/webhooks/dublyobase" />
+          <LabeledInput label="Events" value={props.webhookDraft.events} onChange={(value) => props.setWebhookDraft((draft) => ({ ...draft, events: value }))} placeholder="records.*" />
+          <LabeledInput label="Timeout seconds" value={props.webhookDraft.timeoutSeconds} onChange={(value) => props.setWebhookDraft((draft) => ({ ...draft, timeoutSeconds: value }))} />
+          <LabeledInput label="Max attempts" value={props.webhookDraft.maxAttempts} onChange={(value) => props.setWebhookDraft((draft) => ({ ...draft, maxAttempts: value }))} />
+          <LabeledInput label="Secret" value={props.webhookDraft.secret} onChange={(value) => props.setWebhookDraft((draft) => ({ ...draft, secret: value }))} placeholder="auto-generated if blank" />
+          <label className="pb-checkline">
+            <input type="checkbox" checked={props.webhookDraft.enabled} onChange={(event) => props.setWebhookDraft((draft) => ({ ...draft, enabled: event.target.checked }))} />
+            Enabled
+          </label>
+          <button type="submit" className="pb-btn primary">
+            <Plus className="h-4 w-4" />
+            Create webhook
+          </button>
+        </form>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Configured webhooks</h2>
+        <div className="pb-table-wrap">
+          <table className="pb-records-table compact">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>URL</th>
+                <th>Events</th>
+                <th>Status</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {props.webhooks.map((hook) => (
+                <tr key={hook.id}>
+                  <td>{hook.name}</td>
+                  <td className="truncate-cell">{hook.url}</td>
+                  <td>{hook.events.join(", ")}</td>
+                  <td>{hook.enabled ? "enabled" : "paused"}</td>
+                  <td>
+                    <div className="pb-row-actions tight">
+                      <button type="button" className="pb-btn sm secondary" onClick={() => props.onLoadWebhookDeliveries(hook)}>
+                        Deliveries
+                      </button>
+                      <button type="button" className="pb-btn sm danger" onClick={() => props.onDeleteWebhook(hook)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {props.webhooks.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="pb-empty-cell">
+                    <EmptyState label="No webhooks configured." />
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+        {props.webhooks.map((hook) => {
+          const deliveries = props.webhookDeliveries[hook.id] ?? [];
+          return deliveries.length ? (
+            <div key={hook.id} className="pb-run-history">
+              <h3>{hook.name} deliveries</h3>
+              <CompactTable
+                headers={["Event", "Status", "Attempts", "HTTP", "Created"]}
+                rows={deliveries.map((item) => [item.event, item.status, String(item.attempts), item.lastStatusCode ? String(item.lastStatusCode) : "-", formatDate(item.createdAt)])}
+                empty="No deliveries."
+              />
+            </div>
+          ) : null;
+        })}
+      </section>
     </div>
   );
 }
@@ -6237,6 +6918,27 @@ function settingsToSMTPDraft(settings: InstanceSettings): typeof emptySMTPDraft 
     password: "",
     clearPassword: false,
     testTo: "",
+  };
+}
+
+function defaultAuthSettingsForProject(project: Project | null): ProjectAuthSettings {
+  return {
+    projectId: project?.id ?? "",
+    projectSlug: project?.slug ?? "",
+    accessTokenMinutes: 60,
+    refreshTokenDays: 7,
+    verifyTokenHours: 24,
+    resetTokenHours: 1,
+    emailChangeEnabled: true,
+    templates: {
+      verifySubject: "Verify your email for {APP_NAME}",
+      verifyBody: "Verify your email for {APP_NAME}.\n\nOpen this link:\n{LINK}\n\nToken:\n{TOKEN}\n",
+      resetSubject: "Reset your {APP_NAME} password",
+      resetBody: "Reset your password for {APP_NAME}.\n\nOpen this link:\n{LINK}\n\nToken:\n{TOKEN}\n",
+      emailChangeSubject: "Confirm your new email for {APP_NAME}",
+      emailChangeBody: "Confirm the new email address for {APP_NAME}.\n\nNew email: {NEW_EMAIL}\n\nOpen this link:\n{LINK}\n\nToken:\n{TOKEN}\n",
+    },
+    providers: {},
   };
 }
 

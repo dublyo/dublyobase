@@ -22,13 +22,15 @@ import (
 type Record map[string]any
 
 type RecordListOptions struct {
-	Page    int
-	PerPage int
-	Offset  int
-	Sort    string
-	Filter  string
-	Search  string
-	Fields  string
+	Page      int
+	PerPage   int
+	Offset    int
+	Sort      string
+	Filter    string
+	Search    string
+	Fields    string
+	Expand    string
+	SkipTotal bool
 }
 
 type RecordListResult struct {
@@ -72,12 +74,16 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 
 	result := &RecordListResult{Items: make([]Record, 0), Page: opts.Page, PerPage: opts.PerPage}
 	err = withRecordTxForCollection(ctx, pool, auth, collection, "list", func(tx pgx.Tx) error {
-		var total int
-		countSQL := fmt.Sprintf(`select count(*) from %s%s`, table, where)
-		if err := tx.QueryRow(ctx, countSQL, filter.Args...).Scan(&total); err != nil {
-			return mapRecordDBError(err)
+		if opts.SkipTotal {
+			result.TotalItems = -1
+		} else {
+			var total int
+			countSQL := fmt.Sprintf(`select count(*) from %s%s`, table, where)
+			if err := tx.QueryRow(ctx, countSQL, filter.Args...).Scan(&total); err != nil {
+				return mapRecordDBError(err)
+			}
+			result.TotalItems = total
 		}
-		result.TotalItems = total
 
 		args := append([]any{}, filter.Args...)
 		limitPos := len(args) + 1
@@ -103,6 +109,9 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 		return nil
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := expandRecords(ctx, pool, auth, collection, result.Items, opts.Expand); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -151,6 +160,10 @@ func CreateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 }
 
 func GetRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
+	return GetRecordWithOptions(ctx, pool, auth, collectionName, id, "")
+}
+
+func GetRecordWithOptions(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string, expand string) (Record, error) {
 	collection, err := recordCollection(ctx, pool, auth.Project.Slug, collectionName)
 	if err != nil {
 		return nil, err
@@ -179,7 +192,107 @@ func GetRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collec
 	if err != nil {
 		return nil, err
 	}
+	if err := expandRecords(ctx, pool, auth, collection, []Record{out}, expand); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+func expandRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collection *Collection, records []Record, rawExpand string) error {
+	if strings.TrimSpace(rawExpand) == "" || len(records) == 0 {
+		return nil
+	}
+	requested := map[string]struct{}{}
+	all := false
+	for _, part := range strings.Split(rawExpand, ",") {
+		name := NormalizeIdentifier(part)
+		if strings.TrimSpace(part) == "*" {
+			all = true
+			continue
+		}
+		if name != "" {
+			requested[name] = struct{}{}
+		}
+	}
+	if !all && len(requested) == 0 {
+		return nil
+	}
+	for _, field := range collection.Fields {
+		if field.Type != "relation" || field.Hidden {
+			continue
+		}
+		if !all {
+			if _, ok := requested[field.Name]; !ok {
+				continue
+			}
+		}
+		targetName, _ := field.Options["collection"].(string)
+		targetName = NormalizeIdentifier(targetName)
+		if targetName == "" {
+			continue
+		}
+		multiple := fieldIsMultiple(field)
+		for _, record := range records {
+			value, ok := record[field.Name]
+			if !ok || value == nil {
+				continue
+			}
+			expanded := ensureRecordExpand(record)
+			if multiple {
+				ids := relationIDSlice(value)
+				items := make([]Record, 0, len(ids))
+				for _, id := range ids {
+					related, err := GetRecordWithOptions(ctx, pool, auth, targetName, id, "")
+					if err == nil {
+						items = append(items, related)
+					}
+				}
+				expanded[field.Name] = items
+				continue
+			}
+			id, ok := value.(string)
+			if !ok || id == "" {
+				continue
+			}
+			related, err := GetRecordWithOptions(ctx, pool, auth, targetName, id, "")
+			if err == nil {
+				expanded[field.Name] = related
+			}
+		}
+	}
+	return nil
+}
+
+func ensureRecordExpand(record Record) map[string]any {
+	existing, _ := record["expand"].(map[string]any)
+	if existing == nil {
+		existing = map[string]any{}
+		record["expand"] = existing
+	}
+	return existing
+}
+
+func relationIDSlice(value any) []string {
+	switch raw := value.(type) {
+	case []any:
+		out := make([]string, 0, len(raw))
+		for _, item := range raw {
+			if id, ok := item.(string); ok && id != "" {
+				out = append(out, id)
+			}
+		}
+		return out
+	case []string:
+		out := make([]string, 0, len(raw))
+		for _, id := range raw {
+			if strings.TrimSpace(id) != "" {
+				out = append(out, id)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func UpdateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string, raw map[string]json.RawMessage) (Record, error) {

@@ -12,13 +12,18 @@ import (
 )
 
 const (
-	appAccessTokenTTL   = time.Hour
-	appRefreshTokenTTL  = 7 * 24 * time.Hour
-	emailVerifyTokenTTL = 24 * time.Hour
-	passwordResetTTL    = time.Hour
+	appAccessTokenMinutesDefault = 60
+	appRefreshTokenDaysDefault   = 7
+	emailVerifyTokenHoursDefault = 24
+	passwordResetHoursDefault    = 1
+	appAccessTokenTTL            = time.Duration(appAccessTokenMinutesDefault) * time.Minute
+	appRefreshTokenTTL           = time.Duration(appRefreshTokenDaysDefault) * 24 * time.Hour
+	emailVerifyTokenTTL          = time.Duration(emailVerifyTokenHoursDefault) * time.Hour
+	passwordResetTTL             = time.Duration(passwordResetHoursDefault) * time.Hour
 
 	appRefreshTokenPrefix  = "dbo_refresh_"
 	emailVerifyTokenPrefix = "dbo_verify_"
+	emailChangeTokenPrefix = "dbo_email_change_"
 	passwordResetPrefix    = "dbo_reset_"
 )
 
@@ -54,11 +59,22 @@ func GeneratePasswordResetToken() (string, error) {
 	return generateOpaqueToken(passwordResetPrefix)
 }
 
+func GenerateEmailChangeToken() (string, error) {
+	return generateOpaqueToken(emailChangeTokenPrefix)
+}
+
 func GenerateAppAccessToken(secret string, projectSlug string, userID string, tokenKey string, now time.Time) (string, time.Time, error) {
+	return GenerateAppAccessTokenWithTTL(secret, projectSlug, userID, tokenKey, now, appAccessTokenTTL)
+}
+
+func GenerateAppAccessTokenWithTTL(secret string, projectSlug string, userID string, tokenKey string, now time.Time, ttl time.Duration) (string, time.Time, error) {
 	if len(secret) < 32 {
 		return "", time.Time{}, ErrUnauthorized
 	}
-	expiresAt := now.UTC().Add(appAccessTokenTTL)
+	if ttl <= 0 {
+		ttl = appAccessTokenTTL
+	}
+	expiresAt := now.UTC().Add(ttl)
 	claims := appClaims{
 		Role:       string(RecordRoleAuthenticated),
 		Project:    projectSlug,

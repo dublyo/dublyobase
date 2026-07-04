@@ -387,7 +387,7 @@ git diff --check
 10. Add audit rows for collection actions.
 11. Add unit tests for fields, identifiers, and diffing.
 12. Add real Postgres integration tests.
-13. Update README and roadmap.
+13. Update README and docs.
 14. Run real Postgres validation before tagging `v0.3.0`.
 
 ## Acceptance Criteria

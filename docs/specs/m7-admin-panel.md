@@ -268,5 +268,5 @@ Browser verification:
 11. Add file upload/download controls.
 12. Add audit-log endpoint and UI if required.
 13. Add tests and browser verification.
-14. Update README, roadmap, and Dublyo template pin to `v0.8.0`.
+14. Update README, docs, and Dublyo template pin to `v0.8.0`.
 15. Commit, tag `v0.8.0`, push, wait for CI/GHCR, deploy, smoke live.

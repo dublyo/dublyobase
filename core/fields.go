@@ -172,6 +172,25 @@ func validateFieldOptions(field Field) error {
 		if boolOption(field.Options, "unique") && fieldIsMultiple(field) {
 			return fmt.Errorf("%w: relation field %q options.unique requires a single relation", ErrValidation, field.Name)
 		}
+		onDelete, _ := field.Options["onDelete"].(string)
+		switch strings.TrimSpace(onDelete) {
+		case "", "restrict", "cascade", "set_null":
+		default:
+			return fmt.Errorf("%w: relation field %q options.onDelete must be restrict, cascade or set_null", ErrValidation, field.Name)
+		}
+		if strings.TrimSpace(onDelete) == "set_null" && field.Required {
+			return fmt.Errorf("%w: relation field %q cannot use set_null while required", ErrValidation, field.Name)
+		}
+		if displayField, _ := field.Options["displayField"].(string); strings.TrimSpace(displayField) != "" {
+			if err := ValidateDataIdentifier("relation display field", NormalizeIdentifier(displayField)); err != nil {
+				return err
+			}
+		}
+		if reverseName, _ := field.Options["reverseName"].(string); strings.TrimSpace(reverseName) != "" {
+			if err := ValidateDataIdentifier("relation reverse field", NormalizeIdentifier(reverseName)); err != nil {
+				return err
+			}
+		}
 	case "file":
 		if _, ok := field.Options["multiple"]; ok {
 			if _, ok := field.Options["multiple"].(bool); !ok {

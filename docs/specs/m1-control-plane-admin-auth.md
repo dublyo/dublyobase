@@ -3,7 +3,7 @@
 Status: implemented in v0.2.0
 Depends on: v0.1.2
 
-This spec supersedes the short M1 roadmap note for admin-auth internals: M1 uses opaque, hashed admin session tokens instead of stateless admin JWTs. Stateless app-user access JWTs remain planned for M4.
+This spec supersedes the short M1 planning note for admin-auth internals: M1 uses opaque, hashed admin session tokens instead of stateless admin JWTs. Stateless app-user access JWTs remain planned for M4.
 
 ## Goal
 
@@ -363,7 +363,7 @@ git diff --check
 9. Add audit logging helper and write audit rows from setup/login/logout/project create.
 10. Add unit tests for validation, auth helpers, middleware, and rate limiting.
 11. Add integration tests for setup, login, logout, project provisioning, and concurrency.
-12. Update `dublyobase-dev.md`, README endpoint table, and deploy notes.
+12. Update README endpoint table and deploy notes.
 13. Run real Postgres tests before tagging `v0.2.0`.
 
 ## Acceptance Criteria

@@ -143,6 +143,9 @@ func CreateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	if err := syncRelationUniqueIndexes(ctx, tx, project.SchemaName, "", collection.Name, nil, collection.Fields); err != nil {
 		return nil, err
 	}
+	if err := syncRelationForeignKeys(ctx, tx, project, project.SchemaName, "", collection.Name, nil, collection.Fields); err != nil {
+		return nil, err
+	}
 	if err := syncCollectionPolicies(ctx, tx, project, collection); err != nil {
 		return nil, err
 	}
@@ -231,6 +234,129 @@ func relationUniqueIndexName(tableName string, fieldName string) string {
 		prefix = prefix[:42]
 	}
 	return fmt.Sprintf("%s_%x", prefix, sum[:6])
+}
+
+func syncRelationForeignKeys(ctx context.Context, tx pgx.Tx, project *Project, sourceSchemaName string, currentTableName string, nextTableName string, currentFields []Field, nextFields []Field) error {
+	if project == nil {
+		return fmt.Errorf("%w: project is required", ErrValidation)
+	}
+	sourceTable := quoteIdent(sourceSchemaName, nextTableName)
+	for _, field := range currentFields {
+		if field.Type != "relation" || fieldIsMultiple(field) {
+			continue
+		}
+		name := relationForeignKeyName(nonEmptyString(currentTableName, nextTableName), field.Name)
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`alter table %s drop constraint if exists %s`, sourceTable, quoteIdent(name))); err != nil {
+			return mapSchemaSyncError(err)
+		}
+	}
+	for _, field := range nextFields {
+		if field.Type != "relation" || fieldIsMultiple(field) {
+			continue
+		}
+		spec, err := relationForeignKeySpec(ctx, tx, project, nextTableName, field)
+		if err != nil {
+			return err
+		}
+		if spec == nil {
+			continue
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`alter table %s drop constraint if exists %s`, sourceTable, quoteIdent(spec.Name))); err != nil {
+			return mapSchemaSyncError(err)
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf(
+			`alter table %s add constraint %s foreign key (%s) references %s (%s) on delete %s not valid`,
+			sourceTable,
+			quoteIdent(spec.Name),
+			quoteIdent(spec.SourceColumn),
+			quoteIdent(spec.TargetSchema, spec.TargetTable),
+			quoteIdent(spec.TargetColumn),
+			spec.OnDelete,
+		)); err != nil {
+			return mapSchemaSyncError(err)
+		}
+	}
+	return nil
+}
+
+type relationFKSpec struct {
+	Name         string
+	SourceColumn string
+	TargetSchema string
+	TargetTable  string
+	TargetColumn string
+	OnDelete     string
+}
+
+func relationForeignKeySpec(ctx context.Context, tx pgx.Tx, project *Project, sourceTableName string, field Field) (*relationFKSpec, error) {
+	targetName, _ := field.Options["collection"].(string)
+	targetName = NormalizeIdentifier(targetName)
+	if targetName == "" {
+		return nil, fmt.Errorf("%w: relation field %q requires options.collection", ErrValidation, field.Name)
+	}
+	target, err := getCollectionTx(ctx, tx, project.ID, targetName)
+	if err != nil {
+		return nil, err
+	}
+	if collectionPrimaryKeyType(target) != defaultRecordPrimaryKeyType {
+		return nil, nil
+	}
+	targetSchema, targetTable, err := collectionPhysicalTable(project, target)
+	if err != nil {
+		return nil, err
+	}
+	onDelete, err := relationOnDeleteClause(field)
+	if err != nil {
+		return nil, err
+	}
+	return &relationFKSpec{
+		Name:         relationForeignKeyName(sourceTableName, field.Name),
+		SourceColumn: field.Name,
+		TargetSchema: targetSchema,
+		TargetTable:  targetTable,
+		TargetColumn: collectionPrimaryKeySource(target),
+		OnDelete:     onDelete,
+	}, nil
+}
+
+func relationOnDeleteClause(field Field) (string, error) {
+	if boolOption(field.Options, "cascadeDelete") {
+		return "cascade", nil
+	}
+	onDelete, _ := field.Options["onDelete"].(string)
+	switch strings.TrimSpace(onDelete) {
+	case "", "restrict":
+		return "restrict", nil
+	case "cascade":
+		return "cascade", nil
+	case "set_null":
+		if field.Required {
+			return "", fmt.Errorf("%w: relation field %q cannot use set_null while required", ErrValidation, field.Name)
+		}
+		return "set null", nil
+	default:
+		return "", fmt.Errorf("%w: relation field %q options.onDelete must be restrict, cascade or set_null", ErrValidation, field.Name)
+	}
+}
+
+func relationForeignKeyName(tableName string, fieldName string) string {
+	raw := "dbo_relfk_" + tableName + "_" + fieldName
+	if len(raw) <= 55 {
+		return raw
+	}
+	sum := sha1.Sum([]byte(raw))
+	prefix := raw
+	if len(prefix) > 42 {
+		prefix = prefix[:42]
+	}
+	return fmt.Sprintf("%s_%x", prefix, sum[:6])
+}
+
+func nonEmptyString(value string, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return value
+	}
+	return fallback
 }
 
 func ListCollections(ctx context.Context, pool *pgxpool.Pool, projectSlug string) ([]Collection, error) {
@@ -395,6 +521,9 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 			return nil, fmt.Errorf("%w: relation unique indexes cannot move schemas", ErrValidation)
 		}
 		if err := syncRelationUniqueIndexes(ctx, tx, nextSchemaName, currentTableName, nextTableName, current.Fields, next.Fields); err != nil {
+			return nil, err
+		}
+		if err := syncRelationForeignKeys(ctx, tx, project, nextSchemaName, currentTableName, nextTableName, current.Fields, next.Fields); err != nil {
 			return nil, err
 		}
 	}

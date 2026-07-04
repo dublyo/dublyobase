@@ -2,6 +2,8 @@ package apis
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,6 +63,14 @@ type realtimePayload struct {
 
 func newRealtimeHub() *realtimeHub {
 	return &realtimeHub{subscribers: map[uint64]*realtimeSubscriber{}}
+}
+
+func newRealtimeSourceID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("srv_%d", time.Now().UnixNano())
+	}
+	return "srv_" + base64.RawURLEncoding.EncodeToString(raw[:])
 }
 
 func (h *realtimeHub) subscribe(project string, collections map[string]struct{}, actions map[string]struct{}) *realtimeSubscriber {
@@ -263,14 +273,64 @@ func (s *server) publishRealtimeRecord(ctx context.Context, projectSlug string, 
 	if id == "" {
 		id = s.realtimeRecordID(ctx, projectSlug, collectionName, record)
 	}
-	s.realtime.publish(realtimeEvent{
+	ev := realtimeEvent{
 		Project:    projectSlug,
 		Collection: collectionName,
 		Action:     action,
 		ID:         id,
 		Record:     record,
 		At:         time.Now().UTC(),
-	})
+	}
+	s.persistRealtimeEvent(ctx, ev)
+	s.realtime.publish(ev)
+}
+
+func (s *server) persistRealtimeEvent(ctx context.Context, ev realtimeEvent) {
+	if s.app.Pool == nil || s.realtimeSourceID == "" {
+		return
+	}
+	insertCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := core.InsertRealtimeEvent(insertCtx, s.app.Pool, s.realtimeSourceID, ev.Project, ev.Collection, ev.Action, ev.ID, ev.Record); err != nil {
+		s.app.Log.Warn("realtime event insert failed", "project", ev.Project, "collection", ev.Collection, "action", ev.Action, "err", err)
+	}
+}
+
+func (s *server) runRealtimeFanout(ctx context.Context) {
+	if s.app.Pool == nil || s.realtime == nil || s.realtimeSourceID == "" {
+		return
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	var lastID int64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			events, err := core.ListRealtimeEventsAfter(pollCtx, s.app.Pool, lastID, s.realtimeSourceID, 100)
+			if err == nil {
+				for _, item := range events {
+					if item.ID > lastID {
+						lastID = item.ID
+					}
+					s.realtime.publish(realtimeEvent{
+						Project:    item.Project,
+						Collection: item.Collection,
+						Action:     item.Action,
+						ID:         item.RecordID,
+						Record:     item.Record,
+						At:         item.CreatedAt,
+					})
+				}
+				_ = core.PruneRealtimeEvents(pollCtx, s.app.Pool, 24*time.Hour)
+			} else if ctx.Err() == nil {
+				s.app.Log.Warn("realtime fanout poll failed", "err", err)
+			}
+			cancel()
+		}
+	}
 }
 
 func (s *server) realtimeRecordID(ctx context.Context, projectSlug string, collectionName string, record core.Record) string {

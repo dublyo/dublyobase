@@ -2,6 +2,7 @@ package apis
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -64,7 +65,47 @@ func (s *server) withMiddleware(next http.Handler) http.Handler {
 			"dur_ms", time.Since(start).Milliseconds(),
 			"ip", s.clientIP(r),
 		)
+		s.persistRequestLog(r, rec.status, time.Since(start))
 	})
+}
+
+func (s *server) persistRequestLog(r *http.Request, status int, dur time.Duration) {
+	if s.app.Pool == nil || shouldSkipRequestLog(r.URL.Path) {
+		return
+	}
+	projectSlug, _ := publicProjectSlugFromPath(r.URL.Path)
+	requestID := r.Header.Get("X-Request-ID")
+	if requestID == "" {
+		requestID = r.Header.Get("Cf-Ray")
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
+	defer cancel()
+	if err := core.InsertRequestLog(ctx, s.app.Pool, core.RequestLogEvent{
+		ProjectSlug: projectSlug,
+		Method:      r.Method,
+		Path:        r.URL.Path,
+		Status:      status,
+		DurationMS:  int(dur.Milliseconds()),
+		IP:          s.clientIP(r),
+		UserAgent:   r.UserAgent(),
+		RequestID:   requestID,
+		Metadata: map[string]any{
+			"origin":  r.Header.Get("Origin"),
+			"referer": r.Header.Get("Referer"),
+		},
+	}); err != nil {
+		s.app.Log.Warn("request log insert failed", "err", err)
+	}
+}
+
+func shouldSkipRequestLog(p string) bool {
+	if p == "/health" || p == "/ready" {
+		return true
+	}
+	if strings.HasPrefix(p, "/_next/") || strings.HasPrefix(p, "/favicon") || strings.HasSuffix(p, ".png") || strings.HasSuffix(p, ".svg") || strings.HasSuffix(p, ".ico") {
+		return true
+	}
+	return false
 }
 
 func applySecurityHeaders(w http.ResponseWriter) {

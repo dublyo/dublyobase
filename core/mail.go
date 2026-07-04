@@ -116,12 +116,22 @@ func (m *SMTPMailer) Send(ctx context.Context, msg MailMessage) error {
 }
 
 func BuildAuthTokenEmail(cfg *Config, kind string, projectSlug string, projectName string, email string, token string) (MailMessage, error) {
+	return BuildAuthTokenEmailWithSettings(cfg, DefaultProjectAuthSettings(&Project{Slug: NormalizeProjectSlug(projectSlug), Name: projectName}), kind, projectSlug, projectName, email, "", token)
+}
+
+func BuildAuthTokenEmailWithSettings(cfg *Config, settings *ProjectAuthSettings, kind string, projectSlug string, projectName string, email string, newEmail string, token string) (MailMessage, error) {
 	if cfg == nil {
 		return MailMessage{}, fmt.Errorf("%w: config is required", ErrValidation)
 	}
 	email = NormalizeEmail(email)
 	if err := ValidateAppUserEmail(email); err != nil {
 		return MailMessage{}, err
+	}
+	if newEmail != "" {
+		newEmail = NormalizeEmail(newEmail)
+		if err := ValidateAppUserEmail(newEmail); err != nil {
+			return MailMessage{}, err
+		}
 	}
 	projectSlug = NormalizeProjectSlug(projectSlug)
 	if err := ValidateProjectSlug(projectSlug); err != nil {
@@ -135,6 +145,10 @@ func BuildAuthTokenEmail(cfg *Config, kind string, projectSlug string, projectNa
 	if projectLabel == "" {
 		projectLabel = projectSlug
 	}
+	templates := defaultAuthTemplates()
+	if settings != nil {
+		templates = mergeAuthTemplates(templates, settings.Templates)
+	}
 	switch kind {
 	case "verify_email":
 		link, err := authActionLink(cfg.AppURL, "/auth/verify", projectSlug, email, token)
@@ -144,10 +158,8 @@ func BuildAuthTokenEmail(cfg *Config, kind string, projectSlug string, projectNa
 		return MailMessage{
 			From:    cfg.SMTPFrom,
 			To:      email,
-			Subject: "Verify your email for " + projectLabel,
-			Text: "Verify your email for " + projectLabel + ".\n\n" +
-				"Open this link:\n" + link + "\n\n" +
-				"Token:\n" + token + "\n",
+			Subject: renderAuthTemplate(templates.VerifySubject, projectSlug, projectLabel, email, newEmail, token, link),
+			Text:    renderAuthTemplate(templates.VerifyBody, projectSlug, projectLabel, email, newEmail, token, link),
 		}, nil
 	case "password_reset":
 		link, err := authActionLink(cfg.AppURL, "/auth/reset-password", projectSlug, email, token)
@@ -157,14 +169,42 @@ func BuildAuthTokenEmail(cfg *Config, kind string, projectSlug string, projectNa
 		return MailMessage{
 			From:    cfg.SMTPFrom,
 			To:      email,
-			Subject: "Reset your " + projectLabel + " password",
-			Text: "Reset your password for " + projectLabel + ".\n\n" +
-				"Open this link:\n" + link + "\n\n" +
-				"Token:\n" + token + "\n",
+			Subject: renderAuthTemplate(templates.ResetSubject, projectSlug, projectLabel, email, newEmail, token, link),
+			Text:    renderAuthTemplate(templates.ResetBody, projectSlug, projectLabel, email, newEmail, token, link),
+		}, nil
+	case "email_change":
+		if newEmail == "" {
+			return MailMessage{}, fmt.Errorf("%w: new email is required", ErrValidation)
+		}
+		link, err := authActionLink(cfg.AppURL, "/auth/email-change", projectSlug, newEmail, token)
+		if err != nil {
+			return MailMessage{}, err
+		}
+		return MailMessage{
+			From:    cfg.SMTPFrom,
+			To:      newEmail,
+			Subject: renderAuthTemplate(templates.EmailChangeSubject, projectSlug, projectLabel, email, newEmail, token, link),
+			Text:    renderAuthTemplate(templates.EmailChangeBody, projectSlug, projectLabel, email, newEmail, token, link),
 		}, nil
 	default:
 		return MailMessage{}, fmt.Errorf("%w: unsupported auth email type", ErrValidation)
 	}
+}
+
+func renderAuthTemplate(template string, projectSlug string, projectName string, email string, newEmail string, token string, link string) string {
+	replacements := map[string]string{
+		"{APP_NAME}":  projectName,
+		"{PROJECT}":   projectSlug,
+		"{EMAIL}":     email,
+		"{NEW_EMAIL}": newEmail,
+		"{TOKEN}":     token,
+		"{LINK}":      link,
+	}
+	out := template
+	for key, value := range replacements {
+		out = strings.ReplaceAll(out, key, value)
+	}
+	return out
 }
 
 func authActionLink(appURL string, route string, projectSlug string, email string, token string) (string, error) {

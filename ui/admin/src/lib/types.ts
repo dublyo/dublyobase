@@ -248,6 +248,70 @@ export type BackupRun = {
   error: string;
 };
 
+export type RestoreJob = {
+  id: string;
+  adminId?: string | null;
+  mode: "dry_run" | "restore";
+  source: string;
+  fileName: string;
+  status: "running" | "success" | "error";
+  output: string;
+  error: string;
+  createdAt: string;
+  finishedAt?: string | null;
+};
+
+export type ProjectAuthSettings = {
+  projectId: string;
+  projectSlug: string;
+  accessTokenMinutes: number;
+  refreshTokenDays: number;
+  verifyTokenHours: number;
+  resetTokenHours: number;
+  emailChangeEnabled: boolean;
+  templates: {
+    verifySubject?: string;
+    verifyBody?: string;
+    resetSubject?: string;
+    resetBody?: string;
+    emailChangeSubject?: string;
+    emailChangeBody?: string;
+  };
+  providers: Record<string, unknown>;
+};
+
+export type Webhook = {
+  id: string;
+  projectId: string;
+  projectSlug: string;
+  name: string;
+  url: string;
+  events: string[];
+  enabled: boolean;
+  secretSet: boolean;
+  secret?: string;
+  timeoutSeconds: number;
+  maxAttempts: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type WebhookDelivery = {
+  id: string;
+  webhookId: string;
+  projectId: string;
+  event: string;
+  status: "pending" | "success" | "error";
+  attempts: number;
+  nextAttemptAt: string;
+  lastStatusCode?: number | null;
+  error: string;
+  requestBody: Record<string, unknown>;
+  responseBody: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type MCPToken = {
   id: string;
   scope: "admin" | "project";
@@ -281,6 +345,22 @@ export type AuditEntry = {
   ip: string;
   userAgent: string;
   data: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type RequestLogEntry = {
+  id: string;
+  projectId?: string | null;
+  projectSlug: string;
+  method: string;
+  path: string;
+  status: number;
+  durationMs: number;
+  ip: string;
+  userAgent: string;
+  requestId: string;
+  error: string;
+  metadata: Record<string, unknown>;
   createdAt: string;
 };
 

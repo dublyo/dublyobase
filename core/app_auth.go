@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -25,6 +26,7 @@ type AuthTokenRequestResult struct {
 	Accepted    bool   `json:"accepted"`
 	DevToken    string `json:"devToken,omitempty"`
 	Email       string `json:"-"`
+	NewEmail    string `json:"-"`
 	Token       string `json:"-"`
 	Type        string `json:"-"`
 	ProjectName string `json:"-"`
@@ -66,6 +68,10 @@ func SignupAppUser(ctx context.Context, pool *pgxpool.Pool, cfg *Config, project
 	if err != nil {
 		return nil, err
 	}
+	authSettings, err := getProjectAuthSettingsByProject(ctx, pool, project)
+	if err != nil {
+		return nil, err
+	}
 
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -96,11 +102,11 @@ func SignupAppUser(ctx context.Context, pool *pgxpool.Pool, cfg *Config, project
 		return nil, err
 	}
 
-	refreshToken, session, err := createAppSessionTx(ctx, tx, project.ID, user.ID, "", ip, userAgent, now)
+	refreshToken, session, err := createAppSessionTx(ctx, tx, project.ID, user.ID, "", ip, userAgent, now, authSettings.RefreshTokenTTL())
 	if err != nil {
 		return nil, err
 	}
-	result, err := buildAppAuthResult(cfg, project, user, tokenKey, refreshToken, session.ExpiresAt, now)
+	result, err := buildAppAuthResult(cfg, project, user, tokenKey, refreshToken, session.ExpiresAt, now, authSettings.AccessTokenTTL())
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +132,10 @@ func LoginAppUser(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectS
 		return nil, ErrInvalidCredentials
 	}
 	project, err := GetProject(ctx, pool, projectSlug)
+	if err != nil {
+		return nil, err
+	}
+	authSettings, err := getProjectAuthSettingsByProject(ctx, pool, project)
 	if err != nil {
 		return nil, err
 	}
@@ -164,11 +174,11 @@ func LoginAppUser(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectS
 	if tag.RowsAffected() == 0 {
 		return nil, ErrUserDisabled
 	}
-	refreshToken, session, err := createAppSessionTx(ctx, tx, project.ID, cred.ID, "", ip, userAgent, now)
+	refreshToken, session, err := createAppSessionTx(ctx, tx, project.ID, cred.ID, "", ip, userAgent, now, authSettings.RefreshTokenTTL())
 	if err != nil {
 		return nil, err
 	}
-	result, err := buildAppAuthResult(cfg, project, cred.AppUser, cred.TokenKey, refreshToken, session.ExpiresAt, now)
+	result, err := buildAppAuthResult(cfg, project, cred.AppUser, cred.TokenKey, refreshToken, session.ExpiresAt, now, authSettings.AccessTokenTTL())
 	if err != nil {
 		return nil, err
 	}
@@ -194,6 +204,10 @@ func RefreshAppSession(ctx context.Context, pool *pgxpool.Pool, cfg *Config, pro
 		return nil, ErrInvalidRefreshToken
 	}
 	project, err := GetProject(ctx, pool, projectSlug)
+	if err != nil {
+		return nil, err
+	}
+	authSettings, err := getProjectAuthSettingsByProject(ctx, pool, project)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +254,7 @@ func RefreshAppSession(ctx context.Context, pool *pgxpool.Pool, cfg *Config, pro
 		return nil, ErrUserDisabled
 	}
 
-	newRefreshToken, newSession, err := createAppSessionTx(ctx, tx, project.ID, session.UserID, session.FamilyID, ip, userAgent, now)
+	newRefreshToken, newSession, err := createAppSessionTx(ctx, tx, project.ID, session.UserID, session.FamilyID, ip, userAgent, now, authSettings.RefreshTokenTTL())
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +268,7 @@ func RefreshAppSession(ctx context.Context, pool *pgxpool.Pool, cfg *Config, pro
 	); err != nil {
 		return nil, err
 	}
-	result, err := buildAppAuthResult(cfg, project, session.User.AppUser, session.User.TokenKey, newRefreshToken, newSession.ExpiresAt, now)
+	result, err := buildAppAuthResult(cfg, project, session.User.AppUser, session.User.TokenKey, newRefreshToken, newSession.ExpiresAt, now, authSettings.AccessTokenTTL())
 	if err != nil {
 		return nil, err
 	}
@@ -392,11 +406,42 @@ func ResolveAppAccessToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config,
 }
 
 func RequestEmailVerification(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, email string, ip string, userAgent string, now time.Time) (*AuthTokenRequestResult, error) {
-	return requestAuthToken(ctx, pool, cfg, projectSlug, email, "verify_email", emailVerifyTokenTTL, GenerateEmailVerificationToken, ip, userAgent, now)
+	return requestAuthToken(ctx, pool, cfg, projectSlug, email, "verify_email", 0, nil, GenerateEmailVerificationToken, ip, userAgent, now)
 }
 
 func RequestPasswordReset(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, email string, ip string, userAgent string, now time.Time) (*AuthTokenRequestResult, error) {
-	return requestAuthToken(ctx, pool, cfg, projectSlug, email, "password_reset", passwordResetTTL, GeneratePasswordResetToken, ip, userAgent, now)
+	return requestAuthToken(ctx, pool, cfg, projectSlug, email, "password_reset", 0, nil, GeneratePasswordResetToken, ip, userAgent, now)
+}
+
+func RequestEmailChange(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, currentUserID string, newEmail string, ip string, userAgent string, now time.Time) (*AuthTokenRequestResult, error) {
+	newEmail, err := normalizeAppEmail(newEmail)
+	if err != nil {
+		return nil, err
+	}
+	project, err := GetProject(ctx, pool, projectSlug)
+	if err != nil {
+		return nil, err
+	}
+	settings, err := getProjectAuthSettingsByProject(ctx, pool, project)
+	if err != nil {
+		return nil, err
+	}
+	if !settings.EmailChangeEnabled {
+		return nil, fmt.Errorf("%w: email change is disabled", ErrValidation)
+	}
+	if _, err := EnsureAuthUsersCollection(ctx, pool, project.Slug); err != nil {
+		return nil, err
+	}
+	cred, err := getAppUserByID(ctx, pool, project, currentUserID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := getAppUserByEmail(ctx, pool, project, newEmail); err == nil {
+		return nil, ErrUserExists
+	} else if !errors.Is(err, ErrUnauthorized) {
+		return nil, err
+	}
+	return requestAuthToken(ctx, pool, cfg, projectSlug, cred.Email, "email_change", settings.VerifyTokenTTL(), map[string]any{"newEmail": newEmail}, GenerateEmailChangeToken, ip, userAgent, now)
 }
 
 func ConfirmEmailVerification(ctx context.Context, pool *pgxpool.Pool, projectSlug string, email string, token string, ip string, userAgent string, now time.Time) (*AppUser, error) {
@@ -538,7 +583,88 @@ func ConfirmPasswordReset(ctx context.Context, pool *pgxpool.Pool, cfg *Config, 
 	return &user.AppUser, nil
 }
 
-func requestAuthToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, email string, tokenType string, ttl time.Duration, generate func() (string, error), ip string, userAgent string, now time.Time) (*AuthTokenRequestResult, error) {
+func ConfirmEmailChange(ctx context.Context, pool *pgxpool.Pool, projectSlug string, token string, ip string, userAgent string, now time.Time) (*AppUser, error) {
+	if !strings.HasPrefix(strings.TrimSpace(token), emailChangeTokenPrefix) {
+		return nil, ErrInvalidAuthToken
+	}
+	project, err := GetProject(ctx, pool, projectSlug)
+	if err != nil {
+		return nil, err
+	}
+	settings, err := getProjectAuthSettingsByProject(ctx, pool, project)
+	if err != nil {
+		return nil, err
+	}
+	if !settings.EmailChangeEnabled {
+		return nil, fmt.Errorf("%w: email change is disabled", ErrValidation)
+	}
+	if _, err := EnsureAuthUsersCollection(ctx, pool, project.Slug); err != nil {
+		return nil, err
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	authToken, user, err := getAuthTokenForUpdate(ctx, tx, project, "email_change", token)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateAuthTokenUse(authToken, user, now); err != nil {
+		return nil, err
+	}
+	newEmail, _ := authToken.Data["newEmail"].(string)
+	newEmail, err = normalizeAppEmail(newEmail)
+	if err != nil {
+		return nil, ErrInvalidAuthToken
+	}
+	tokenKey, err := generateTokenKey()
+	if err != nil {
+		return nil, err
+	}
+	table := quoteIdent(project.SchemaName, authUsersCollection)
+	if err := tx.QueryRow(ctx, fmt.Sprintf(`
+		update %s
+		set email = $1, email_normalized = $1, verified = true, token_key = $2, updated = now()
+		where id = $3
+		returning id, email, verified, created, updated`,
+		table,
+	), newEmail, tokenKey, user.ID).Scan(&user.ID, &user.Email, &user.Verified, &user.Created, &user.Updated); err != nil {
+		if pgErrCode(err) == "23505" {
+			return nil, ErrUserExists
+		}
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `update _dbo.auth_tokens set used_at = $1 where id = $2`, now.UTC(), authToken.ID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `
+		update _dbo.sessions
+		set revoked_at = coalesce(revoked_at, $1), last_seen_at = $1
+		where project_id = $2 and collection = 'users' and user_id = $3 and revoked_at is null`,
+		now.UTC(),
+		project.ID,
+		user.ID,
+	); err != nil {
+		return nil, err
+	}
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		Action:     "app_user.email_change",
+		TargetType: "app_user",
+		TargetID:   user.ID,
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data:       map[string]any{"project": project.Slug},
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &user.AppUser, nil
+}
+
+func requestAuthToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, email string, tokenType string, ttl time.Duration, data map[string]any, generate func() (string, error), ip string, userAgent string, now time.Time) (*AuthTokenRequestResult, error) {
 	email, err := normalizeAppEmail(email)
 	if err != nil {
 		return nil, err
@@ -546,6 +672,22 @@ func requestAuthToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, proj
 	project, err := GetProject(ctx, pool, projectSlug)
 	if err != nil {
 		return nil, err
+	}
+	if ttl <= 0 {
+		settings, err := getProjectAuthSettingsByProject(ctx, pool, project)
+		if err != nil {
+			return nil, err
+		}
+		switch tokenType {
+		case "verify_email":
+			ttl = settings.VerifyTokenTTL()
+		case "password_reset":
+			ttl = settings.ResetTokenTTL()
+		case "email_change":
+			ttl = settings.VerifyTokenTTL()
+		default:
+			return nil, fmt.Errorf("%w: unsupported auth token type", ErrValidation)
+		}
 	}
 	if _, err := EnsureAuthUsersCollection(ctx, pool, project.Slug); err != nil {
 		return nil, err
@@ -564,19 +706,27 @@ func requestAuthToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, proj
 	if err != nil {
 		return nil, err
 	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	rawData, err := json.Marshal(redactAuditData(data))
+	if err != nil {
+		return nil, err
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `
-		insert into _dbo.auth_tokens (project_id, collection, user_id, type, token_hash, expires_at)
-		values ($1, 'users', $2, $3, $4, $5)`,
+		insert into _dbo.auth_tokens (project_id, collection, user_id, type, token_hash, expires_at, data)
+		values ($1, 'users', $2, $3, $4, $5, $6::jsonb)`,
 		project.ID,
 		cred.ID,
 		tokenType,
 		HashToken(token),
 		now.UTC().Add(ttl),
+		rawData,
 	); err != nil {
 		return nil, err
 	}
@@ -594,18 +744,24 @@ func requestAuthToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, proj
 		return nil, err
 	}
 	out := &AuthTokenRequestResult{Accepted: true, Email: email, Token: token, Type: tokenType, ProjectName: project.Name}
+	if newEmail, _ := data["newEmail"].(string); newEmail != "" {
+		out.NewEmail = newEmail
+	}
 	if cfg != nil && cfg.AuthDevTokens {
 		out.DevToken = token
 	}
 	return out, nil
 }
 
-func createAppSessionTx(ctx context.Context, tx pgx.Tx, projectID string, userID string, familyID string, ip string, userAgent string, now time.Time) (string, appRefreshSession, error) {
+func createAppSessionTx(ctx context.Context, tx pgx.Tx, projectID string, userID string, familyID string, ip string, userAgent string, now time.Time, ttl time.Duration) (string, appRefreshSession, error) {
 	token, err := GenerateAppRefreshToken()
 	if err != nil {
 		return "", appRefreshSession{}, err
 	}
-	expiresAt := now.UTC().Add(appRefreshTokenTTL)
+	if ttl <= 0 {
+		ttl = appRefreshTokenTTL
+	}
+	expiresAt := now.UTC().Add(ttl)
 	var session appRefreshSession
 	if err := tx.QueryRow(ctx, `
 		insert into _dbo.sessions (project_id, collection, user_id, token_hash, family_id, ip, user_agent, expires_at)
@@ -672,8 +828,8 @@ func revokeSessionFamilyTx(ctx context.Context, tx pgx.Tx, projectID string, fam
 	return err
 }
 
-func buildAppAuthResult(cfg *Config, project *Project, user AppUser, tokenKey string, refreshToken string, refreshExpiresAt time.Time, now time.Time) (*AppAuthResult, error) {
-	token, expiresAt, err := GenerateAppAccessToken(cfg.JWTSecret, project.Slug, user.ID, tokenKey, now)
+func buildAppAuthResult(cfg *Config, project *Project, user AppUser, tokenKey string, refreshToken string, refreshExpiresAt time.Time, now time.Time, accessTTL time.Duration) (*AppAuthResult, error) {
+	token, expiresAt, err := GenerateAppAccessTokenWithTTL(cfg.JWTSecret, project.Slug, user.ID, tokenKey, now, accessTTL)
 	if err != nil {
 		return nil, err
 	}
@@ -730,12 +886,13 @@ type authTokenCredential struct {
 	UserID    string
 	ExpiresAt time.Time
 	UsedAt    sql.NullTime
+	Data      map[string]any
 }
 
 func getAuthTokenForUpdate(ctx context.Context, tx pgx.Tx, project *Project, tokenType string, token string) (*authTokenCredential, *appUserCredential, error) {
 	table := quoteIdent(project.SchemaName, authUsersCollection)
 	row := tx.QueryRow(ctx, fmt.Sprintf(`
-		select t.id, t.user_id, t.expires_at, t.used_at,
+		select t.id, t.user_id, t.expires_at, t.used_at, t.data,
 		       u.id, u.email, u.verified, u.created, u.updated, u.password_hash, u.token_key, u.disabled_at
 		from _dbo.auth_tokens t
 		join %s u on u.id = t.user_id
@@ -745,11 +902,13 @@ func getAuthTokenForUpdate(ctx context.Context, tx pgx.Tx, project *Project, tok
 	), project.ID, tokenType, HashToken(strings.TrimSpace(token)))
 	authToken := &authTokenCredential{}
 	user := &appUserCredential{}
+	var rawData []byte
 	if err := row.Scan(
 		&authToken.ID,
 		&authToken.UserID,
 		&authToken.ExpiresAt,
 		&authToken.UsedAt,
+		&rawData,
 		&user.ID,
 		&user.Email,
 		&user.Verified,
@@ -763,6 +922,12 @@ func getAuthTokenForUpdate(ctx context.Context, tx pgx.Tx, project *Project, tok
 			return nil, nil, ErrInvalidAuthToken
 		}
 		return nil, nil, err
+	}
+	if len(rawData) > 0 {
+		_ = json.Unmarshal(rawData, &authToken.Data)
+	}
+	if authToken.Data == nil {
+		authToken.Data = map[string]any{}
 	}
 	return authToken, user, nil
 }

@@ -1,4 +1,4 @@
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SchemaDiscoveryResult, SchemaImportItem, SQLResult } from "./types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Health, InstanceSettings, MCPToken, Project, ProjectAuthSettings, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaDiscoveryResult, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "./types";
 
 type RequestOptions = RequestInit & {
   token?: string | null;
@@ -306,6 +306,8 @@ export type RecordListParams = {
   search?: string;
   sort?: string;
   fields?: string;
+  expand?: string;
+  skipTotal?: boolean;
 };
 
 export function listRecords(token: string, project: string, collection: string, input: RecordListParams = {}) {
@@ -318,6 +320,8 @@ export function listRecords(token: string, project: string, collection: string, 
   if (input.filter?.trim()) params.set("filter", input.filter.trim());
   if (input.search?.trim()) params.set("search", input.search.trim());
   if (input.fields?.trim()) params.set("fields", input.fields.trim());
+  if (input.expand?.trim()) params.set("expand", input.expand.trim());
+  if (input.skipTotal) params.set("skipTotal", "true");
   return request<RecordList>(`/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection)}/records?${params}`, { token }).then(
     normalizeRecordList,
   );
@@ -375,6 +379,18 @@ export function listAudit(token: string, input: { project?: string; page?: numbe
   if (input.action?.trim()) params.set("action", input.action.trim());
   if (input.target?.trim()) params.set("target", input.target.trim());
   return request<ApiEnvelope<AuditEntry>>(`/admin/api/audit-log?${params}`, { token }).then(normalizeEnvelope);
+}
+
+export function listRequestLogs(token: string, input: { project?: string; page?: number; perPage?: number; search?: string; method?: string; status?: number } = {}) {
+  const params = new URLSearchParams({
+    page: String(input.page ?? 1),
+    perPage: String(input.perPage ?? 30),
+  });
+  if (input.project) params.set("project", input.project);
+  if (input.search?.trim()) params.set("search", input.search.trim());
+  if (input.method?.trim()) params.set("method", input.method.trim());
+  if (input.status) params.set("status", String(input.status));
+  return request<ApiEnvelope<RequestLogEntry>>(`/admin/api/request-logs?${params}`, { token }).then(normalizeEnvelope);
 }
 
 function normalizeEnvelope<T>(response: ApiEnvelope<T>): ApiEnvelope<T> {
@@ -486,6 +502,57 @@ export function runBackupJob(token: string, id: string) {
     token,
     body: JSON.stringify({}),
   });
+}
+
+export function backupDownloadURL(id: string, runId: string) {
+  return `/admin/api/backups/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/download`;
+}
+
+export function restoreBackup(token: string, input: { file: File; mode: "dry_run" | "restore"; confirm?: string }) {
+  const form = new FormData();
+  form.set("file", input.file);
+  form.set("mode", input.mode);
+  if (input.confirm) form.set("confirm", input.confirm);
+  return request<RestoreJob>("/admin/api/restores", {
+    method: "POST",
+    token,
+    body: form,
+  });
+}
+
+export function getProjectAuthSettings(token: string, project: string) {
+  return request<ProjectAuthSettings>(`/admin/api/projects/${encodeURIComponent(project)}/auth-settings`, { token });
+}
+
+export function updateProjectAuthSettings(token: string, project: string, input: Partial<ProjectAuthSettings>) {
+  return request<ProjectAuthSettings>(`/admin/api/projects/${encodeURIComponent(project)}/auth-settings`, {
+    method: "PUT",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function listWebhooks(token: string, project: string) {
+  return request<ApiEnvelope<Webhook>>(`/admin/api/projects/${encodeURIComponent(project)}/webhooks`, { token }).then(normalizeEnvelope);
+}
+
+export function createWebhook(token: string, project: string, input: { name: string; url: string; events: string[]; enabled: boolean; timeoutSeconds: number; maxAttempts: number; secret?: string }) {
+  return request<Webhook>(`/admin/api/projects/${encodeURIComponent(project)}/webhooks`, {
+    method: "POST",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteWebhook(token: string, project: string, id: string) {
+  return request<void>(`/admin/api/projects/${encodeURIComponent(project)}/webhooks/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    token,
+  });
+}
+
+export function listWebhookDeliveries(token: string, project: string, id: string, limit = 30) {
+  return request<ApiEnvelope<WebhookDelivery>>(`/admin/api/projects/${encodeURIComponent(project)}/webhooks/${encodeURIComponent(id)}/deliveries?limit=${limit}`, { token }).then(normalizeEnvelope);
 }
 
 export function listMCPTokens(token: string) {
