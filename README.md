@@ -1,114 +1,326 @@
-# dublyobase
+# Dublyobase
 
-**An open-source, Postgres-backed BaaS** in the spirit of PocketBase — auth, realtime,
-storage, and an admin UI, served from **one Go binary on one port**. It connects to a
-Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a single
-`<30 MB` container to `ghcr.io/dublyo/dublyobase`. One-click deployable on Dublyo.
+Dublyobase is an open-source, Postgres-backed backend for building apps with a
+PocketBase-style developer experience. It provides a control panel, projects,
+collections, REST APIs, email/password auth, file storage, SMTP settings, cron
+jobs, backups, and scoped remote MCP access from one Go backend and one embedded
+admin UI.
 
-> Status: **v0.10.0 / M9 ops automation + MCP complete.** Control-plane auth, project provisioning,
-> collections metadata, schema sync, records CRUD, API keys, RLS-backed rules, and
-> email/password app auth, local file storage, and resumable chunk uploads are
-> implemented, including SMTP delivery for verification/reset emails and an
-> embedded admin panel with structured collection controls, runtime SMTP settings,
-> local or S3-compatible storage settings, native HTTP cron jobs, pg_dump backups
-> to configured storage, and scoped remote MCP access; realtime is still upcoming. See
-> [dublyobase-dev.md](dublyobase-dev.md) for the full roadmap.
+The runtime is intentionally small:
 
-## What makes it different
+- One Go process on one port, default `:8080`
+- External PostgreSQL, with deployment templates for Postgres 16, 17, or 18
+- Embedded Next/Tailwind admin panel
+- GHCR image: `ghcr.io/dublyo/dublyobase`
+- No Redis, no nginx sidecar, no separate admin service
 
-- **One process, external Postgres.** No bundled DB, no nginx, no Redis. Pick your
-  Postgres major (16/17/18) at the infra level; dublyobase just connects.
-- **Security enforced in Postgres.** Per-project roles + `SET LOCAL ROLE` +
-  `FORCE ROW LEVEL SECURITY`; hashed API keys; encrypted secrets. Deny → `403 rls_denied`.
-- **Project-scoped app auth.** Automatic `users` auth collection, bcrypt passwords,
-  1h access JWTs, 7d hashed refresh sessions, rotation, logout-all, reset/verify
-  tokens, and optional SMTP delivery.
-- **Protected file storage.** Local volume by default, or S3-compatible providers
-  such as R2, Backblaze B2, MinIO, and AWS S3. Streamed multipart uploads,
-  resumable chunks,
-  JSONB file metadata, short-lived file tokens, and cached thumbnails on the
-  active provider.
-- **Realtime over `LISTEN/NOTIFY`** — no Redis. **Collections** model with auto REST + RLS.
+Current public release: `v0.10.0`. Realtime subscriptions are not included in
+this release.
 
-## Quick start (local)
+## Features
+
+### Projects and Postgres
+
+- Create isolated app projects from the admin panel.
+- Each project gets its own Postgres schema and roles.
+- Collection rules are enforced with Postgres row-level security.
+- Collections create and update real Postgres tables.
+- Admin SQL runner for project-scoped inspection and maintenance.
+- Collection schema export/import for moving definitions between projects.
+
+### Collections and Records
+
+- Base, auth, and view collection types.
+- REST endpoints for collection and record CRUD.
+- Field types: text, rich editor, password, number, bool, date, autodate, email,
+  URL, select, JSON, relation, and file.
+- Required, hidden, presentable, help text, validation options, and rule-driven
+  access.
+- Query support for list filters, sorting, field projection, and pagination.
+
+### App Auth
+
+- Every project can use an auth collection for application users.
+- Email/password signup and login.
+- Access tokens, refresh sessions, rotation, logout, and logout-all.
+- Email verification and password reset flows.
+- SMTP delivery for verification and reset emails.
+- Service API keys for backend-to-backend access.
+
+### Files and Storage
+
+- Local file storage by default at `/data/storage`.
+- S3-compatible storage support for providers such as Cloudflare R2, Backblaze
+  B2, MinIO, and AWS S3.
+- Runtime storage settings in the admin panel.
+- Multipart file uploads.
+- Resumable chunk uploads.
+- Single-file fields by default, optional multi-file fields.
+- Stored JSONB file metadata.
+- Short-lived protected file tokens.
+- Cached thumbnails for image downloads.
+
+### Mail, Cron, Backups, and MCP
+
+- Runtime SMTP settings with a test-email action.
+- Native HTTP cron jobs with schedules, headers, retry settings, run-now, and
+  run logs.
+- Full-instance and per-project `pg_dump` backup jobs.
+- Backup output is written to the configured storage backend.
+- Remote HTTP MCP endpoint at `POST /mcp`.
+- Scoped MCP tokens with tool allowlists and audit logs.
+- MCP tools can manage projects, collections, records, users, files, SMTP,
+  storage, cron jobs, and backups according to the token scope.
+
+### Admin UI
+
+- Embedded admin panel served from `/`.
+- First-admin setup flow for empty installs.
+- Project creation and API key management.
+- PocketBase-inspired collection editor and record editor.
+- Settings screens for SMTP, storage, cron, backups, and MCP tokens.
+- Audit log with secret-like values redacted.
+
+## Deploy
+
+### Recommended: Dublyo PaaS one-click deploy
+
+The repository includes a Dublyo PaaS template at
+[`deploy/dublyo.template.yml`](deploy/dublyo.template.yml).
+
+Use [Dublyo PaaS](https://dublyo.com) for the simplest production path:
+
+1. Choose the Dublyobase app template.
+2. Pick PostgreSQL `16`, `17`, or `18`.
+3. Set your domain and first admin email.
+4. Let Dublyo generate `JWT_SECRET`, database password, and admin password.
+5. Deploy the stack and open `https://your-domain/`.
+
+The template runs two services: Postgres and Dublyobase. TLS and routing are
+handled by the Dublyo platform.
+
+### Docker Compose
+
+For a local or self-hosted install:
 
 ```bash
-docker compose up -d          # starts postgres + dublyobase
-# open http://localhost:8080  (GET /health -> 200)
+git clone https://github.com/dublyo/dublyobase.git
+cd dublyobase
+docker compose up -d
 ```
 
-Or run the binary against any Postgres:
+Open [http://localhost:8080](http://localhost:8080). Health should return `200`:
 
 ```bash
-export DATABASE_URL="postgres://user:pass@localhost:5432/db?sslmode=disable"
-export APP_URL="http://localhost:8080"
-export JWT_SECRET="$(openssl rand -base64 32)"   # >= 32 chars, required
-export ADMIN_EMAIL="admin@example.com" ADMIN_PASSWORD="change-me"
-go run .            # connects, migrates, seeds admin, serves on :8080
+curl http://localhost:8080/health
 ```
+
+Before using Compose in production, edit `docker-compose.yml` and replace:
+
+- `POSTGRES_PASSWORD`
+- `DATABASE_URL`
+- `JWT_SECRET`
+- `ADMIN_EMAIL`
+- `ADMIN_PASSWORD`
+- `APP_URL`
+
+Use a pinned image tag in production:
+
+```yaml
+image: ghcr.io/dublyo/dublyobase:v0.10.0
+```
+
+### Existing Postgres
+
+You can run Dublyobase against any reachable PostgreSQL database:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e DATABASE_URL="postgres://user:pass@host:5432/db?sslmode=require" \
+  -e APP_URL="https://dublyobase.example.com" \
+  -e JWT_SECRET="$(openssl rand -base64 32)" \
+  -e ADMIN_EMAIL="admin@example.com" \
+  -e ADMIN_PASSWORD="change-this-admin-password" \
+  -v dublyobase-storage:/data/storage \
+  ghcr.io/dublyo/dublyobase:v0.10.0
+```
+
+`DATABASE_URL`, `APP_URL`, and `JWT_SECRET` are required. If `ADMIN_EMAIL` and
+`ADMIN_PASSWORD` are set together and no admin exists, Dublyobase seeds the first
+admin on startup. If they are omitted, open `/` and complete the setup flow while
+the instance is empty.
 
 ## Configuration
 
-All configuration is via environment variables (the Dublyo template contract). Required:
-`DATABASE_URL`, `APP_URL`, `JWT_SECRET`. See
-[core/config.go](core/config.go) for the full list (storage, SMTP, CORS, logging,
-pgvector, proxy headers, app-auth bcrypt/dev-token settings, …). Missing a required
-var → the process exits `1` with a clear message rather than failing mysteriously later.
+All runtime configuration is environment-based. Runtime SMTP and storage settings
+can also be managed from the admin panel after setup.
 
-## Endpoints
+| Variable | Required | Default | Description |
+|---|---:|---|---|
+| `DATABASE_URL` | Yes |  | Postgres connection string. |
+| `APP_URL` | Yes |  | Public URL used for auth links and generated URLs. |
+| `JWT_SECRET` | Yes |  | At least 32 characters; used for signing and secret encryption. |
+| `HOST` | No | `0.0.0.0` | HTTP bind host. |
+| `PORT` | No | `8080` | HTTP bind port. |
+| `ADMIN_EMAIL` | No |  | First admin email, paired with `ADMIN_PASSWORD`. |
+| `ADMIN_PASSWORD` | No |  | First admin password, paired with `ADMIN_EMAIL`. |
+| `BCRYPT_COST` | No | `10` | Password hashing cost. |
+| `AUTH_DEV_TOKENS` | No | `false` | Returns auth action tokens in responses for development tests. |
+| `MAX_UPLOAD_MB` | No | `64` | Upload limit, 1 to 1024 MB. |
+| `STORAGE_TYPE` | No | `local` | `local` or `s3`. |
+| `STORAGE_LOCAL_PATH` | No | `/data/storage` | Local storage path. |
+| `S3_ENDPOINT` | For S3 |  | S3-compatible endpoint. |
+| `S3_BUCKET` | For S3 |  | Storage bucket. |
+| `S3_ACCESS_KEY` | For S3 |  | Access key. |
+| `S3_SECRET_KEY` | For S3 |  | Secret key. |
+| `S3_REGION` | No | `us-east-1` | S3 region. |
+| `S3_PREFIX` | No |  | Optional object key prefix. |
+| `S3_USE_SSL` | No | `true` | Use HTTPS for S3 endpoint. |
+| `S3_FORCE_PATH_STYLE` | No | `true` | Path-style S3 requests. |
+| `SMTP_HOST` | No |  | SMTP host. |
+| `SMTP_PORT` | No | `587` | SMTP port. |
+| `SMTP_USER` | No |  | SMTP username. |
+| `SMTP_PASSWORD` | No |  | SMTP password. |
+| `SMTP_FROM` | No |  | Sender address. |
+| `MIGRATE_ON_START` | No | `true` | Run migrations at startup. |
+| `TRUST_PROXY_HEADERS` | No | `true` | Respect proxy headers from trusted proxies. |
+| `TRUSTED_PROXY_CIDRS` | No | private ranges | Comma-separated trusted proxy CIDRs. |
+| `CORS_ORIGINS` | No | `*` | Comma-separated allowed origins. |
+| `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error`. |
+| `LOG_FORMAT` | No | `json` | `json` or `text`. |
+| `ENABLE_PGVECTOR` | No | `false` | Enables pgvector-related migrations when configured. |
+
+## API Overview
+
+### System and Admin
 
 | Route | Description |
 |---|---|
-| `GET /health` | `200 {status, db, storage, version}` / `503 degraded` |
-| `GET /ready` | `503 {status: migrating}` until boot completes, then `200` |
-| `POST /setup` | Create the first admin while `_dbo.admins` is empty |
-| `POST /admin/api/auth/login` | Admin login, returns an opaque bearer token |
-| `POST /admin/api/auth/logout` | Revoke the current admin session |
-| `GET /admin/api/me` | Current admin/session |
-| `GET /admin/api/settings` | Runtime SMTP/storage settings with secrets masked |
-| `PUT /admin/api/settings/smtp` | Save runtime SMTP settings |
-| `POST /admin/api/settings/smtp/test` | Send an SMTP test email |
-| `PUT /admin/api/settings/storage` | Save local or S3-compatible storage settings |
-| `POST /admin/api/settings/storage/test` | Write/read/delete a storage test object |
-| `GET/POST /admin/api/cron-jobs` | List/create HTTP cron jobs |
-| `GET /admin/api/cron-jobs/{id}/runs` | List recent cron runs |
-| `POST /admin/api/cron-jobs/{id}/run` | Run a cron job immediately |
-| `GET/POST /admin/api/backups` | List/create full or project pg_dump backup jobs |
-| `GET /admin/api/backups/{id}/runs` | List recent backup runs |
-| `POST /admin/api/backups/{id}/run` | Run a backup job immediately |
-| `GET/POST /admin/api/mcp/tokens` | List/create scoped MCP tokens |
-| `DELETE /admin/api/mcp/tokens/{id}` | Revoke an MCP token |
-| `GET/POST /admin/api/projects` | List/create projects |
-| `GET /admin/api/projects/{slug}` | Project detail |
-| `GET/POST /admin/api/projects/{slug}/api-keys` | List/create project API keys |
-| `DELETE /admin/api/projects/{slug}/api-keys/{id}` | Revoke project API key |
-| `GET /admin/api/projects/{slug}/collections/export` | Export collection schema JSON for the selected project |
-| `POST /admin/api/projects/{slug}/collections/import` | Preview or apply collection schema imports |
-| `POST /admin/api/projects/{slug}/sql` | Execute admin SQL in the selected project schema |
-| `GET /admin/api/audit-log` | Newest-first audit log, with secret-like data redacted |
-| `POST /api/projects/{slug}/auth/signup` | App-user signup; returns access + refresh tokens |
-| `POST /api/projects/{slug}/auth/login` | App-user login |
-| `POST /api/projects/{slug}/auth/refresh` | Rotate refresh token |
-| `POST /api/projects/{slug}/auth/logout` | Revoke current refresh token |
-| `POST /api/projects/{slug}/auth/logout-all` | Rotate user `token_key` and revoke all sessions |
-| `GET /api/projects/{slug}/auth/me` | Current app user |
-| `POST /api/projects/{slug}/auth/request-verification` | Create email verification token |
-| `POST /api/projects/{slug}/auth/confirm-verification` | Confirm verification token |
-| `POST /api/projects/{slug}/auth/request-password-reset` | Create password reset token |
-| `POST /api/projects/{slug}/auth/confirm-password-reset` | Confirm reset token and set password |
-| `GET/POST /api/projects/{slug}/collections` | List/create project collections |
-| `GET/PATCH/DELETE /api/projects/{slug}/collections/{name}` | Collection detail/schema sync/delete |
-| `GET/POST /api/projects/{slug}/collections/{name}/records` | List/create records |
-| `GET/PATCH/DELETE /api/projects/{slug}/collections/{name}/records/{id}` | Record detail/update/delete |
-| `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}` | Multipart upload using form field `file`; `?mode=replace\|append` |
-| `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/uploads` | Create a resumable upload session |
-| `PUT /api/projects/{slug}/files/uploads/{uploadId}/chunks/{index}` | Upload one raw chunk; optional `X-Checksum-SHA256` |
-| `POST /api/projects/{slug}/files/uploads/{uploadId}/complete` | Assemble chunks and update the record file field |
-| `DELETE /api/projects/{slug}/files/uploads/{uploadId}` | Cancel a resumable upload and remove temp chunks |
-| `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token` | Mint a short-lived protected file token after `view` rules pass |
-| `GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}?token=...` | Download original file; add `thumb=WxH` for cached JPEG thumbnail |
-| `POST /mcp` | Remote HTTP MCP endpoint using bearer MCP tokens |
-| `GET /` | Embedded admin UI |
+| `GET /health` | Health, database, storage, and version status. |
+| `GET /ready` | Readiness status during boot and migration. |
+| `POST /setup` | Create the first admin while no admin exists. |
+| `POST /admin/api/auth/login` | Admin login. |
+| `POST /admin/api/auth/logout` | Revoke the current admin session. |
+| `GET /admin/api/me` | Current admin session. |
+| `GET /admin/api/audit-log` | Newest-first admin audit log. |
+
+### Projects
+
+| Route | Description |
+|---|---|
+| `GET /admin/api/projects` | List projects. |
+| `POST /admin/api/projects` | Create a project. |
+| `GET /admin/api/projects/{slug}` | Project detail. |
+| `GET /admin/api/projects/{slug}/api-keys` | List project API keys. |
+| `POST /admin/api/projects/{slug}/api-keys` | Create a project API key. |
+| `DELETE /admin/api/projects/{slug}/api-keys/{id}` | Revoke an API key. |
+| `POST /admin/api/projects/{slug}/sql` | Run project-scoped admin SQL. |
+
+### Collections and Records
+
+| Route | Description |
+|---|---|
+| `GET /api/projects/{slug}/collections` | List collections. |
+| `POST /api/projects/{slug}/collections` | Create a collection and table. |
+| `GET /api/projects/{slug}/collections/{name}` | Collection detail. |
+| `PATCH /api/projects/{slug}/collections/{name}` | Update fields and rules. |
+| `DELETE /api/projects/{slug}/collections/{name}` | Delete a collection. |
+| `GET /api/projects/{slug}/collections/{name}/records` | List records. |
+| `POST /api/projects/{slug}/collections/{name}/records` | Create a record. |
+| `GET /api/projects/{slug}/collections/{name}/records/{id}` | Get a record. |
+| `PATCH /api/projects/{slug}/collections/{name}/records/{id}` | Update a record. |
+| `DELETE /api/projects/{slug}/collections/{name}/records/{id}` | Delete a record. |
+| `GET /admin/api/projects/{slug}/collections/export` | Export collection schema JSON. |
+| `POST /admin/api/projects/{slug}/collections/import` | Preview or apply collection schema imports. |
+
+### App Auth
+
+| Route | Description |
+|---|---|
+| `POST /api/projects/{slug}/auth/signup` | Create an app user. |
+| `POST /api/projects/{slug}/auth/login` | Login an app user. |
+| `POST /api/projects/{slug}/auth/refresh` | Rotate a refresh token. |
+| `POST /api/projects/{slug}/auth/logout` | Revoke the current refresh token. |
+| `POST /api/projects/{slug}/auth/logout-all` | Revoke all sessions for the user. |
+| `GET /api/projects/{slug}/auth/me` | Current app user. |
+| `POST /api/projects/{slug}/auth/request-verification` | Request verification email. |
+| `POST /api/projects/{slug}/auth/confirm-verification` | Confirm verification token. |
+| `POST /api/projects/{slug}/auth/request-password-reset` | Request password reset email. |
+| `POST /api/projects/{slug}/auth/confirm-password-reset` | Confirm reset token and set a new password. |
+
+### Files
+
+| Route | Description |
+|---|---|
+| `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}` | Multipart upload using form field `file`. |
+| `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/uploads` | Create a resumable upload session. |
+| `PUT /api/projects/{slug}/files/uploads/{uploadId}/chunks/{index}` | Upload a raw chunk. |
+| `POST /api/projects/{slug}/files/uploads/{uploadId}/complete` | Assemble chunks and update the record field. |
+| `DELETE /api/projects/{slug}/files/uploads/{uploadId}` | Cancel a resumable upload. |
+| `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token` | Mint a short-lived protected file token. |
+| `GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}` | Download a file. Add `?token=...` for protected files and `thumb=WxH` for thumbnails. |
+
+### Settings, Cron, Backups, and MCP
+
+| Route | Description |
+|---|---|
+| `GET /admin/api/settings` | Runtime SMTP and storage settings with secrets masked. |
+| `PUT /admin/api/settings/smtp` | Save SMTP settings. |
+| `POST /admin/api/settings/smtp/test` | Send a test email. |
+| `PUT /admin/api/settings/storage` | Save local or S3-compatible storage settings. |
+| `POST /admin/api/settings/storage/test` | Test storage write/read/delete. |
+| `GET /admin/api/cron-jobs` | List cron jobs. |
+| `POST /admin/api/cron-jobs` | Create a cron job. |
+| `GET /admin/api/cron-jobs/{id}/runs` | List cron runs. |
+| `POST /admin/api/cron-jobs/{id}/run` | Run a cron job immediately. |
+| `GET /admin/api/backups` | List backup jobs. |
+| `POST /admin/api/backups` | Create a backup job. |
+| `GET /admin/api/backups/{id}/runs` | List backup runs. |
+| `POST /admin/api/backups/{id}/run` | Run a backup job immediately. |
+| `GET /admin/api/mcp/tokens` | List MCP tokens. |
+| `POST /admin/api/mcp/tokens` | Create a scoped MCP token. |
+| `DELETE /admin/api/mcp/tokens/{id}` | Revoke an MCP token. |
+| `POST /mcp` | Remote HTTP MCP endpoint using bearer MCP tokens. |
+
+## Security Notes
+
+- Use a strong `JWT_SECRET`; it signs tokens and encrypts stored runtime secrets.
+- Replace all sample passwords before exposing an instance.
+- Keep `AUTH_DEV_TOKENS=false` outside development.
+- Use HTTPS in production and set `APP_URL` to the public HTTPS URL.
+- Scope MCP tokens narrowly and revoke them when no longer needed.
+- Prefer project-scoped backups for app tenants and full backups for instance
+  administrators.
+- S3 and SMTP secrets are masked in API responses and audit logs.
+
+## Local Development
+
+Requirements:
+
+- Go 1.25+
+- Node.js 22+
+- PostgreSQL 16+
+
+Build and test:
+
+```bash
+npm ci --prefix ui/admin
+npm run --prefix ui/admin typecheck
+npm run --prefix ui/admin build
+go test ./...
+go build ./...
+```
+
+Run locally against your own database:
+
+```bash
+export DATABASE_URL="postgres://user:pass@localhost:5432/dublyobase?sslmode=disable"
+export APP_URL="http://localhost:8080"
+export JWT_SECRET="$(openssl rand -base64 32)"
+export ADMIN_EMAIL="admin@example.com"
+export ADMIN_PASSWORD="change-this-admin-password"
+go run . serve
+```
 
 ## License
 
