@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -62,10 +63,11 @@ type Config struct {
 	S3UseSSL         bool        // S3_USE_SSL (default true)
 	S3ForcePathStyle bool        // S3_FORCE_PATH_STYLE (default true)
 
-	MigrateOnStart    bool     // MIGRATE_ON_START (default true)
-	TrustProxyHeaders bool     // TRUST_PROXY_HEADERS (default true)
-	TrustedProxyCIDRs []string // TRUSTED_PROXY_CIDRS (comma-separated; default private Docker/LAN ranges)
-	CORSOrigins       []string // CORS_ORIGINS (comma-separated; default *)
+	MigrateOnStart        bool     // MIGRATE_ON_START (default true)
+	TrustProxyHeaders     bool     // TRUST_PROXY_HEADERS (default true)
+	TrustedProxyCIDRs     []string // TRUSTED_PROXY_CIDRS (comma-separated; default private Docker/LAN ranges)
+	CORSOrigins           []string // CORS_ORIGINS (comma-separated; default APP_URL origin)
+	CORSOriginsConfigured bool     // true when CORS_ORIGINS was explicitly provided
 
 	LogLevel  string // LOG_LEVEL  (debug|info|warn|error)
 	LogFormat string // LOG_FORMAT (json|text)
@@ -100,12 +102,20 @@ func LoadConfig() (*Config, error) {
 		return v
 	}
 
+	appURL := strings.TrimSpace(os.Getenv("APP_URL"))
+	corsRaw, corsConfigured := os.LookupEnv("CORS_ORIGINS")
+	corsOrigins := splitCSV(corsRaw)
+	if !corsConfigured || len(corsOrigins) == 0 {
+		corsOrigins = DefaultCORSOrigins(appURL)
+		corsConfigured = false
+	}
+
 	c := &Config{
 		Host: env("HOST", "0.0.0.0"),
 		Port: env("PORT", "8080"),
 
 		DatabaseURL: os.Getenv("DATABASE_URL"),
-		AppURL:      strings.TrimSpace(os.Getenv("APP_URL")),
+		AppURL:      appURL,
 		JWTSecret:   strings.TrimSpace(os.Getenv("JWT_SECRET")),
 
 		AdminEmail:    strings.TrimSpace(os.Getenv("ADMIN_EMAIL")),
@@ -126,10 +136,11 @@ func LoadConfig() (*Config, error) {
 		S3UseSSL:         boolVar("S3_USE_SSL", true),
 		S3ForcePathStyle: boolVar("S3_FORCE_PATH_STYLE", true),
 
-		MigrateOnStart:    boolVar("MIGRATE_ON_START", true),
-		TrustProxyHeaders: boolVar("TRUST_PROXY_HEADERS", false),
-		TrustedProxyCIDRs: splitCSV(env("TRUSTED_PROXY_CIDRS", strings.Join(defaultTrustedProxyCIDRs, ","))),
-		CORSOrigins:       splitCSV(env("CORS_ORIGINS", "*")),
+		MigrateOnStart:        boolVar("MIGRATE_ON_START", true),
+		TrustProxyHeaders:     boolVar("TRUST_PROXY_HEADERS", false),
+		TrustedProxyCIDRs:     splitCSV(env("TRUSTED_PROXY_CIDRS", strings.Join(defaultTrustedProxyCIDRs, ","))),
+		CORSOrigins:           corsOrigins,
+		CORSOriginsConfigured: corsConfigured,
 
 		LogLevel:  env("LOG_LEVEL", "info"),
 		LogFormat: env("LOG_FORMAT", "json"),
@@ -212,6 +223,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("TRUSTED_PROXY_CIDRS contains invalid CIDR %q", cidr)
 		}
 	}
+	if _, err := normalizeCORSOrigins(c.CORSOrigins, true); err != nil {
+		return fmt.Errorf("CORS_ORIGINS %w", err)
+	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warn", "error":
 	default:
@@ -276,6 +290,19 @@ func envInt(key string, def int) (int, error) {
 		return def, fmt.Errorf("%s must be an integer, got %q", key, v)
 	}
 	return n, nil
+}
+
+func originFromURL(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("%w: origin is invalid", ErrValidation)
+	}
+	switch u.Scheme {
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("%w: origin scheme must be http or https", ErrValidation)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 func splitCSV(v string) []string {

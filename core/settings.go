@@ -24,6 +24,7 @@ const secretCipherPrefix = "v1"
 type PublicInstanceSettings struct {
 	SMTP    PublicSMTPSettings    `json:"smtp"`
 	Storage PublicStorageSettings `json:"storage"`
+	CORS    PublicCORSSettings    `json:"cors"`
 }
 
 type PublicSMTPSettings struct {
@@ -51,6 +52,17 @@ type PublicStorageSettings struct {
 	LocalPath string           `json:"localPath"`
 	S3        PublicS3Settings `json:"s3"`
 	Source    string           `json:"source"`
+}
+
+type PublicCORSSettings struct {
+	AdminOrigins []string `json:"adminOrigins"`
+	Source       string   `json:"source"`
+	Wildcard     bool     `json:"wildcard"`
+}
+
+type CORSSettingsInput struct {
+	AdminOrigins  []string `json:"adminOrigins"`
+	AllowWildcard bool     `json:"allowWildcard"`
 }
 
 type PublicS3Settings struct {
@@ -84,6 +96,7 @@ type S3SettingsInput struct {
 type storedInstanceSettings struct {
 	SMTP    storedSMTPSettings    `json:"smtp,omitempty"`
 	Storage storedStorageSettings `json:"storage,omitempty"`
+	CORS    storedCORSSettings    `json:"cors,omitempty"`
 }
 
 type storedSMTPSettings struct {
@@ -111,6 +124,11 @@ type storedS3Settings struct {
 	Prefix          string `json:"prefix,omitempty"`
 	UseSSL          bool   `json:"useSSL"`
 	ForcePathStyle  bool   `json:"forcePathStyle"`
+}
+
+type storedCORSSettings struct {
+	Configured   bool     `json:"configured,omitempty"`
+	AdminOrigins []string `json:"adminOrigins,omitempty"`
 }
 
 func GetPublicInstanceSettings(ctx context.Context, pool *pgxpool.Pool, cfg *Config) (*PublicInstanceSettings, error) {
@@ -184,6 +202,47 @@ func UpdateStorageSettings(ctx context.Context, pool *pgxpool.Pool, cfg *Config,
 		IP:         ip,
 		UserAgent:  userAgent,
 		Data:       map[string]any{"type": next.Type, "endpoint": next.S3.Endpoint, "bucket": next.S3.Bucket},
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return publicInstanceSettings(cfg, stored), nil
+}
+
+func UpdateCORSSettings(ctx context.Context, pool *pgxpool.Pool, cfg *Config, adminID string, input CORSSettingsInput, ip string, userAgent string) (*PublicInstanceSettings, error) {
+	origins, err := normalizeCORSOrigins(input.AdminOrigins, input.AllowWildcard)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	stored, err := loadStoredInstanceSettingsTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if len(origins) == 0 {
+		stored.CORS = storedCORSSettings{}
+	} else {
+		stored.CORS = storedCORSSettings{Configured: true, AdminOrigins: origins}
+	}
+	if err := saveStoredInstanceSettings(ctx, tx, stored); err != nil {
+		return nil, err
+	}
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		AdminID:    &adminID,
+		Action:     "settings.cors.update",
+		TargetType: "settings",
+		TargetID:   "cors",
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data:       map[string]any{"adminOriginCount": len(origins), "wildcard": corsWildcard(origins)},
 	}); err != nil {
 		return nil, err
 	}
@@ -308,6 +367,7 @@ func publicInstanceSettings(cfg *Config, stored storedInstanceSettings) *PublicI
 	return &PublicInstanceSettings{
 		SMTP:    publicSMTPSettings(cfg, stored.SMTP),
 		Storage: publicStorageSettings(cfg, stored.Storage),
+		CORS:    publicCORSSettings(cfg, stored.CORS),
 	}
 }
 

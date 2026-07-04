@@ -264,6 +264,86 @@ func TestBootstrapAdminRequiresPasswordChange(t *testing.T) {
 	}
 }
 
+func TestOwnerCreatesSuperAdmin(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	ownerToken := setupAdmin(t, srv.Handler, "owner@example.com")
+
+	rec := postJSON(srv.Handler, "/admin/api/admins", ownerToken, `{"email":"super@example.com","password":"temporary-pass-123"}`)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"role":"super_admin"`) || !strings.Contains(rec.Body.String(), `"mustChangePassword":true`) {
+		t.Fatalf("owner create super admin: want 201 super_admin forced change, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	superLogin := postJSON(srv.Handler, "/admin/api/auth/login", "", `{"email":"super@example.com","password":"temporary-pass-123"}`)
+	if superLogin.Code != http.StatusOK {
+		t.Fatalf("super admin login: want 200, got %d: %s", superLogin.Code, superLogin.Body.String())
+	}
+	var loginBody struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(superLogin.Body.Bytes(), &loginBody); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = postJSON(srv.Handler, "/admin/api/admins", loginBody.Token, `{"email":"blocked@example.com","password":"temporary-pass-123"}`)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "password_change_required") {
+		t.Fatalf("forced-change super admin should be blocked before ready APIs, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = postJSON(srv.Handler, "/admin/api/auth/change-password", loginBody.Token, `{"currentPassword":"temporary-pass-123","newPassword":"changed-pass-123"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("super admin change password: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = postJSON(srv.Handler, "/admin/api/admins", loginBody.Token, `{"email":"blocked@example.com","password":"temporary-pass-123"}`)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "forbidden") {
+		t.Fatalf("super admin must not create admins, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = getJSON(srv.Handler, "/admin/api/admins", ownerToken)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"role":"owner"`) || !strings.Contains(rec.Body.String(), `"role":"super_admin"`) {
+		t.Fatalf("list admins: want owner and super admin, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRuntimeCORSSettings(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := fmt.Sprintf("cors%d", time.Now().UnixNano()%1_000_000_000)
+
+	rec := postJSON(srv.Handler, "/admin/api/projects", token, fmt.Sprintf(`{"slug":%q,"name":"CORS Demo"}`, slug))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create project: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = putJSON(srv.Handler, "/admin/api/settings/cors", token, `{"adminOrigins":["https://admin.example.com"],"allowWildcard":false}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"adminOrigins":["https://admin.example.com"]`) {
+		t.Fatalf("update admin CORS: want saved origin, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = putJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/cors", slug), token, `{"publicOrigins":["https://app.example.com"],"allowWildcard":false}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"publicOrigins":["https://app.example.com"]`) {
+		t.Fatalf("update project CORS: want saved origin, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	req := httptest.NewRequest("OPTIONS", "/admin/api/settings", nil)
+	req.Header.Set("Origin", "https://admin.example.com")
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Header().Get("Access-Control-Allow-Origin") != "https://admin.example.com" {
+		t.Fatalf("admin CORS ACAO = %q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	req = httptest.NewRequest("OPTIONS", fmt.Sprintf("/api/projects/%s/collections/users/records", slug), nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Header().Get("Access-Control-Allow-Origin") != "https://app.example.com" {
+		t.Fatalf("project CORS ACAO = %q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
 func TestForcedChangeAdminCannotUseRecordRoutes(t *testing.T) {
 	app, _ := newIntegrationApp(t)
 	srv := NewServer(app)

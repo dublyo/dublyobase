@@ -17,17 +17,29 @@ const projectAdvisoryLockID int64 = 326_326_003
 var projectSlugRe = regexp.MustCompile(`^[a-z][a-z0-9_]{2,30}$`)
 
 type Project struct {
-	ID         string       `json:"id"`
-	Slug       string       `json:"slug"`
-	Name       string       `json:"name"`
-	SchemaName string       `json:"schemaName"`
-	Roles      ProjectRoles `json:"roles,omitempty"`
+	ID         string              `json:"id"`
+	Slug       string              `json:"slug"`
+	Name       string              `json:"name"`
+	SchemaName string              `json:"schemaName"`
+	Roles      ProjectRoles        `json:"roles,omitempty"`
+	CORS       ProjectCORSSettings `json:"cors"`
 }
 
 type ProjectRoles struct {
 	Anon          string `json:"anon"`
 	Authenticated string `json:"authenticated"`
 	Service       string `json:"service"`
+}
+
+type ProjectCORSSettings struct {
+	PublicOrigins []string `json:"publicOrigins"`
+	Source        string   `json:"source"`
+	Wildcard      bool     `json:"wildcard"`
+}
+
+type ProjectCORSSettingsInput struct {
+	PublicOrigins []string `json:"publicOrigins"`
+	AllowWildcard bool     `json:"allowWildcard"`
 }
 
 func NormalizeProjectSlug(slug string) string {
@@ -153,7 +165,7 @@ func createProjectDatabaseObjects(ctx context.Context, tx pgx.Tx, schemaName str
 
 func ListProjects(ctx context.Context, pool *pgxpool.Pool) ([]Project, error) {
 	rows, err := pool.Query(ctx, `
-		select id, slug, name, schema_name
+		select id, slug, name, schema_name, coalesce(public_cors_origins, '{}'::text[]), public_cors_origins is not null
 		from _dbo.projects
 		where disabled_at is null
 		order by created_at desc`)
@@ -165,10 +177,15 @@ func ListProjects(ctx context.Context, pool *pgxpool.Pool) ([]Project, error) {
 	projects := make([]Project, 0)
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.SchemaName); err != nil {
+		var publicOrigins []string
+		var corsConfigured bool
+		if err := rows.Scan(&p.ID, &p.Slug, &p.Name, &p.SchemaName, &publicOrigins, &corsConfigured); err != nil {
 			return nil, err
 		}
 		_, p.Roles = ProjectNames(p.Slug)
+		if corsConfigured {
+			p.CORS = ProjectCORSSettings{PublicOrigins: publicOrigins, Source: corsSourceDatabase, Wildcard: corsWildcard(publicOrigins)}
+		}
 		projects = append(projects, p)
 	}
 	return projects, rows.Err()
@@ -180,18 +197,80 @@ func GetProject(ctx context.Context, pool *pgxpool.Pool, slug string) (*Project,
 		return nil, err
 	}
 	var p Project
+	var publicOrigins []string
+	var corsConfigured bool
 	if err := pool.QueryRow(ctx, `
-		select id, slug, name, schema_name
+		select id, slug, name, schema_name, coalesce(public_cors_origins, '{}'::text[]), public_cors_origins is not null
 		from _dbo.projects
 		where slug = $1 and disabled_at is null`,
 		slug,
-	).Scan(&p.ID, &p.Slug, &p.Name, &p.SchemaName); err != nil {
+	).Scan(&p.ID, &p.Slug, &p.Name, &p.SchemaName, &publicOrigins, &corsConfigured); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrProjectNotFound
 		}
 		return nil, err
 	}
 	_, p.Roles = ProjectNames(p.Slug)
+	if corsConfigured {
+		p.CORS = ProjectCORSSettings{PublicOrigins: publicOrigins, Source: corsSourceDatabase, Wildcard: corsWildcard(publicOrigins)}
+	}
+	return &p, nil
+}
+
+func UpdateProjectCORS(ctx context.Context, pool *pgxpool.Pool, cfg *Config, adminID string, slug string, input ProjectCORSSettingsInput, ip string, userAgent string) (*Project, error) {
+	slug = NormalizeProjectSlug(slug)
+	if err := ValidateProjectSlug(slug); err != nil {
+		return nil, err
+	}
+	origins, err := normalizeCORSOrigins(input.PublicOrigins, input.AllowWildcard)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var p Project
+	var publicOrigins []string
+	var corsConfigured bool
+	err = tx.QueryRow(ctx, `
+		update _dbo.projects
+		set public_cors_origins = nullif($2::text[], '{}'::text[]),
+		    updated_at = now()
+		where slug = $1 and disabled_at is null
+		returning id, slug, name, schema_name, coalesce(public_cors_origins, '{}'::text[]), public_cors_origins is not null`,
+		slug,
+		origins,
+	).Scan(&p.ID, &p.Slug, &p.Name, &p.SchemaName, &publicOrigins, &corsConfigured)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrProjectNotFound
+		}
+		return nil, err
+	}
+	_, p.Roles = ProjectNames(p.Slug)
+	if corsConfigured {
+		p.CORS = ProjectCORSSettings{PublicOrigins: publicOrigins, Source: corsSourceDatabase, Wildcard: corsWildcard(publicOrigins)}
+	}
+	fillProjectCORS(&p, cfg)
+
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		AdminID:    &adminID,
+		Action:     "project.cors.update",
+		TargetType: "project",
+		TargetID:   p.ID,
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data:       map[string]any{"project": p.Slug, "publicOriginCount": len(origins), "wildcard": corsWildcard(origins)},
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return &p, nil
 }
 

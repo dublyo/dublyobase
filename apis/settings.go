@@ -87,6 +87,24 @@ func (s *server) adminUpdateStorageSettings(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, settings)
 }
 
+func (s *server) adminUpdateCORSSettings(w http.ResponseWriter, r *http.Request) {
+	auth := adminAuth(r)
+	if auth == nil {
+		writeCoreError(w, core.ErrUnauthorized)
+		return
+	}
+	var body core.CORSSettingsInput
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	settings, err := core.UpdateCORSSettings(r.Context(), s.app.Pool, s.app.Config, auth.Admin.ID, body, s.clientIP(r), r.UserAgent())
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
 func (s *server) adminTestStorageSettings(w http.ResponseWriter, r *http.Request) {
 	cfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -85,18 +86,23 @@ func applySecurityHeaders(w http.ResponseWriter) {
 	}, "; "))
 }
 
-// applyCORS honors CORS_ORIGINS (a comma-separated list, or "*").
+// applyCORS uses instance admin origins for the control plane and per-project
+// origins for the public app API.
 func (s *server) applyCORS(w http.ResponseWriter, r *http.Request) {
-	wildcard := len(s.app.Config.CORSOrigins) == 1 && s.app.Config.CORSOrigins[0] == "*"
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return
+	}
+	origins := s.corsOriginsForRequest(r)
+	wildcard := len(origins) == 1 && origins[0] == "*"
 	if !wildcard {
 		// The response depends on the Origin header even when it doesn't
 		// match — shared caches must always be told.
 		w.Header().Add("Vary", "Origin")
 	}
 
-	origin := r.Header.Get("Origin")
 	allowed := ""
-	for _, o := range s.app.Config.CORSOrigins {
+	for _, o := range origins {
 		if o == "*" {
 			allowed = "*"
 			break
@@ -116,6 +122,43 @@ func (s *server) applyCORS(w http.ResponseWriter, r *http.Request) {
 	if allowed != "*" {
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
 	}
+}
+
+func (s *server) corsOriginsForRequest(r *http.Request) []string {
+	if s.app.Pool == nil {
+		return s.app.Config.CORSOrigins
+	}
+	if slug, ok := publicProjectSlugFromPath(r.URL.Path); ok {
+		origins, err := core.EffectiveProjectCORSOrigins(r.Context(), s.app.Pool, s.app.Config, slug)
+		if err == nil {
+			return origins
+		}
+		s.app.Log.Warn("project CORS lookup failed", "path", r.URL.Path, "err", err)
+		return core.DefaultCORSOrigins(s.app.Config.AppURL)
+	}
+	origins, err := core.EffectiveAdminCORSOrigins(r.Context(), s.app.Pool, s.app.Config)
+	if err == nil {
+		return origins
+	}
+	s.app.Log.Warn("admin CORS lookup failed", "err", err)
+	return s.app.Config.CORSOrigins
+}
+
+func publicProjectSlugFromPath(p string) (string, bool) {
+	const prefix = "/api/projects/"
+	if !strings.HasPrefix(p, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(p, prefix)
+	rawSlug, _, _ := strings.Cut(rest, "/")
+	if rawSlug == "" {
+		return "", false
+	}
+	slug, err := url.PathUnescape(rawSlug)
+	if err != nil {
+		return "", false
+	}
+	return slug, true
 }
 
 // clientIP returns the real client IP. Behind cloudflared → Traefik the

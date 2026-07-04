@@ -26,12 +26,18 @@ const (
 
 	BootstrapAdminEmail    = "admin@example.com"
 	BootstrapAdminPassword = "dublyo"
+
+	AdminRoleOwner      = "owner"
+	AdminRoleSuperAdmin = "super_admin"
 )
 
 type Admin struct {
-	ID                 string `json:"id"`
-	Email              string `json:"email"`
-	MustChangePassword bool   `json:"mustChangePassword"`
+	ID                 string    `json:"id"`
+	Email              string    `json:"email"`
+	Role               string    `json:"role"`
+	MustChangePassword bool      `json:"mustChangePassword"`
+	CreatedAt          time.Time `json:"createdAt,omitempty"`
+	UpdatedAt          time.Time `json:"updatedAt,omitempty"`
 }
 
 type AdminSession struct {
@@ -138,15 +144,16 @@ func createFirstAdminWithOptions(ctx context.Context, pool *pgxpool.Pool, email,
 		return nil, err
 	}
 
-	admin := &Admin{Email: email, MustChangePassword: mustChangePassword}
+	admin := &Admin{Email: email, Role: AdminRoleOwner, MustChangePassword: mustChangePassword}
 	if err := tx.QueryRow(ctx,
-		`insert into _dbo.admins (email, password_hash, must_change_password)
-		 values ($1, $2, $3)
-		 returning id, must_change_password`,
+		`insert into _dbo.admins (email, password_hash, role, must_change_password)
+		 values ($1, $2, $3, $4)
+		 returning id, role, must_change_password`,
 		email,
 		string(hash),
+		AdminRoleOwner,
 		mustChangePassword,
-	).Scan(&admin.ID, &admin.MustChangePassword); err != nil {
+	).Scan(&admin.ID, &admin.Role, &admin.MustChangePassword); err != nil {
 		return nil, err
 	}
 
@@ -157,7 +164,7 @@ func createFirstAdminWithOptions(ctx context.Context, pool *pgxpool.Pool, email,
 		TargetID:   admin.ID,
 		IP:         ip,
 		UserAgent:  userAgent,
-		Data:       map[string]any{"email": email, "mustChangePassword": mustChangePassword},
+		Data:       map[string]any{"email": email, "role": admin.Role, "mustChangePassword": mustChangePassword},
 	}); err != nil {
 		return nil, err
 	}
@@ -178,9 +185,9 @@ func LoginAdmin(ctx context.Context, pool *pgxpool.Pool, email, password, ip, us
 	var passwordHash string
 	var disabledAt sql.NullTime
 	if err := pool.QueryRow(ctx,
-		`select id, email, password_hash, disabled_at, must_change_password from _dbo.admins where email = $1`,
+		`select id, email, role, password_hash, disabled_at, must_change_password from _dbo.admins where email = $1`,
 		email,
-	).Scan(&admin.ID, &admin.Email, &passwordHash, &disabledAt, &admin.MustChangePassword); err != nil {
+	).Scan(&admin.ID, &admin.Email, &admin.Role, &passwordHash, &disabledAt, &admin.MustChangePassword); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrInvalidCredentials
 		}
@@ -234,7 +241,7 @@ func FindAdminByToken(ctx context.Context, pool *pgxpool.Pool, token string, now
 	var auth AdminAuth
 	var disabledAt sql.NullTime
 	if err := pool.QueryRow(ctx, `
-		select a.id, a.email, a.must_change_password, a.disabled_at, s.id, s.admin_id, s.expires_at
+		select a.id, a.email, a.role, a.must_change_password, a.disabled_at, s.id, s.admin_id, s.expires_at
 		from _dbo.admin_sessions s
 		join _dbo.admins a on a.id = s.admin_id
 		where s.token_hash = $1 and s.revoked_at is null`,
@@ -242,6 +249,7 @@ func FindAdminByToken(ctx context.Context, pool *pgxpool.Pool, token string, now
 	).Scan(
 		&auth.Admin.ID,
 		&auth.Admin.Email,
+		&auth.Admin.Role,
 		&auth.Admin.MustChangePassword,
 		&disabledAt,
 		&auth.Session.ID,
@@ -290,12 +298,12 @@ func ChangeAdminPassword(ctx context.Context, pool *pgxpool.Pool, adminID string
 	var passwordHash string
 	var disabledAt sql.NullTime
 	if err := tx.QueryRow(ctx, `
-		select id, email, password_hash, disabled_at, must_change_password
+		select id, email, role, password_hash, disabled_at, must_change_password
 		from _dbo.admins
 		where id = $1
 		for update`,
 		adminID,
-	).Scan(&admin.ID, &admin.Email, &passwordHash, &disabledAt, &admin.MustChangePassword); err != nil {
+	).Scan(&admin.ID, &admin.Email, &admin.Role, &passwordHash, &disabledAt, &admin.MustChangePassword); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrUnauthorized
 		}
@@ -319,10 +327,10 @@ func ChangeAdminPassword(ctx context.Context, pool *pgxpool.Pool, adminID string
 		    must_change_password = false,
 		    updated_at = now()
 		where id = $2
-		returning id, email, must_change_password`,
+		returning id, email, role, must_change_password`,
 		string(hash),
 		adminID,
-	).Scan(&admin.ID, &admin.Email, &admin.MustChangePassword); err != nil {
+	).Scan(&admin.ID, &admin.Email, &admin.Role, &admin.MustChangePassword); err != nil {
 		return nil, err
 	}
 
@@ -352,6 +360,152 @@ func ChangeAdminPassword(ctx context.Context, pool *pgxpool.Pool, adminID string
 		return nil, err
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &admin, nil
+}
+
+func ListAdmins(ctx context.Context, pool *pgxpool.Pool) ([]Admin, error) {
+	rows, err := pool.Query(ctx, `
+		select id, email, role, must_change_password, created_at, updated_at
+		from _dbo.admins
+		where disabled_at is null
+		order by case when role = 'owner' then 0 else 1 end, created_at asc`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	admins := make([]Admin, 0)
+	for rows.Next() {
+		var admin Admin
+		if err := rows.Scan(&admin.ID, &admin.Email, &admin.Role, &admin.MustChangePassword, &admin.CreatedAt, &admin.UpdatedAt); err != nil {
+			return nil, err
+		}
+		admins = append(admins, admin)
+	}
+	return admins, rows.Err()
+}
+
+func CreateSuperAdmin(ctx context.Context, pool *pgxpool.Pool, actor Admin, email string, temporaryPassword string, bcryptCost int, ip string, userAgent string) (*Admin, error) {
+	if actor.Role != AdminRoleOwner {
+		return nil, ErrForbidden
+	}
+	email = NormalizeEmail(email)
+	if err := ValidateAdminEmail(email); err != nil {
+		return nil, err
+	}
+	if err := ValidateAdminPassword(temporaryPassword); err != nil {
+		return nil, err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(temporaryPassword), bcryptCost)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var admin Admin
+	err = tx.QueryRow(ctx, `
+		insert into _dbo.admins (email, password_hash, role, must_change_password)
+		values ($1, $2, $3, true)
+		returning id, email, role, must_change_password, created_at, updated_at`,
+		email,
+		string(hash),
+		AdminRoleSuperAdmin,
+	).Scan(&admin.ID, &admin.Email, &admin.Role, &admin.MustChangePassword, &admin.CreatedAt, &admin.UpdatedAt)
+	if err != nil {
+		if pgErrCode(err) == "23505" {
+			return nil, ErrAdminExists
+		}
+		return nil, err
+	}
+
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		AdminID:    &actor.ID,
+		Action:     "admin.create",
+		TargetType: "admin",
+		TargetID:   admin.ID,
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data:       map[string]any{"email": email, "role": admin.Role, "mustChangePassword": admin.MustChangePassword},
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &admin, nil
+}
+
+func ChangeAdminEmail(ctx context.Context, pool *pgxpool.Pool, adminID string, currentPassword string, newEmail string, ip string, userAgent string) (*Admin, error) {
+	newEmail = NormalizeEmail(newEmail)
+	if err := ValidateAdminEmail(newEmail); err != nil {
+		return nil, err
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var admin Admin
+	var passwordHash string
+	var disabledAt sql.NullTime
+	if err := tx.QueryRow(ctx, `
+		select id, email, role, password_hash, disabled_at, must_change_password
+		from _dbo.admins
+		where id = $1
+		for update`,
+		adminID,
+	).Scan(&admin.ID, &admin.Email, &admin.Role, &passwordHash, &disabledAt, &admin.MustChangePassword); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUnauthorized
+		}
+		return nil, err
+	}
+	if disabledAt.Valid {
+		return nil, ErrAdminDisabled
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(currentPassword)); err != nil {
+		return nil, ErrInvalidCredentials
+	}
+	oldEmail := admin.Email
+	if oldEmail == newEmail {
+		return &admin, nil
+	}
+	if err := tx.QueryRow(ctx, `
+		update _dbo.admins
+		set email = $1,
+		    updated_at = now()
+		where id = $2
+		returning id, email, role, must_change_password, created_at, updated_at`,
+		newEmail,
+		adminID,
+	).Scan(&admin.ID, &admin.Email, &admin.Role, &admin.MustChangePassword, &admin.CreatedAt, &admin.UpdatedAt); err != nil {
+		if pgErrCode(err) == "23505" {
+			return nil, ErrAdminExists
+		}
+		return nil, err
+	}
+
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		AdminID:    &admin.ID,
+		Action:     "admin.email_changed",
+		TargetType: "admin",
+		TargetID:   admin.ID,
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data:       map[string]any{"oldEmail": oldEmail, "newEmail": newEmail},
+	}); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}

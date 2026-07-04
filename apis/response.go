@@ -39,12 +39,16 @@ func writeCoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnauthorized, "invalid_refresh_token", "invalid refresh token")
 	case errors.Is(err, core.ErrAdminDisabled):
 		writeError(w, http.StatusForbidden, "admin_disabled", "admin is disabled")
+	case errors.Is(err, core.ErrForbidden):
+		writeError(w, http.StatusForbidden, "forbidden", "action is not allowed")
 	case errors.Is(err, core.ErrPasswordChangeRequired):
 		writeError(w, http.StatusForbidden, "password_change_required", "admin password must be changed before accessing the control panel")
 	case errors.Is(err, core.ErrUserDisabled):
 		writeError(w, http.StatusForbidden, "user_disabled", "user is disabled")
 	case errors.Is(err, core.ErrSetupClosed):
 		writeError(w, http.StatusGone, "setup_closed", "setup is closed")
+	case errors.Is(err, core.ErrAdminExists):
+		writeError(w, http.StatusConflict, "admin_exists", "admin already exists")
 	case errors.Is(err, core.ErrUserExists):
 		writeError(w, http.StatusConflict, "user_exists", "user already exists")
 	case errors.Is(err, core.ErrProjectExists):

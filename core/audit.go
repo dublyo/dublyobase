@@ -77,8 +77,8 @@ func ListAuditLog(ctx context.Context, pool *pgxpool.Pool, projectSlug string, p
 	if perPage < 1 {
 		perPage = 30
 	}
-	if perPage > 100 {
-		perPage = 100
+	if perPage > 500 {
+		perPage = 500
 	}
 	projectSlug = NormalizeProjectSlug(projectSlug)
 	args := []any{}

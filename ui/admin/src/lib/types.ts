@@ -1,7 +1,10 @@
 export type Admin = {
   id: string;
   email: string;
+  role: "owner" | "super_admin";
   mustChangePassword: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type Project = {
@@ -14,6 +17,13 @@ export type Project = {
     authenticated: string;
     service: string;
   };
+  cors: ProjectCORSSettings;
+};
+
+export type ProjectCORSSettings = {
+  publicOrigins: string[];
+  source: string;
+  wildcard: boolean;
 };
 
 export type Field = {
@@ -284,6 +294,13 @@ export type Health = {
 export type InstanceSettings = {
   smtp: SMTPSettings;
   storage: StorageSettings;
+  cors: CORSSettings;
+};
+
+export type CORSSettings = {
+  adminOrigins: string[];
+  source: string;
+  wildcard: boolean;
 };
 
 export type SMTPSettings = {

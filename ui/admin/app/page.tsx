@@ -68,7 +68,9 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
+  changeAdminEmail,
   changeAdminPassword,
+  createAdmin,
   createAPIKey,
   createBackupJob,
   createCollection,
@@ -85,6 +87,7 @@ import {
   getSettings,
   importCollections,
   importSchemaTables,
+  listAdmins,
   listAPIKeys,
   listAudit,
   listBackupJobs,
@@ -106,12 +109,14 @@ import {
   testSMTPSettings,
   testStorageSettings,
   updateCollection,
+  updateCORSSettings,
+  updateProjectCORSSettings,
   updateRecord,
   updateSMTPSettings,
   updateStorageSettings,
   uploadFile,
 } from "../src/lib/api";
-import type { APIKey, Admin, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SchemaImportItem, SQLResult } from "../src/lib/types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SchemaImportItem, SQLResult } from "../src/lib/types";
 
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
@@ -175,6 +180,8 @@ const settingsItems = [
   { id: "auth", label: "Auth settings", group: "System" },
   { id: "mail", label: "Mail settings", group: "System" },
   { id: "storage", label: "Files storage", group: "System" },
+  { id: "cors", label: "CORS origins", group: "System" },
+  { id: "admins", label: "Admin users", group: "System" },
   { id: "backups", label: "Backups", group: "System" },
   { id: "crons", label: "Crons", group: "System" },
   { id: "mcp", label: "MCP access", group: "System" },
@@ -255,6 +262,18 @@ const emptyStorageDraft = {
   forcePathStyle: true,
 };
 
+const emptyCORSDraft = {
+  adminOrigins: "",
+  publicOrigins: "",
+  allowAdminWildcard: false,
+  allowPublicWildcard: false,
+};
+
+const emptyAdminDraft = {
+  email: "",
+  temporaryPassword: "",
+};
+
 const emptyCronDraft = {
   projectSlug: "",
   name: "",
@@ -311,8 +330,12 @@ export default function AdminApp() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [apiKeys, setApiKeys] = useState<APIKey[]>([]);
   const [oneTimeKey, setOneTimeKey] = useState<APIKey | null>(null);
-  const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [audit, setAudit] = useState<ApiEnvelope<AuditEntry>>({ items: [], page: 1, perPage: 25, totalItems: 0 });
+  const [auditPerPage, setAuditPerPage] = useState<(typeof recordPageSizes)[number]>(25);
   const [settings, setSettingsState] = useState<InstanceSettings | null>(null);
+  const [adminUsers, setAdminUsers] = useState<Admin[]>([]);
+  const [adminDraft, setAdminDraft] = useState(emptyAdminDraft);
+  const [oneTimeAdmin, setOneTimeAdmin] = useState<{ email: string; password: string } | null>(null);
   const [cronJobs, setCronJobs] = useState<CronJob[]>([]);
   const [cronRuns, setCronRuns] = useState<Record<string, CronRun[]>>({});
   const [backupJobs, setBackupJobs] = useState<BackupJob[]>([]);
@@ -330,6 +353,7 @@ export default function AdminApp() {
   const [editingManaged, setEditingManaged] = useState(false);
   const [smtpDraft, setSMTPDraft] = useState(emptySMTPDraft);
   const [storageDraft, setStorageDraft] = useState(emptyStorageDraft);
+  const [corsDraft, setCORSDraft] = useState(emptyCORSDraft);
   const [cronDraft, setCronDraft] = useState(emptyCronDraft);
   const [backupDraft, setBackupDraft] = useState(emptyBackupDraft);
   const [mcpDraft, setMCPDraft] = useState(emptyMCPDraft);
@@ -411,12 +435,12 @@ export default function AdminApp() {
       const [collectionResponse, keysResponse, auditResponse] = await Promise.all([
         listCollections(authToken, projectSlug),
         listAPIKeys(authToken, projectSlug),
-        listAudit(authToken, projectSlug),
+        listAudit(authToken, { project: projectSlug, page: 1, perPage: auditPerPage }),
       ]);
       setCollections(collectionResponse.items);
       setCollectionsProject(projectSlug);
       setApiKeys(keysResponse.items);
-      setAudit(auditResponse.items);
+      setAudit(auditResponse);
       const targetCollection = preferredCollection ?? selectedCollection;
       const currentExists = collectionResponse.items.some((collection) => collection.name === targetCollection);
       const nextCollection = currentExists ? targetCollection : collectionResponse.items[0]?.name || "";
@@ -435,7 +459,7 @@ export default function AdminApp() {
         setRecords({ items: [], page: 1, perPage: recordPerPage, totalItems: 0 });
       }
     },
-    [recordFilter, recordPerPage, recordSearch, selectedCollection],
+    [auditPerPage, recordFilter, recordPerPage, recordSearch, selectedCollection],
   );
 
   const refreshAll = useCallback(
@@ -443,10 +467,11 @@ export default function AdminApp() {
       if (!authToken) return;
       setBusy(true);
       try {
-        const [healthResponse, projectsResponse, settingsResponse, cronResponse, backupResponse, mcpResponse] = await Promise.all([
+        const [healthResponse, projectsResponse, settingsResponse, adminResponse, cronResponse, backupResponse, mcpResponse] = await Promise.all([
           health(),
           listProjects(authToken),
           getSettings(authToken),
+          listAdmins(authToken),
           listCronJobs(authToken),
           listBackupJobs(authToken),
           listMCPTokens(authToken),
@@ -454,12 +479,15 @@ export default function AdminApp() {
         setHealthState(healthResponse);
         setProjects(projectsResponse.items);
         setSettingsState(settingsResponse);
+        setAdminUsers(adminResponse.items);
         setCronJobs(cronResponse.items);
         setBackupJobs(backupResponse.items);
         setMCPTokens(mcpResponse.items);
         setSMTPDraft(settingsToSMTPDraft(settingsResponse));
         setStorageDraft(settingsToStorageDraft(settingsResponse));
         const projectSlug = preferredProject || projectsResponse.items[0]?.slug || "";
+        const projectModel = projectsResponse.items.find((project) => project.slug === projectSlug) ?? null;
+        setCORSDraft(settingsToCORSDraft(settingsResponse, projectModel));
         setSelectedProject(projectSlug);
         if (projectSlug) {
           await loadProjectData(authToken, projectSlug);
@@ -468,6 +496,7 @@ export default function AdminApp() {
           setCollectionsProject("");
           setSelectedCollection("");
           setRecords({ items: [], page: 1, perPage: recordPerPage, totalItems: 0 });
+          setAudit({ items: [], page: 1, perPage: auditPerPage, totalItems: 0 });
         }
       } catch (error) {
         handleError(error);
@@ -475,7 +504,7 @@ export default function AdminApp() {
         setBusy(false);
       }
     },
-    [handleError, loadProjectData, recordPerPage, selectedProject, token],
+    [auditPerPage, handleError, loadProjectData, recordPerPage, selectedProject, token],
   );
 
   useEffect(() => {
@@ -619,6 +648,11 @@ export default function AdminApp() {
     setCollections([]);
     setCollectionsProject("");
     setSettingsState(null);
+    setAdminUsers([]);
+    setAdminDraft(emptyAdminDraft);
+    setOneTimeAdmin(null);
+    setAudit({ items: [], page: 1, perPage: auditPerPage, totalItems: 0 });
+    setCORSDraft(emptyCORSDraft);
     setCronJobs([]);
     setBackupJobs([]);
     setMCPTokens([]);
@@ -646,6 +680,88 @@ export default function AdminApp() {
       setAccountOpen(false);
       showNotice("success", wasForced ? "Password changed. Admin access unlocked." : "Password changed.");
       await refreshAll(token);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitEmailChange(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    const data = new FormData(event.currentTarget);
+    const currentPassword = String(data.get("emailCurrentPassword") ?? "");
+    const email = String(data.get("email") ?? "");
+    setBusy(true);
+    try {
+      const response = await changeAdminEmail(token, currentPassword, email);
+      setAdmin(response.admin);
+      setAdminUsers((items) => items.map((item) => (item.id === response.admin.id ? response.admin : item)));
+      showNotice("success", "Email changed.");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshAudit(page = audit.page ?? 1, perPage = auditPerPage) {
+    if (!token || !selectedProject) return;
+    setBusy(true);
+    try {
+      const response = await listAudit(token, { project: selectedProject, page, perPage });
+      setAudit(response);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveCORSSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    setBusy(true);
+    try {
+      const adminOrigins = splitDraftList(corsDraft.adminOrigins);
+      const settingsResponse = await updateCORSSettings(token, {
+        adminOrigins,
+        allowWildcard: corsDraft.allowAdminWildcard,
+      });
+      let nextProject = selectedProjectModel;
+      if (selectedProject) {
+        const projectResponse = await updateProjectCORSSettings(token, selectedProject, {
+          publicOrigins: splitDraftList(corsDraft.publicOrigins),
+          allowWildcard: corsDraft.allowPublicWildcard,
+        });
+        nextProject = projectResponse;
+        setProjects((items) => items.map((item) => (item.id === projectResponse.id ? projectResponse : item)));
+      }
+      setSettingsState(settingsResponse);
+      setCORSDraft(settingsToCORSDraft(settingsResponse, nextProject));
+      showNotice("success", "CORS settings saved");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitAdminUser(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    setBusy(true);
+    try {
+      const response = await createAdmin(token, {
+        email: adminDraft.email,
+        password: adminDraft.temporaryPassword,
+      });
+      setOneTimeAdmin({ email: adminDraft.email, password: adminDraft.temporaryPassword });
+      setAdminDraft(emptyAdminDraft);
+      showNotice("success", `Super admin ${response.admin.email} created`);
+      const admins = await listAdmins(token);
+      setAdminUsers(admins.items);
     } catch (error) {
       handleError(error);
     } finally {
@@ -1307,7 +1423,8 @@ export default function AdminApp() {
             setCollections([]);
             setCollectionsProject("");
             setApiKeys([]);
-            setAudit([]);
+            setAudit({ items: [], page: 1, perPage: auditPerPage, totalItems: 0 });
+            setCORSDraft(settingsToCORSDraft(settings, projects.find((project) => project.slug === slug) ?? null));
             setSelectedCollection("");
             setSelectedRecordId("");
             setRecords({ items: [], page: 1, perPage: recordPerPage, totalItems: 0 });
@@ -1333,7 +1450,7 @@ export default function AdminApp() {
         </button>
       </header>
 
-      {accountOpen ? <AccountModal admin={admin} busy={busy} onSubmit={submitPasswordChange} onClose={() => setAccountOpen(false)} onLogout={signOut} /> : null}
+      {accountOpen ? <AccountModal admin={admin} busy={busy} onEmailSubmit={submitEmailChange} onPasswordSubmit={submitPasswordChange} onClose={() => setAccountOpen(false)} onLogout={signOut} /> : null}
 
       {notice ? (
         <div className={`pb-toast ${notice.type === "error" ? "danger" : "success"}`}>
@@ -1382,7 +1499,21 @@ export default function AdminApp() {
         />
       ) : null}
 
-      {view === "logs" ? <LogsView audit={audit} onRefresh={() => token && selectedProject && listAudit(token, selectedProject).then((r) => setAudit(r.items)).catch(handleError)} version={healthState?.version ?? "unknown"} /> : null}
+      {view === "logs" ? (
+        <LogsView
+          audit={audit}
+          auditPerPage={auditPerPage}
+          onRefresh={() => void refreshAudit()}
+          onPageChange={(page) => {
+            void refreshAudit(page);
+          }}
+          onPageSizeChange={(pageSize) => {
+            setAuditPerPage(pageSize);
+            void refreshAudit(1, pageSize);
+          }}
+          version={healthState?.version ?? "unknown"}
+        />
+      ) : null}
 
       {view === "settings" ? (
         <SettingsWorkspace
@@ -1404,6 +1535,16 @@ export default function AdminApp() {
           setSMTPDraft={setSMTPDraft}
           storageDraft={storageDraft}
           setStorageDraft={setStorageDraft}
+          corsDraft={corsDraft}
+          setCORSDraft={setCORSDraft}
+          onSaveCORS={saveCORSSettings}
+          admin={admin}
+          adminUsers={adminUsers}
+          adminDraft={adminDraft}
+          setAdminDraft={setAdminDraft}
+          oneTimeAdmin={oneTimeAdmin}
+          onCreateAdmin={submitAdminUser}
+          onDismissAdminSecret={() => setOneTimeAdmin(null)}
           onSaveSMTP={saveSMTPSettings}
           onTestSMTP={sendSMTPTest}
           onSaveStorage={saveStorageSettings}
@@ -1685,18 +1826,21 @@ function PasswordChangeScreen({
 function AccountModal({
   admin,
   busy,
-  onSubmit,
+  onEmailSubmit,
+  onPasswordSubmit,
   onClose,
   onLogout,
 }: {
   admin: Admin;
   busy: boolean;
-  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  onEmailSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  onPasswordSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onClose: () => void;
   onLogout: () => void;
 }) {
   const [showCurrent, setShowCurrent] = useState(false);
   const [showNew, setShowNew] = useState(false);
+  const [showEmailPassword, setShowEmailPassword] = useState(false);
   return (
     <div className="pb-modal-layer" role="presentation">
       <section className="pb-modal account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
@@ -1706,40 +1850,61 @@ function AccountModal({
             <X className="h-4 w-4" />
           </button>
         </header>
-        <form onSubmit={onSubmit} className="pb-modal-content account-form">
+        <div className="pb-modal-content account-form">
           <div className="pb-info-grid compact">
             <Info label="Signed in as" value={admin.email} />
+            <Info label="Role" value={admin.role === "owner" ? "Owner" : "Super admin"} />
           </div>
-          <h3>Change password</h3>
-          <label className="pb-field password-field">
-            <span>Current password</span>
-            <input name="currentPassword" type={showCurrent ? "text" : "password"} autoComplete="current-password" required />
-            <button type="button" className="pb-icon-btn password-toggle" onClick={() => setShowCurrent((value) => !value)} aria-label={showCurrent ? "Hide current password" : "Show current password"}>
-              {showCurrent ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          <form onSubmit={onEmailSubmit} className="pb-form-stack">
+            <h3>Change email</h3>
+            <label className="pb-field">
+              <span>Email</span>
+              <input name="email" type="email" defaultValue={admin.email} autoComplete="username" required />
+            </label>
+            <label className="pb-field password-field">
+              <span>Current password</span>
+              <input name="emailCurrentPassword" type={showEmailPassword ? "text" : "password"} autoComplete="current-password" required />
+              <button type="button" className="pb-icon-btn password-toggle" onClick={() => setShowEmailPassword((value) => !value)} aria-label={showEmailPassword ? "Hide current password" : "Show current password"}>
+                {showEmailPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </label>
+            <button type="submit" disabled={busy} className="pb-btn secondary expanded-lg">
+              <Save className="h-4 w-4" />
+              Save email
             </button>
-          </label>
-          <label className="pb-field password-field">
-            <span>New password</span>
-            <input name="newPassword" type={showNew ? "text" : "password"} autoComplete="new-password" minLength={12} required />
-            <button type="button" className="pb-icon-btn password-toggle" onClick={() => setShowNew((value) => !value)} aria-label={showNew ? "Hide new password" : "Show new password"}>
-              {showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </form>
+          <form onSubmit={onPasswordSubmit} className="pb-form-stack">
+            <h3>Change password</h3>
+            <label className="pb-field password-field">
+              <span>Current password</span>
+              <input name="currentPassword" type={showCurrent ? "text" : "password"} autoComplete="current-password" required />
+              <button type="button" className="pb-icon-btn password-toggle" onClick={() => setShowCurrent((value) => !value)} aria-label={showCurrent ? "Hide current password" : "Show current password"}>
+                {showCurrent ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </label>
+            <label className="pb-field password-field">
+              <span>New password</span>
+              <input name="newPassword" type={showNew ? "text" : "password"} autoComplete="new-password" minLength={12} required />
+              <button type="button" className="pb-icon-btn password-toggle" onClick={() => setShowNew((value) => !value)} aria-label={showNew ? "Hide new password" : "Show new password"}>
+                {showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </label>
+            <label className="pb-field">
+              <span>Confirm new password</span>
+              <input name="confirmPassword" type={showNew ? "text" : "password"} autoComplete="new-password" minLength={12} required />
+            </label>
+            <button type="submit" disabled={busy} className="pb-btn primary expanded-lg">
+              {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              Save password
             </button>
-          </label>
-          <label className="pb-field">
-            <span>Confirm new password</span>
-            <input name="confirmPassword" type={showNew ? "text" : "password"} autoComplete="new-password" minLength={12} required />
-          </label>
+          </form>
           <div className="account-actions">
             <button type="button" onClick={onLogout} disabled={busy} className="pb-btn secondary">
               <LogOut className="h-4 w-4" />
               Log out
             </button>
-            <button type="submit" disabled={busy} className="pb-btn primary">
-              {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              Save password
-            </button>
           </div>
-        </form>
+        </div>
       </section>
     </div>
   );
@@ -3048,7 +3213,25 @@ DELETE ${basePath}/records/{id}`;
   );
 }
 
-function LogsView({ audit, onRefresh, version }: { audit: AuditEntry[]; onRefresh: () => void; version: string }) {
+function LogsView({
+  audit,
+  auditPerPage,
+  onRefresh,
+  onPageChange,
+  onPageSizeChange,
+  version,
+}: {
+  audit: ApiEnvelope<AuditEntry>;
+  auditPerPage: (typeof recordPageSizes)[number];
+  onRefresh: () => void;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: (typeof recordPageSizes)[number]) => void;
+  version: string;
+}) {
+  const page = audit.page ?? 1;
+  const perPage = audit.perPage ?? auditPerPage;
+  const totalItems = audit.totalItems ?? audit.items.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / Math.max(1, perPage)));
   return (
     <section className="pb-page single">
       <div className="pb-page-content full-height">
@@ -3075,7 +3258,7 @@ function LogsView({ audit, onRefresh, version }: { audit: AuditEntry[]; onRefres
               </tr>
             </thead>
             <tbody>
-              {audit.map((entry) => (
+              {audit.items.map((entry) => (
                 <tr key={entry.id}>
                   <td>{entry.action}</td>
                   <td>
@@ -3086,7 +3269,7 @@ function LogsView({ audit, onRefresh, version }: { audit: AuditEntry[]; onRefres
                   <td className="truncate-cell">{JSON.stringify(entry.data)}</td>
                 </tr>
               ))}
-              {audit.length === 0 ? (
+              {audit.items.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="pb-empty-cell">
                     <EmptyState label="No audit entries yet." />
@@ -3096,7 +3279,36 @@ function LogsView({ audit, onRefresh, version }: { audit: AuditEntry[]; onRefres
             </tbody>
           </table>
         </div>
-        <PageFooter left={`Total: ${audit.length}`} version={version} />
+        <div className="pb-record-pagination" aria-label="Audit log pagination">
+          <label className="pb-page-size-control">
+            <span>Per page</span>
+            <select
+              value={auditPerPage}
+              onChange={(event) => {
+                const next = Number(event.target.value) as (typeof recordPageSizes)[number];
+                onPageSizeChange(next);
+              }}
+            >
+              {recordPageSizes.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="pb-pagination-actions">
+            <button type="button" className="pb-btn outline" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+              Previous
+            </button>
+            <span>
+              Page {page} of {totalPages}
+            </span>
+            <button type="button" className="pb-btn outline" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>
+              Next
+            </button>
+          </div>
+        </div>
+        <PageFooter left={`Showing ${audit.items.length} of ${totalItems}`} version={version} />
       </div>
     </section>
   );
@@ -3121,6 +3333,16 @@ function SettingsWorkspace(props: {
   setSMTPDraft: React.Dispatch<React.SetStateAction<typeof emptySMTPDraft>>;
   storageDraft: typeof emptyStorageDraft;
   setStorageDraft: React.Dispatch<React.SetStateAction<typeof emptyStorageDraft>>;
+  corsDraft: typeof emptyCORSDraft;
+  setCORSDraft: React.Dispatch<React.SetStateAction<typeof emptyCORSDraft>>;
+  onSaveCORS: (event: React.FormEvent<HTMLFormElement>) => void;
+  admin: Admin | null;
+  adminUsers: Admin[];
+  adminDraft: typeof emptyAdminDraft;
+  setAdminDraft: React.Dispatch<React.SetStateAction<typeof emptyAdminDraft>>;
+  oneTimeAdmin: { email: string; password: string } | null;
+  onCreateAdmin: (event: React.FormEvent<HTMLFormElement>) => void;
+  onDismissAdminSecret: () => void;
   onSaveSMTP: (event: React.FormEvent<HTMLFormElement>) => void;
   onTestSMTP: () => void;
   onSaveStorage: (event: React.FormEvent<HTMLFormElement>) => void;
@@ -3225,6 +3447,8 @@ function SettingsWorkspace(props: {
           {props.section === "auth" ? <AuthSettingsPanel {...props} /> : null}
           {props.section === "mail" ? <MailSettings {...props} /> : null}
           {props.section === "storage" ? <StorageSettingsPanel {...props} /> : null}
+          {props.section === "cors" ? <CORSSettingsPanel {...props} /> : null}
+          {props.section === "admins" ? <AdminUsersPanel {...props} /> : null}
           {props.section === "backups" ? <BackupsView {...props} onOpenExport={() => props.onChangeSection("exportCollections")} /> : null}
           {props.section === "crons" ? <CronsView {...props} /> : null}
           {props.section === "mcp" ? <MCPAccessView {...props} /> : null}
@@ -3269,6 +3493,8 @@ function SettingsIcon({ id }: { id: SettingsSection }) {
   if (id === "auth") return <ShieldCheck className="h-4 w-4" />;
   if (id === "mail") return <Mail className="h-4 w-4" />;
   if (id === "storage") return <HardDrive className="h-4 w-4" />;
+  if (id === "cors") return <Globe className="h-4 w-4" />;
+  if (id === "admins") return <Users className="h-4 w-4" />;
   if (id === "backups") return <Archive className="h-4 w-4" />;
   if (id === "crons") return <Activity className="h-4 w-4" />;
   if (id === "mcp") return <KeyRound className="h-4 w-4" />;
@@ -3603,6 +3829,170 @@ function StorageSettingsPanel({
         </button>
       </section>
     </form>
+  );
+}
+
+function CORSSettingsPanel({
+  project,
+  settings,
+  corsDraft,
+  setCORSDraft,
+  onSaveCORS,
+}: {
+  project: Project | null;
+  settings: InstanceSettings | null;
+  corsDraft: typeof emptyCORSDraft;
+  setCORSDraft: React.Dispatch<React.SetStateAction<typeof emptyCORSDraft>>;
+  onSaveCORS: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <form onSubmit={onSaveCORS} className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>CORS origins</h2>
+        <div className="pb-inline-alert warning">
+          `*` allows any website to call browser-exposed APIs. Use explicit origins unless this instance is intentionally public.
+        </div>
+        <div className="pb-info-grid compact">
+          <Info label="Admin source" value={settings?.cors.source ?? ""} />
+          <Info label="Admin wildcard" value={settings?.cors.wildcard ? "yes" : "no"} />
+          <Info label="Project" value={project?.slug ?? "No project selected"} />
+          <Info label="Public API source" value={project?.cors?.source ?? ""} />
+        </div>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Admin panel</h2>
+        <label className="pb-field">
+          <span>Allowed admin origins</span>
+          <textarea
+            value={corsDraft.adminOrigins}
+            onChange={(event) => setCORSDraft((draft) => ({ ...draft, adminOrigins: event.target.value }))}
+            placeholder="https://app.example.com"
+            rows={5}
+          />
+        </label>
+        <label className="pb-checkline">
+          <input type="checkbox" checked={corsDraft.allowAdminWildcard} onChange={(event) => setCORSDraft((draft) => ({ ...draft, allowAdminWildcard: event.target.checked }))} />
+          Allow `*` for admin origins
+        </label>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Public project API</h2>
+        {project ? (
+          <>
+            <label className="pb-field">
+              <span>Allowed public API origins</span>
+              <textarea
+                value={corsDraft.publicOrigins}
+                onChange={(event) => setCORSDraft((draft) => ({ ...draft, publicOrigins: event.target.value }))}
+                placeholder="https://www.example.com"
+                rows={5}
+              />
+            </label>
+            <label className="pb-checkline">
+              <input type="checkbox" checked={corsDraft.allowPublicWildcard} onChange={(event) => setCORSDraft((draft) => ({ ...draft, allowPublicWildcard: event.target.checked }))} />
+              Allow `*` for this project API
+            </label>
+          </>
+        ) : (
+          <EmptyState label="Select a project to edit public API CORS." />
+        )}
+      </section>
+      <section className="pb-settings-actions">
+        <button type="submit" className="pb-btn primary expanded-lg">
+          Save CORS
+        </button>
+      </section>
+    </form>
+  );
+}
+
+function AdminUsersPanel({
+  admin,
+  adminUsers,
+  adminDraft,
+  setAdminDraft,
+  oneTimeAdmin,
+  onCreateAdmin,
+  onDismissAdminSecret,
+}: {
+  admin: Admin | null;
+  adminUsers: Admin[];
+  adminDraft: typeof emptyAdminDraft;
+  setAdminDraft: React.Dispatch<React.SetStateAction<typeof emptyAdminDraft>>;
+  oneTimeAdmin: { email: string; password: string } | null;
+  onCreateAdmin: (event: React.FormEvent<HTMLFormElement>) => void;
+  onDismissAdminSecret: () => void;
+}) {
+  const isOwner = admin?.role === "owner";
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>Admin users</h2>
+        <div className="pb-inline-alert info">
+          The first admin is the owner. Owner can create super admins with a temporary password; new super admins must change it on first login.
+        </div>
+        <div className="pb-table-wrap">
+          <table className="pb-records-table compact">
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {adminUsers.map((item) => (
+                <tr key={item.id}>
+                  <td>{item.email}</td>
+                  <td>{item.role === "owner" ? "Owner" : "Super admin"}</td>
+                  <td>{item.mustChangePassword ? "Must change password" : "Active"}</td>
+                  <td>{formatDate(item.createdAt ?? "")}</td>
+                </tr>
+              ))}
+              {adminUsers.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="pb-empty-cell">
+                    <EmptyState label="No admin users found." />
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {oneTimeAdmin ? (
+        <section className="pb-settings-block">
+          <h2>Temporary password</h2>
+          <div className="pb-inline-alert warning">This password is shown once. Share it with {oneTimeAdmin.email}, then they must change it after login.</div>
+          <pre className="pb-code-box">{oneTimeAdmin.password}</pre>
+          <button type="button" className="pb-btn secondary" onClick={onDismissAdminSecret}>
+            Dismiss
+          </button>
+        </section>
+      ) : null}
+      <form onSubmit={onCreateAdmin} className="pb-settings-block">
+        <h2>Create super admin</h2>
+        {!isOwner ? <div className="pb-inline-alert warning">Only the owner can create super admins.</div> : null}
+        <div className="pb-grid-form two">
+          <LabeledInput label="Email" value={adminDraft.email} onChange={(value) => setAdminDraft((draft) => ({ ...draft, email: value }))} placeholder="admin@example.com" />
+          <label className="pb-field">
+            <span>Temporary password</span>
+            <input
+              type="password"
+              value={adminDraft.temporaryPassword}
+              onChange={(event) => setAdminDraft((draft) => ({ ...draft, temporaryPassword: event.target.value }))}
+              minLength={12}
+              autoComplete="new-password"
+            />
+          </label>
+          <button type="submit" className="pb-btn primary" disabled={!isOwner}>
+            <Plus className="h-4 w-4" />
+            Create super admin
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -5291,6 +5681,27 @@ function settingsToStorageDraft(settings: InstanceSettings): typeof emptyStorage
     useSSL: settings.storage.s3.useSSL,
     forcePathStyle: settings.storage.s3.forcePathStyle,
   };
+}
+
+function settingsToCORSDraft(settings: InstanceSettings | null, project: Project | null): typeof emptyCORSDraft {
+  return {
+    adminOrigins: (settings?.cors.adminOrigins ?? []).join("\n"),
+    publicOrigins: (project?.cors?.publicOrigins ?? settings?.cors.adminOrigins ?? []).join("\n"),
+    allowAdminWildcard: Boolean(settings?.cors.wildcard),
+    allowPublicWildcard: Boolean(project?.cors?.wildcard),
+  };
+}
+
+function splitDraftList(value: string) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value.split(/[\n,]/)) {
+    const next = item.trim();
+    if (!next || seen.has(next)) continue;
+    seen.add(next);
+    out.push(next);
+  }
+  return out;
 }
 
 function formatDate(value: string) {

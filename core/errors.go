@@ -4,6 +4,8 @@ import "errors"
 
 var (
 	ErrAdminDisabled          = errors.New("admin disabled")
+	ErrAdminExists            = errors.New("admin exists")
+	ErrForbidden              = errors.New("forbidden")
 	ErrInvalidAuthToken       = errors.New("invalid auth token")
 	ErrInvalidCredentials     = errors.New("invalid credentials")
 	ErrInvalidRefreshToken    = errors.New("invalid refresh token")

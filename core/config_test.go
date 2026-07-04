@@ -69,8 +69,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if !cfg.MigrateOnStart || cfg.TrustProxyHeaders || cfg.EnablePgvector {
 		t.Fatalf("bool defaults wrong: %+v", cfg)
 	}
-	if len(cfg.CORSOrigins) != 1 || cfg.CORSOrigins[0] != "*" {
-		t.Fatalf("default CORS must be [*], got %v", cfg.CORSOrigins)
+	if len(cfg.CORSOrigins) != 1 || cfg.CORSOrigins[0] != "https://app.example.com" || cfg.CORSOriginsConfigured {
+		t.Fatalf("default CORS must lock to APP_URL origin, got %v configured=%v", cfg.CORSOrigins, cfg.CORSOriginsConfigured)
 	}
 	if cfg.StorageType != StorageLocal || cfg.StorageLocalPath != "/data/storage" {
 		t.Fatalf("storage defaults wrong: %+v", cfg)
@@ -80,6 +80,18 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.SMTPPort != "587" {
 		t.Fatalf("smtp port default wrong: %q", cfg.SMTPPort)
+	}
+}
+
+func TestLoadConfigAllowsExplicitWildcardCORS(t *testing.T) {
+	setRequired(t)
+	t.Setenv("CORS_ORIGINS", "*")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.CORSOrigins) != 1 || cfg.CORSOrigins[0] != "*" || !cfg.CORSOriginsConfigured {
+		t.Fatalf("explicit wildcard CORS not preserved: %+v", cfg)
 	}
 }
 

@@ -20,6 +20,11 @@ type changePasswordRequest struct {
 	NewPassword     string `json:"newPassword"`
 }
 
+type changeEmailRequest struct {
+	CurrentPassword string `json:"currentPassword"`
+	Email           string `json:"email"`
+}
+
 func (s *server) setup(w http.ResponseWriter, r *http.Request) {
 	if !s.app.Ready() {
 		writeError(w, http.StatusServiceUnavailable, "setup_starting", "setup is unavailable while Dublyobase is starting")
@@ -126,6 +131,68 @@ func (s *server) adminChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"admin": admin})
+}
+
+func (s *server) adminChangeEmail(w http.ResponseWriter, r *http.Request) {
+	auth := adminAuth(r)
+	if auth == nil {
+		writeCoreError(w, core.ErrUnauthorized)
+		return
+	}
+	var req changeEmailRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	admin, err := core.ChangeAdminEmail(
+		r.Context(),
+		s.app.Pool,
+		auth.Admin.ID,
+		req.CurrentPassword,
+		req.Email,
+		s.clientIP(r),
+		r.UserAgent(),
+	)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"admin": admin})
+}
+
+func (s *server) adminListAdmins(w http.ResponseWriter, r *http.Request) {
+	admins, err := core.ListAdmins(r.Context(), s.app.Pool)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": admins})
+}
+
+func (s *server) adminCreateAdmin(w http.ResponseWriter, r *http.Request) {
+	auth := adminAuth(r)
+	if auth == nil {
+		writeCoreError(w, core.ErrUnauthorized)
+		return
+	}
+	var req credentialsRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	admin, err := core.CreateSuperAdmin(
+		r.Context(),
+		s.app.Pool,
+		auth.Admin,
+		req.Email,
+		req.Password,
+		s.app.Config.BcryptCost,
+		s.clientIP(r),
+		r.UserAgent(),
+	)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"admin": admin})
 }
 
 func (s *server) adminMe(w http.ResponseWriter, r *http.Request) {

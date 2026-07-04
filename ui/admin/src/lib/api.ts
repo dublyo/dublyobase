@@ -86,6 +86,14 @@ export function changeAdminPassword(token: string, currentPassword: string, newP
   });
 }
 
+export function changeAdminEmail(token: string, currentPassword: string, email: string) {
+  return request<{ admin: Admin }>("/admin/api/auth/email", {
+    method: "PATCH",
+    token,
+    body: JSON.stringify({ currentPassword, email }),
+  });
+}
+
 export function me(token: string) {
   return request<{ admin: Admin; session: { id: string; expiresAt: string } }>("/admin/api/me", { token });
 }
@@ -162,6 +170,14 @@ export function updateStorageSettings(
   });
 }
 
+export function updateCORSSettings(token: string, input: { adminOrigins: string[]; allowWildcard?: boolean }) {
+  return request<InstanceSettings>("/admin/api/settings/cors", {
+    method: "PUT",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
 export function testStorageSettings(token: string) {
   return request<{ status: string }>("/admin/api/settings/storage/test", {
     method: "POST",
@@ -176,6 +192,26 @@ export function listProjects(token: string) {
 
 export function createProject(token: string, input: { slug: string; name: string }) {
   return request<Project>("/admin/api/projects", {
+    method: "POST",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateProjectCORSSettings(token: string, project: string, input: { publicOrigins: string[]; allowWildcard?: boolean }) {
+  return request<Project>(`/admin/api/projects/${encodeURIComponent(project)}/cors`, {
+    method: "PUT",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function listAdmins(token: string) {
+  return request<ApiEnvelope<Admin>>("/admin/api/admins", { token }).then(normalizeEnvelope);
+}
+
+export function createAdmin(token: string, input: { email: string; password: string }) {
+  return request<{ admin: Admin }>("/admin/api/admins", {
     method: "POST",
     token,
     body: JSON.stringify(input),
@@ -321,9 +357,12 @@ export function revokeAPIKey(token: string, project: string, id: string) {
   });
 }
 
-export function listAudit(token: string, project?: string) {
-  const params = new URLSearchParams({ page: "1", perPage: "30" });
-  if (project) params.set("project", project);
+export function listAudit(token: string, input: { project?: string; page?: number; perPage?: number } = {}) {
+  const params = new URLSearchParams({
+    page: String(input.page ?? 1),
+    perPage: String(input.perPage ?? 30),
+  });
+  if (input.project) params.set("project", input.project);
   return request<ApiEnvelope<AuditEntry>>(`/admin/api/audit-log?${params}`, { token }).then(normalizeEnvelope);
 }
 

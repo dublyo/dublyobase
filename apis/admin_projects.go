@@ -17,6 +17,7 @@ func (s *server) adminListProjects(w http.ResponseWriter, r *http.Request) {
 		writeCoreError(w, err)
 		return
 	}
+	core.FillProjectsCORSForAPI(projects, s.app.Config)
 	writeJSON(w, http.StatusOK, map[string]any{"items": projects})
 }
 
@@ -43,11 +44,31 @@ func (s *server) adminCreateProject(w http.ResponseWriter, r *http.Request) {
 		writeCoreError(w, err)
 		return
 	}
+	core.FillProjectCORSForAPI(project, s.app.Config)
 	writeJSON(w, http.StatusCreated, project)
 }
 
 func (s *server) adminGetProject(w http.ResponseWriter, r *http.Request) {
 	project, err := core.GetProject(r.Context(), s.app.Pool, r.PathValue("slug"))
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	core.FillProjectCORSForAPI(project, s.app.Config)
+	writeJSON(w, http.StatusOK, project)
+}
+
+func (s *server) adminUpdateProjectCORS(w http.ResponseWriter, r *http.Request) {
+	auth := adminAuth(r)
+	if auth == nil {
+		writeCoreError(w, core.ErrUnauthorized)
+		return
+	}
+	var body core.ProjectCORSSettingsInput
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	project, err := core.UpdateProjectCORS(r.Context(), s.app.Pool, s.app.Config, auth.Admin.ID, r.PathValue("slug"), body, s.clientIP(r), r.UserAgent())
 	if err != nil {
 		writeCoreError(w, err)
 		return
