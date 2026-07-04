@@ -173,12 +173,13 @@ func validateFieldOptions(field Field) error {
 			return fmt.Errorf("%w: relation field %q options.unique requires a single relation", ErrValidation, field.Name)
 		}
 		onDelete, _ := field.Options["onDelete"].(string)
-		switch strings.TrimSpace(onDelete) {
-		case "", "restrict", "cascade", "set_null":
+		normalizedOnDelete := NormalizeRelationOnDeleteOption(onDelete)
+		switch normalizedOnDelete {
+		case "restrict", "cascade", "set_null":
 		default:
 			return fmt.Errorf("%w: relation field %q options.onDelete must be restrict, cascade or set_null", ErrValidation, field.Name)
 		}
-		if strings.TrimSpace(onDelete) == "set_null" && field.Required {
+		if normalizedOnDelete == "set_null" && field.Required {
 			return fmt.Errorf("%w: relation field %q cannot use set_null while required", ErrValidation, field.Name)
 		}
 		if displayField, _ := field.Options["displayField"].(string); strings.TrimSpace(displayField) != "" {
@@ -211,6 +212,19 @@ func validateFieldOptions(field Field) error {
 	case "bool", "date":
 	}
 	return nil
+}
+
+func NormalizeRelationOnDeleteOption(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, " ", "_")
+	switch normalized {
+	case "", "restrict", "no_action":
+		return "restrict"
+	case "set_null":
+		return "set_null"
+	default:
+		return normalized
+	}
 }
 
 func ColumnDDL(field Field) (string, error) {

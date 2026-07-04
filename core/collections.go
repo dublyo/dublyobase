@@ -324,8 +324,8 @@ func relationOnDeleteClause(field Field) (string, error) {
 		return "cascade", nil
 	}
 	onDelete, _ := field.Options["onDelete"].(string)
-	switch strings.TrimSpace(onDelete) {
-	case "", "restrict":
+	switch NormalizeRelationOnDeleteOption(onDelete) {
+	case "restrict":
 		return "restrict", nil
 	case "cascade":
 		return "cascade", nil

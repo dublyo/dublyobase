@@ -110,6 +110,7 @@ func TestAdminOpsAndMCP(t *testing.T) {
 		t.Fatalf("mcp collection create failed: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
+	owner := signupAppUserForTest(t, srv.Handler, projectSlug, "mcp-owner@example.com")
 	for i := 1; i <= 12; i++ {
 		status := "draft"
 		if i%2 == 0 {
@@ -129,7 +130,7 @@ func TestAdminOpsAndMCP(t *testing.T) {
 				"website":   fmt.Sprintf("https://example.com/posts/%d", i),
 				"status":    status,
 				"payload":   map[string]any{"index": i},
-				"owner":     "9c10d5b9-3a23-4f25-91c3-09a40d7e9f7e",
+				"owner":     owner.User.ID,
 			},
 		})
 		if rec.Code != http.StatusOK || !strings.Contains(mcpToolText(t, rec.Body.Bytes()), fmt.Sprintf(`"via mcp %02d"`, i)) {

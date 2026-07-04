@@ -538,7 +538,7 @@ func fieldsForDiscoveredColumns(columns []discoveredColumnInternal, names map[st
 			options["targetSchema"] = fk.TargetSchema
 			options["targetTable"] = fk.TargetTable
 			options["targetColumn"] = fk.TargetColumn
-			options["onDelete"] = strings.ToLower(fk.OnDelete)
+			options["onDelete"] = NormalizeRelationOnDeleteOption(fk.OnDelete)
 		}
 		col.Supported = supported
 		col.Reason = reason
