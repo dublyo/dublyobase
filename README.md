@@ -137,11 +137,15 @@ Health should return `200`:
 curl http://localhost:8080/health
 ```
 
-Use a pinned image tag in production:
+The compose file uses the moving `:main` image tag by default so a stack
+redeploy pulls the latest tested main build:
 
 ```yaml
-image: ghcr.io/dublyo/dublyobase:v0.10.7
+image: ghcr.io/dublyo/dublyobase:main
 ```
+
+For conservative production rollouts, pin a semver tag such as
+`ghcr.io/dublyo/dublyobase:v0.10.7` and upgrade intentionally.
 
 ### Existing Postgres
 
@@ -153,7 +157,7 @@ docker run --rm -p 8080:8080 \
   -e APP_URL="https://dublyobase.example.com" \
   -e JWT_SECRET="$(openssl rand -base64 32)" \
   -v dublyobase-storage:/data/storage \
-  ghcr.io/dublyo/dublyobase:v0.10.7
+  ghcr.io/dublyo/dublyobase:main
 ```
 
 `DATABASE_URL`, `APP_URL`, and `JWT_SECRET` are required. On an empty install,
