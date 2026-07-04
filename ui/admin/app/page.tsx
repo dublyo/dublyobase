@@ -395,7 +395,7 @@ export default function AdminApp() {
   }, [recordFilter, recordPerPage, recordSearch]);
 
   const loadProjectData = useCallback(
-    async (authToken: string, projectSlug: string, preferredCollection = "") => {
+    async (authToken: string, projectSlug: string, preferredCollection?: string) => {
       if (!projectSlug) return;
       const [collectionResponse, keysResponse, auditResponse] = await Promise.all([
         listCollections(authToken, projectSlug),
@@ -405,7 +405,7 @@ export default function AdminApp() {
       setCollections(collectionResponse.items);
       setApiKeys(keysResponse.items);
       setAudit(auditResponse.items);
-      const targetCollection = preferredCollection || selectedCollection;
+      const targetCollection = preferredCollection ?? selectedCollection;
       const currentExists = collectionResponse.items.some((collection) => collection.name === targetCollection);
       const nextCollection = currentExists ? targetCollection : collectionResponse.items[0]?.name || "";
       setSelectedCollection(nextCollection);
@@ -1274,10 +1274,13 @@ export default function AdminApp() {
           onChange={(event) => {
             const slug = event.target.value;
             setSelectedProject(slug);
+            setCollections([]);
+            setApiKeys([]);
+            setAudit([]);
             setSelectedCollection("");
             setSelectedRecordId("");
             setRecords({ items: [], page: 1, perPage: recordPerPage, totalItems: 0 });
-            if (token) loadProjectData(token, slug).catch(handleError);
+            if (token) loadProjectData(token, slug, "").catch(handleError);
           }}
           className="pb-project-select"
         >
