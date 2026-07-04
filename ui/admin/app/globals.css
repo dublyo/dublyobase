@@ -1351,9 +1351,46 @@ button:disabled {
   margin-top: 15px;
 }
 
+.ops-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.wide-field {
+  grid-column: 1 / -1;
+}
+
+.pb-secret-box,
+.pb-run-history {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--surface-alt-3);
+  border-radius: var(--radius);
+  background: var(--surface-alt-1);
+  padding: 14px;
+}
+
+.pb-secret-box code {
+  overflow-wrap: anywhere;
+  border-radius: var(--radius);
+  background: var(--surface-color);
+  padding: 10px;
+  font-family: var(--mono-font-family);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pb-run-history h3 {
+  margin: 0;
+  font-size: var(--lg-font-size);
+}
+
 @media (max-width: 1180px) {
   .smtp-grid {
     grid-template-columns: minmax(180px, 1.4fr) 96px minmax(130px, 1fr) minmax(130px, 1fr);
+  }
+
+  .ops-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .smtp-grid .pb-checkline {

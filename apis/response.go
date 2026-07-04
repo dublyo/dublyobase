@@ -17,6 +17,10 @@ func writeError(w http.ResponseWriter, status int, code string, message string) 
 	writeJSON(w, status, errorBody{Error: code, Message: message})
 }
 
+func writeErrorDetails(w http.ResponseWriter, status int, code string, message string, details map[string]any) {
+	writeJSON(w, status, errorBody{Error: code, Message: message, Details: details})
+}
+
 func writeValidation(w http.ResponseWriter, message string) {
 	writeError(w, http.StatusUnprocessableEntity, "validation_failed", message)
 }
@@ -76,7 +80,7 @@ func writeCoreError(w http.ResponseWriter, err error) {
 	case errors.Is(err, core.ErrChecksumMismatch):
 		writeError(w, http.StatusUnprocessableEntity, "checksum_mismatch", "checksum does not match uploaded bytes")
 	case errors.Is(err, core.ErrRLSDenied):
-		writeError(w, http.StatusForbidden, "rls_denied", "record access denied by RLS")
+		writeErrorDetails(w, http.StatusForbidden, "rls_denied", "record access denied by RLS", map[string]any{"policy": "record_access"})
 	case errors.Is(err, core.ErrValidation):
 		writeValidation(w, err.Error())
 	default:

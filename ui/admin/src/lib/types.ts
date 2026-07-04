@@ -109,6 +109,81 @@ export type APIKey = {
   revokedAt?: string;
 };
 
+export type CronJob = {
+  id: string;
+  projectId?: string | null;
+  name: string;
+  type: "http";
+  schedule: string;
+  timezone: string;
+  enabled: boolean;
+  timeoutSeconds: number;
+  retryCount: number;
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+  lastRunAt?: string | null;
+  nextRunAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CronRun = {
+  id: string;
+  jobId: string;
+  status: "running" | "success" | "error";
+  attempt: number;
+  startedAt: string;
+  finishedAt?: string | null;
+  statusCode?: number | null;
+  error: string;
+  output: string;
+};
+
+export type BackupJob = {
+  id: string;
+  projectId?: string | null;
+  projectSlug?: string;
+  name: string;
+  scope: "full" | "project";
+  schedule: string;
+  timezone: string;
+  enabled: boolean;
+  retentionDays: number;
+  retentionCount: number;
+  lastRunAt?: string | null;
+  nextRunAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type BackupRun = {
+  id: string;
+  jobId: string;
+  status: "running" | "success" | "error";
+  startedAt: string;
+  finishedAt?: string | null;
+  storageKey: string;
+  sizeBytes: number;
+  error: string;
+};
+
+export type MCPToken = {
+  id: string;
+  scope: "admin" | "project";
+  projectId?: string | null;
+  projectSlug?: string;
+  name: string;
+  prefix: string;
+  allowedTools: string[];
+  createdByAdminId?: string | null;
+  createdAt: string;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
+  token?: string;
+};
+
 export type RecordItem = Record<string, unknown>;
 
 export type RecordList = {

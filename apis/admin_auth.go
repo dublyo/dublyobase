@@ -20,11 +20,12 @@ func (s *server) setup(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	admin, err := core.CreateFirstAdmin(
+	admin, err := core.CreateFirstAdminWithCost(
 		r.Context(),
 		s.app.Pool,
 		req.Email,
 		req.Password,
+		s.app.Config.BcryptCost,
 		s.clientIP(r),
 		r.UserAgent(),
 	)

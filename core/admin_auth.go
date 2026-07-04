@@ -83,6 +83,10 @@ func HashToken(token string) string {
 }
 
 func CreateFirstAdmin(ctx context.Context, pool *pgxpool.Pool, email, password, ip, userAgent string) (*Admin, error) {
+	return CreateFirstAdminWithCost(ctx, pool, email, password, bcrypt.DefaultCost, ip, userAgent)
+}
+
+func CreateFirstAdminWithCost(ctx context.Context, pool *pgxpool.Pool, email, password string, bcryptCost int, ip, userAgent string) (*Admin, error) {
 	email = NormalizeEmail(email)
 	if err := ValidateAdminEmail(email); err != nil {
 		return nil, err
@@ -109,7 +113,7 @@ func CreateFirstAdmin(ctx context.Context, pool *pgxpool.Pool, email, password, 
 		return nil, ErrSetupClosed
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
 	if err != nil {
 		return nil, err
 	}

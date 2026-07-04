@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/dublyo/dublyobase/core"
 )
 
 // statusRecorder captures the response status code for access logging while
@@ -101,7 +103,8 @@ func (s *server) applyCORS(w http.ResponseWriter, r *http.Request) {
 // header), so prefer Cloudflare's CF-Connecting-IP, then the RIGHT-most XFF
 // entry (appended by our trusted hop), and only then RemoteAddr.
 func (s *server) clientIP(r *http.Request) string {
-	if s.app.Config.TrustProxyHeaders {
+	remoteIP := s.remoteIP(r)
+	if s.app.Config.TrustProxyHeaders && s.trustsProxy(remoteIP) {
 		if cf := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cf != "" {
 			return cf
 		}
@@ -110,11 +113,36 @@ func (s *server) clientIP(r *http.Request) string {
 			return strings.TrimSpace(parts[len(parts)-1])
 		}
 	}
+	if remoteIP != "" {
+		return remoteIP
+	}
+	return r.RemoteAddr
+}
+
+func (s *server) remoteIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+func (s *server) trustsProxy(ipText string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipText))
+	if ip == nil {
+		return false
+	}
+	cidrs := s.app.Config.TrustedProxyCIDRs
+	if len(cidrs) == 0 {
+		cidrs = core.DefaultTrustedProxyCIDRs()
+	}
+	for _, raw := range cidrs {
+		_, network, err := net.ParseCIDR(raw)
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // setSSEHeaders configures a response for Server-Sent Events in a way that

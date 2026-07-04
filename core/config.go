@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -16,6 +17,21 @@ const (
 	StorageLocal StorageType = "local"
 	StorageS3    StorageType = "s3"
 )
+
+var defaultTrustedProxyCIDRs = []string{
+	"127.0.0.1/32",
+	"::1/128",
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"100.64.0.0/10",
+}
+
+func DefaultTrustedProxyCIDRs() []string {
+	out := make([]string, len(defaultTrustedProxyCIDRs))
+	copy(out, defaultTrustedProxyCIDRs)
+	return out
+}
 
 // Config is the full runtime configuration, loaded exclusively from environment
 // variables. The variable names are a fixed contract with the Dublyo PaaS
@@ -48,6 +64,7 @@ type Config struct {
 
 	MigrateOnStart    bool     // MIGRATE_ON_START (default true)
 	TrustProxyHeaders bool     // TRUST_PROXY_HEADERS (default true)
+	TrustedProxyCIDRs []string // TRUSTED_PROXY_CIDRS (comma-separated; default private Docker/LAN ranges)
 	CORSOrigins       []string // CORS_ORIGINS (comma-separated; default *)
 
 	LogLevel  string // LOG_LEVEL  (debug|info|warn|error)
@@ -111,6 +128,7 @@ func LoadConfig() (*Config, error) {
 
 		MigrateOnStart:    boolVar("MIGRATE_ON_START", true),
 		TrustProxyHeaders: boolVar("TRUST_PROXY_HEADERS", true),
+		TrustedProxyCIDRs: splitCSV(env("TRUSTED_PROXY_CIDRS", strings.Join(defaultTrustedProxyCIDRs, ","))),
 		CORSOrigins:       splitCSV(env("CORS_ORIGINS", "*")),
 
 		LogLevel:  env("LOG_LEVEL", "info"),
@@ -185,6 +203,11 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxUploadMB < 1 || c.MaxUploadMB > 1024 {
 		return fmt.Errorf("MAX_UPLOAD_MB must be between 1 and 1024 (got %d)", c.MaxUploadMB)
+	}
+	for _, cidr := range c.TrustedProxyCIDRs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("TRUSTED_PROXY_CIDRS contains invalid CIDR %q", cidr)
+		}
 	}
 	switch strings.ToLower(c.LogLevel) {
 	case "debug", "info", "warn", "error":

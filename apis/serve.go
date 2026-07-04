@@ -54,6 +54,18 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("POST /admin/api/settings/smtp/test", s.requireAdmin(http.HandlerFunc(s.adminTestSMTPSettings)))
 	mux.Handle("PUT /admin/api/settings/storage", s.requireAdmin(http.HandlerFunc(s.adminUpdateStorageSettings)))
 	mux.Handle("POST /admin/api/settings/storage/test", s.requireAdmin(http.HandlerFunc(s.adminTestStorageSettings)))
+	mux.Handle("GET /admin/api/cron-jobs", s.requireAdmin(http.HandlerFunc(s.adminListCronJobs)))
+	mux.Handle("POST /admin/api/cron-jobs", s.requireAdmin(http.HandlerFunc(s.adminCreateCronJob)))
+	mux.Handle("GET /admin/api/cron-jobs/{id}/runs", s.requireAdmin(http.HandlerFunc(s.adminListCronRuns)))
+	mux.Handle("POST /admin/api/cron-jobs/{id}/run", s.requireAdmin(http.HandlerFunc(s.adminRunCronJob)))
+	mux.Handle("GET /admin/api/backups", s.requireAdmin(http.HandlerFunc(s.adminListBackupJobs)))
+	mux.Handle("POST /admin/api/backups", s.requireAdmin(http.HandlerFunc(s.adminCreateBackupJob)))
+	mux.Handle("GET /admin/api/backups/{id}/runs", s.requireAdmin(http.HandlerFunc(s.adminListBackupRuns)))
+	mux.Handle("POST /admin/api/backups/{id}/run", s.requireAdmin(http.HandlerFunc(s.adminRunBackupJob)))
+	mux.Handle("GET /admin/api/mcp/tokens", s.requireAdmin(http.HandlerFunc(s.adminListMCPTokens)))
+	mux.Handle("POST /admin/api/mcp/tokens", s.requireAdmin(http.HandlerFunc(s.adminCreateMCPToken)))
+	mux.Handle("DELETE /admin/api/mcp/tokens/{id}", s.requireAdmin(http.HandlerFunc(s.adminRevokeMCPToken)))
+	mux.HandleFunc("POST /mcp", s.mcp)
 	mux.Handle("POST /api/projects/{slug}/auth/signup", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appSignup)))
 	mux.Handle("POST /api/projects/{slug}/auth/login", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogin)))
 	mux.Handle("POST /api/projects/{slug}/auth/refresh", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRefresh)))
@@ -122,7 +134,8 @@ func spaHandler(dist fs.FS) http.Handler {
 
 func isReservedAPIPath(p string) bool {
 	return p == "api" || strings.HasPrefix(p, "api/") ||
-		p == "admin/api" || strings.HasPrefix(p, "admin/api/")
+		p == "admin/api" || strings.HasPrefix(p, "admin/api/") ||
+		p == "mcp"
 }
 
 func rejectsSPAFallback(p string) bool {

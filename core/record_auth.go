@@ -95,6 +95,14 @@ func newRecordAuth(project *Project, role RecordRole, roleName string, subject s
 	}
 }
 
+// ServiceRecordAuth returns the project service role auth context for trusted
+// control-plane operations such as admin UI and scoped MCP tools. It still goes
+// through SET LOCAL ROLE and RLS, but uses the project's service policies.
+func ServiceRecordAuth(project *Project) *RecordAuth {
+	_, roles := ProjectNames(project.Slug)
+	return newRecordAuth(project, RecordRoleService, roles.Service, "", "")
+}
+
 func withRecordTx(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, operation string, fn func(pgx.Tx) error) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {

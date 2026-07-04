@@ -7,11 +7,12 @@ import (
 )
 
 type rateLimiter struct {
-	mu     sync.Mutex
-	hits   map[string][]time.Time
-	limit  int
-	window time.Duration
-	now    func() time.Time
+	mu        sync.Mutex
+	hits      map[string][]time.Time
+	limit     int
+	window    time.Duration
+	lastSweep time.Time
+	now       func() time.Time
 }
 
 func newRateLimiter(limit int, window time.Duration) *rateLimiter {
@@ -31,6 +32,10 @@ func (l *rateLimiter) allow(key string) bool {
 	defer l.mu.Unlock()
 
 	now := l.now()
+	if l.lastSweep.IsZero() || now.Sub(l.lastSweep) >= l.window {
+		l.sweep(now)
+		l.lastSweep = now
+	}
 	cutoff := now.Add(-l.window)
 	hits := l.hits[key]
 	keep := hits[:0]
@@ -45,6 +50,23 @@ func (l *rateLimiter) allow(key string) bool {
 	}
 	l.hits[key] = append(keep, now)
 	return true
+}
+
+func (l *rateLimiter) sweep(now time.Time) {
+	cutoff := now.Add(-l.window)
+	for key, hits := range l.hits {
+		keep := hits[:0]
+		for _, hit := range hits {
+			if hit.After(cutoff) {
+				keep = append(keep, hit)
+			}
+		}
+		if len(keep) == 0 {
+			delete(l.hits, key)
+			continue
+		}
+		l.hits[key] = keep
+	}
 }
 
 func (s *server) limitByIP(scope string, limiter *rateLimiter, next http.Handler) http.Handler {

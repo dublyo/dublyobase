@@ -86,6 +86,7 @@ func runServe() error {
 		log.Warn("admin seed skipped", "err", err)
 	}
 	app.SetReady(true)
+	go core.StartOpsWorker(ctx, app, time.Minute)
 	log.Info("ready")
 
 	// 5. Wait for shutdown or a server error; drain connections fully before

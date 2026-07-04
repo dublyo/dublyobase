@@ -28,6 +28,7 @@ import (
 )
 
 const fileTokenTTL = 5 * time.Minute
+const maxThumbnailSourcePixels = 40_000_000
 
 type FileMeta struct {
 	ID      string            `json:"id"`
@@ -194,6 +195,32 @@ func UpdateRecordFileField(ctx context.Context, pool *pgxpool.Pool, auth *Record
 		return nil, nil, err
 	}
 	return out, removed, nil
+}
+
+func AuthorizeFileUpload(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, recordID string, fieldName string) error {
+	if err := ValidateUUID(recordID); err != nil {
+		return err
+	}
+	collection, err := recordCollection(ctx, pool, auth.Project.Slug, collectionName)
+	if err != nil {
+		return err
+	}
+	fieldName = NormalizeIdentifier(fieldName)
+	if _, err := fileField(collection, fieldName); err != nil {
+		return err
+	}
+	table := quoteIdent(auth.Project.SchemaName, collection.Name)
+	return withRecordTx(ctx, pool, auth, "update", func(tx pgx.Tx) error {
+		var id string
+		query := fmt.Sprintf(`select id from %s where id = $1 for update`, table)
+		if err := tx.QueryRow(ctx, query, recordID).Scan(&id); err != nil {
+			if err == pgx.ErrNoRows {
+				return ErrRecordNotFound
+			}
+			return mapRecordDBError(err)
+		}
+		return nil
+	})
 }
 
 func MintFileToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, auth *RecordAuth, collectionName string, recordID string, fieldName string, fileID string, now time.Time) (string, time.Time, error) {
@@ -369,6 +396,18 @@ func EnsureThumbnail(ctx context.Context, cfg *Config, meta FileMeta, thumb stri
 		return FileMeta{ID: meta.ID, Name: normalized + ".jpg", Size: obj.Info.Size, Mime: "image/jpeg", Created: meta.Created, Path: thumbKey}, nil
 	}
 	original, err := store.Get(ctx, meta.Path)
+	if err != nil {
+		return FileMeta{}, err
+	}
+	cfgInfo, _, err := image.DecodeConfig(original.Body)
+	original.Body.Close()
+	if err != nil {
+		return FileMeta{}, fmt.Errorf("%w: thumbnail source must be an image", ErrValidation)
+	}
+	if cfgInfo.Width <= 0 || cfgInfo.Height <= 0 || cfgInfo.Width*cfgInfo.Height > maxThumbnailSourcePixels {
+		return FileMeta{}, fmt.Errorf("%w: thumbnail source dimensions are too large", ErrValidation)
+	}
+	original, err = store.Get(ctx, meta.Path)
 	if err != nil {
 		return FileMeta{}, err
 	}

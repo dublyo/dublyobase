@@ -1,4 +1,4 @@
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, Collection, CollectionExport, CollectionImportResult, Health, InstanceSettings, Project, RecordItem, RecordList, SQLResult } from "./types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SQLResult } from "./types";
 
 type RequestOptions = RequestInit & {
   token?: string | null;
@@ -319,4 +319,108 @@ export function createFileToken(token: string, project: string, collection: stri
       body: JSON.stringify({}),
     },
   );
+}
+
+export function listCronJobs(token: string) {
+  return request<ApiEnvelope<CronJob>>("/admin/api/cron-jobs", { token }).then(normalizeEnvelope);
+}
+
+export function createCronJob(
+  token: string,
+  input: {
+    projectSlug?: string;
+    name: string;
+    type: "http";
+    schedule: string;
+    timezone: string;
+    enabled: boolean;
+    timeoutSeconds: number;
+    retryCount: number;
+    method: string;
+    url: string;
+    headers: Record<string, string>;
+    body: string;
+  },
+) {
+  return request<CronJob>("/admin/api/cron-jobs", {
+    method: "POST",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function listCronRuns(token: string, id: string) {
+  return request<ApiEnvelope<CronRun>>(`/admin/api/cron-jobs/${encodeURIComponent(id)}/runs`, { token }).then(normalizeEnvelope);
+}
+
+export function runCronJob(token: string, id: string) {
+  return request<CronRun>(`/admin/api/cron-jobs/${encodeURIComponent(id)}/run`, {
+    method: "POST",
+    token,
+    body: JSON.stringify({}),
+  });
+}
+
+export function listBackupJobs(token: string) {
+  return request<ApiEnvelope<BackupJob>>("/admin/api/backups", { token }).then(normalizeEnvelope);
+}
+
+export function createBackupJob(
+  token: string,
+  input: {
+    name: string;
+    scope: "full" | "project";
+    projectSlug?: string;
+    schedule: string;
+    timezone: string;
+    enabled: boolean;
+    retentionDays: number;
+    retentionCount: number;
+  },
+) {
+  return request<BackupJob>("/admin/api/backups", {
+    method: "POST",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function listBackupRuns(token: string, id: string) {
+  return request<ApiEnvelope<BackupRun>>(`/admin/api/backups/${encodeURIComponent(id)}/runs`, { token }).then(normalizeEnvelope);
+}
+
+export function runBackupJob(token: string, id: string) {
+  return request<BackupRun>(`/admin/api/backups/${encodeURIComponent(id)}/run`, {
+    method: "POST",
+    token,
+    body: JSON.stringify({}),
+  });
+}
+
+export function listMCPTokens(token: string) {
+  return request<ApiEnvelope<MCPToken>>("/admin/api/mcp/tokens", { token }).then(normalizeEnvelope);
+}
+
+export function createMCPToken(
+  token: string,
+  input: {
+    scope: "admin" | "project";
+    projectSlug?: string;
+    name: string;
+    allowedTools: string[];
+    expiresAt?: string;
+  },
+) {
+  return request<MCPToken>("/admin/api/mcp/tokens", {
+    method: "POST",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function revokeMCPToken(token: string, id: string) {
+  return request<void>(`/admin/api/mcp/tokens/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    token,
+  });
 }

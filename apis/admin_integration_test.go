@@ -49,13 +49,29 @@ func newIntegrationApp(t *testing.T) (*core.App, func()) {
 		}
 		t.Fatal(err)
 	}
+	var pool *pgxpool.Pool
+	cleanup := func() {
+		if pool != nil {
+			pool.Close()
+		}
+		_, _ = adminPool.Exec(context.Background(), `
+			select pg_terminate_backend(pid)
+			from pg_stat_activity
+			where datname = $1 and pid <> pg_backend_pid()`,
+			dbName,
+		)
+		_, _ = adminPool.Exec(context.Background(), `drop database if exists `+pgx.Identifier{dbName}.Sanitize())
+		adminCfg.ConnConfig.Config.Database = adminDB
+		adminPool.Close()
+	}
+	t.Cleanup(cleanup)
 
 	testCfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	testCfg.ConnConfig.Config.Database = dbName
-	pool, err := pgxpool.NewWithConfig(context.Background(), testCfg)
+	pool, err = pgxpool.NewWithConfig(context.Background(), testCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,19 +94,6 @@ func newIntegrationApp(t *testing.T) (*core.App, func()) {
 	app := core.NewApp(cfg, pool, testLogger())
 	app.SetReady(true)
 
-	cleanup := func() {
-		pool.Close()
-		_, _ = adminPool.Exec(context.Background(), `
-			select pg_terminate_backend(pid)
-			from pg_stat_activity
-			where datname = $1 and pid <> pg_backend_pid()`,
-			dbName,
-		)
-		_, _ = adminPool.Exec(context.Background(), `drop database if exists `+pgx.Identifier{dbName}.Sanitize())
-		adminCfg.ConnConfig.Config.Database = adminDB
-		adminPool.Close()
-	}
-	t.Cleanup(cleanup)
 	return app, cleanup
 }
 

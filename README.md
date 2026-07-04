@@ -5,12 +5,13 @@ storage, and an admin UI, served from **one Go binary on one port**. It connects
 Postgres you provide (`DATABASE_URL`), runs migrations on boot, and ships as a single
 `<30 MB` container to `ghcr.io/dublyo/dublyobase`. One-click deployable on Dublyo.
 
-> Status: **v0.9.1 / M8 UI polish complete.** Control-plane auth, project provisioning,
+> Status: **v0.10.0 / M9 ops automation + MCP complete.** Control-plane auth, project provisioning,
 > collections metadata, schema sync, records CRUD, API keys, RLS-backed rules, and
 > email/password app auth, local file storage, and resumable chunk uploads are
 > implemented, including SMTP delivery for verification/reset emails and an
 > embedded admin panel with structured collection controls, runtime SMTP settings,
-> and local or S3-compatible storage settings; realtime is still upcoming. See
+> local or S3-compatible storage settings, native HTTP cron jobs, pg_dump backups
+> to configured storage, and scoped remote MCP access; realtime is still upcoming. See
 > [dublyobase-dev.md](dublyobase-dev.md) for the full roadmap.
 
 ## What makes it different
@@ -69,6 +70,14 @@ var → the process exits `1` with a clear message rather than failing mysteriou
 | `POST /admin/api/settings/smtp/test` | Send an SMTP test email |
 | `PUT /admin/api/settings/storage` | Save local or S3-compatible storage settings |
 | `POST /admin/api/settings/storage/test` | Write/read/delete a storage test object |
+| `GET/POST /admin/api/cron-jobs` | List/create HTTP cron jobs |
+| `GET /admin/api/cron-jobs/{id}/runs` | List recent cron runs |
+| `POST /admin/api/cron-jobs/{id}/run` | Run a cron job immediately |
+| `GET/POST /admin/api/backups` | List/create full or project pg_dump backup jobs |
+| `GET /admin/api/backups/{id}/runs` | List recent backup runs |
+| `POST /admin/api/backups/{id}/run` | Run a backup job immediately |
+| `GET/POST /admin/api/mcp/tokens` | List/create scoped MCP tokens |
+| `DELETE /admin/api/mcp/tokens/{id}` | Revoke an MCP token |
 | `GET/POST /admin/api/projects` | List/create projects |
 | `GET /admin/api/projects/{slug}` | Project detail |
 | `GET/POST /admin/api/projects/{slug}/api-keys` | List/create project API keys |
@@ -98,6 +107,7 @@ var → the process exits `1` with a clear message rather than failing mysteriou
 | `DELETE /api/projects/{slug}/files/uploads/{uploadId}` | Cancel a resumable upload and remove temp chunks |
 | `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token` | Mint a short-lived protected file token after `view` rules pass |
 | `GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}?token=...` | Download original file; add `thumb=WxH` for cached JPEG thumbnail |
+| `POST /mcp` | Remote HTTP MCP endpoint using bearer MCP tokens |
 | `GET /` | Embedded admin UI |
 
 ## License

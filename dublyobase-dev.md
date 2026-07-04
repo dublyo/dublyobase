@@ -5,7 +5,7 @@
 > container** to `ghcr.io/dublyo/dublyobase`, MIT-licensed, one-click deployable on
 > **Dublyo** (PaaS on cloudflared + Traefik behind Portainer).
 
-**Status:** v0.9.1 — M8 admin controls, provider settings, and PocketBase-style UI polish complete
+**Status:** v0.10.0 — M9 ops automation, backups, and scoped remote MCP complete
 (self-closing setup, opaque hashed admin sessions, protected admin/project APIs,
 project schema/role provisioning, collection metadata, transactional schema sync,
 records CRUD, API keys, RLS-backed rules, production SPA fallback hardening,
@@ -13,8 +13,10 @@ system `users` auth collections, email/password signup/login, refresh rotation,
 logout-all token invalidation, reset/verify tokens, local file fields/uploads,
 resumable chunk uploads, protected file tokens, thumbnails, delete cleanup, audit
 log, SMTP delivery for verify/reset emails, embedded Next/Tailwind admin panel,
-and real Postgres 16/17/18 integration tests).
-Next: **M9 (realtime + webhooks)**.
+runtime SMTP/storage settings, S3-compatible storage, HTTP cron jobs, pg_dump
+backup jobs, scoped MCP tokens, a remote HTTP MCP endpoint, and real Postgres
+integration tests).
+Next: **M10 (realtime + webhooks)**.
 **Repo:** `github.com/dublyo/dublyobase` · **Image:** `ghcr.io/dublyo/dublyobase`
 **Local dev:** `/Users/dribrahimm/0-PostgresProject/dublyobase`
 
@@ -132,7 +134,7 @@ SMTP_USER/SMTP_PASSWORD optional but must be paired
 HOST default 0.0.0.0    PORT default 8080
 ```
 
-Planned additions (additive only): `WEBHOOK_TIMEOUT_MS` (M9). Seeding runs
+Planned additions (additive only): `WEBHOOK_TIMEOUT_MS` (M10). Seeding runs
 **independently of** `MIGRATE_ON_START`
 (warns instead of exiting when migrations are off and the schema is absent).
 
@@ -156,8 +158,11 @@ correct HTTP status (400/401/403/404/409/422/429/500). RLS denials are
 | Records | `GET/POST /api/projects/{slug}/collections/{name}/records` · `GET/PATCH/DELETE .../records/{id}` |
 | App auth | `POST /api/projects/{slug}/auth/signup` · `/auth/login` · `/auth/refresh` · `/auth/logout` · `/auth/logout-all` · `GET /auth/me` · `/auth/request-password-reset` · `/auth/confirm-password-reset` · `/auth/request-verification` · `/auth/confirm-verification` · OAuth: `GET /api/projects/{slug}/auth/oauth/{provider}` + `/callback` (later auth milestone) |
 | Storage | `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}` (multipart `file`, streamed, `?mode=replace\|append`) · `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/uploads` · `PUT /api/projects/{slug}/files/uploads/{uploadId}/chunks/{index}` · `POST /api/projects/{slug}/files/uploads/{uploadId}/complete` · `DELETE /api/projects/{slug}/files/uploads/{uploadId}` · `POST /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/token` · `GET /api/projects/{slug}/files/{collection}/{recordId}/{field}/{fileId}/{filename}?token=...` (+ `?thumb=WxH`) |
-| Realtime | `GET /api/projects/{slug}/realtime` (SSE) · `GET .../realtime/ws` (WebSocket); subscribe topics `collection` or `collection/recordId` (M9) |
-| Webhooks | `GET/POST/DELETE /admin/api/projects/{slug}/hooks` (M9) |
+| Cron jobs | `GET/POST /admin/api/cron-jobs` · `GET /admin/api/cron-jobs/{id}/runs` · `POST /admin/api/cron-jobs/{id}/run` |
+| Backups | `GET/POST /admin/api/backups` · `GET /admin/api/backups/{id}/runs` · `POST /admin/api/backups/{id}/run` |
+| MCP | `GET/POST/DELETE /admin/api/mcp/tokens` · `POST /mcp` (`initialize`, `tools/list`, `tools/call`) |
+| Realtime | `GET /api/projects/{slug}/realtime` (SSE) · `GET .../realtime/ws` (WebSocket); subscribe topics `collection` or `collection/recordId` (M10) |
+| Webhooks | `GET/POST/DELETE /admin/api/projects/{slug}/hooks` (M10) |
 
 **Records list params:** `?page=1&perPage=30` (max 500), `sort=-created,title`,
 `filter=<fexpr>` (safe subset: comparison + and/or + parentheses; compiled to
@@ -373,7 +378,22 @@ against a disposable PostgreSQL 16 cluster.
       `rclone` and `s5cmd`
 - [x] Harden responsive behavior for SMTP forms and mobile empty table states
 
-### M9 — Realtime + webhooks  →  v0.10.0
+### M9 — Ops automation + backups + MCP — DONE (v0.10.0, 2026-07-04)
+- [x] Add Postgres-backed native HTTP cron jobs with schedules, retries,
+      timeouts, headers, manual run, and run logs
+- [x] Add full-database and project-scoped pg_dump backup jobs that store archives
+      through the active local/S3-compatible object store
+- [x] Add background worker loop with advisory-lock coordination for due cron and
+      backup execution
+- [x] Add scoped MCP tokens (admin or project), explicit tool allowlists, admin UI,
+      audit log entries, and remote HTTP MCP endpoint (`POST /mcp`)
+- [x] Harden proxy trust, rate-limiter eviction, thumbnail bounds checks,
+      pre-upload file authorization, RLS denial details, and admin bcrypt seeding
+- **Accept:** admin panel can create/run cron and backup jobs, MCP can list/create
+  collections and records through scoped tools, Postgres integration test is green
+  against a real remote database, and UI/backend builds pass.
+
+### M10 — Realtime + webhooks  →  v0.11.0
 - [ ] `NOTIFY dbo_events, <json>` triggers on collection tables; one LISTEN conn
       per process; WS (+SSE fallback) endpoint with 30s heartbeat, 90s idle timeout,
       per-subscriber buffer with slow-client drop; subscribe respects list rules
@@ -383,8 +403,8 @@ against a disposable PostgreSQL 16 cluster.
   WS survives 5 min through the tunnel (heartbeats); webhook receives signed payload,
   retry fires on 500.
 
-### M10 — Ops hardening → v1.0.0
-- [ ] Backups: `pg_dump` trigger from panel + storage archive download; restore doc
+### M11 — Ops hardening → v1.0.0
+- [ ] Backup archive download/restore doc
 - [ ] Log retention cron (advisory-lock guarded); request/audit log viewer in panel
 - [ ] pgvector opt-in (`ENABLE_PGVECTOR` gates a `vector` field type; docs: DBA runs
       `CREATE EXTENSION vector` first)
@@ -419,7 +439,7 @@ against a disposable PostgreSQL 16 cluster.
 - [x] Missing/typo'd required ENV → exit 1 with clear message
 - [x] Restart/second replica → no data loss, no re-init, no race (advisory-lock test)
 - [x] `/ready` reports `migrating` during boot (listener starts pre-migration)
-- [ ] Realtime WS open 5 min with heartbeat through the tunnel (M9)
+- [ ] Realtime WS open 5 min with heartbeat through the tunnel (M10)
 - [ ] 50 MB upload without proxy timeout, constant memory (M5)
 - [ ] OAuth callback with `APP_URL=https://foo.dublyo.xyz` redirects correctly
       (later auth milestone)

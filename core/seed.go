@@ -20,7 +20,7 @@ func SeedAdmin(ctx context.Context, pool *pgxpool.Pool, cfg *Config, log *slog.L
 		return nil
 	}
 
-	admin, err := CreateFirstAdmin(ctx, pool, cfg.AdminEmail, cfg.AdminPassword, "", "")
+	admin, err := CreateFirstAdminWithCost(ctx, pool, cfg.AdminEmail, cfg.AdminPassword, cfg.BcryptCost, "", "")
 	if err != nil {
 		if errors.Is(err, ErrSetupClosed) {
 			return nil // already seeded / has admins; never overwrite

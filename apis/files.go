@@ -17,6 +17,10 @@ func (s *server) uploadFiles(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if err := core.AuthorizeFileUpload(r.Context(), s.app.Pool, auth, r.PathValue("collection"), r.PathValue("recordId"), r.PathValue("field")); err != nil {
+		writeCoreError(w, err)
+		return
+	}
 	storageCfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
 	if err != nil {
 		writeCoreError(w, err)

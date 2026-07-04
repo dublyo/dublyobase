@@ -54,8 +54,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   createAPIKey,
+  createBackupJob,
   createCollection,
+  createCronJob,
   createFileToken,
+  createMCPToken,
   createProject,
   createRecord,
   deleteCollection,
@@ -66,13 +69,21 @@ import {
   importCollections,
   listAPIKeys,
   listAudit,
+  listBackupJobs,
+  listBackupRuns,
   listCollections,
+  listCronJobs,
+  listCronRuns,
+  listMCPTokens,
   listProjects,
   listRecords,
   login,
   logout,
   me,
   revokeAPIKey,
+  revokeMCPToken,
+  runBackupJob,
+  runCronJob,
   runSQL,
   setup,
   testSMTPSettings,
@@ -83,7 +94,7 @@ import {
   updateStorageSettings,
   uploadFile,
 } from "../src/lib/api";
-import type { APIKey, Admin, AuditEntry, Collection, CollectionExport, CollectionImportResult, Field, FieldType, Health, InstanceSettings, Project, RecordItem, RecordList, SQLResult } from "../src/lib/types";
+import type { APIKey, Admin, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Field, FieldType, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SQLResult } from "../src/lib/types";
 
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
@@ -120,6 +131,7 @@ const settingsItems = [
   { id: "storage", label: "Files storage", group: "System" },
   { id: "backups", label: "Backups", group: "System" },
   { id: "crons", label: "Crons", group: "System" },
+  { id: "mcp", label: "MCP access", group: "System" },
   { id: "exportCollections", label: "Export collections", group: "Sync" },
   { id: "importCollections", label: "Import collections", group: "Sync" },
   { id: "sqlConsole", label: "SQL console", group: "Debug" },
@@ -184,6 +196,39 @@ const emptyStorageDraft = {
   forcePathStyle: true,
 };
 
+const emptyCronDraft = {
+  projectSlug: "",
+  name: "",
+  schedule: "@every 5m",
+  timezone: "UTC",
+  enabled: true,
+  timeoutSeconds: "30",
+  retryCount: "0",
+  method: "GET",
+  url: "",
+  headersJSON: "{}",
+  body: "",
+};
+
+const emptyBackupDraft = {
+  name: "",
+  scope: "project" as "full" | "project",
+  projectSlug: "",
+  schedule: "0 2 * * *",
+  timezone: "UTC",
+  enabled: true,
+  retentionDays: "14",
+  retentionCount: "10",
+};
+
+const emptyMCPDraft = {
+  name: "",
+  scope: "project" as "admin" | "project",
+  projectSlug: "",
+  allowedTools: "",
+  expiresAt: "",
+};
+
 export default function AdminApp() {
   const [token, setToken] = useState<string | null>(null);
   const [admin, setAdmin] = useState<Admin | null>(null);
@@ -205,6 +250,12 @@ export default function AdminApp() {
   const [oneTimeKey, setOneTimeKey] = useState<APIKey | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [settings, setSettingsState] = useState<InstanceSettings | null>(null);
+  const [cronJobs, setCronJobs] = useState<CronJob[]>([]);
+  const [cronRuns, setCronRuns] = useState<Record<string, CronRun[]>>({});
+  const [backupJobs, setBackupJobs] = useState<BackupJob[]>([]);
+  const [backupRuns, setBackupRuns] = useState<Record<string, BackupRun[]>>({});
+  const [mcpTokens, setMCPTokens] = useState<MCPToken[]>([]);
+  const [oneTimeMCPToken, setOneTimeMCPToken] = useState<MCPToken | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
   const [projectDraft, setProjectDraft] = useState({ slug: "", name: "" });
@@ -214,6 +265,9 @@ export default function AdminApp() {
   const [editingRules, setEditingRules] = useState<RuleDraft>(emptyRules);
   const [smtpDraft, setSMTPDraft] = useState(emptySMTPDraft);
   const [storageDraft, setStorageDraft] = useState(emptyStorageDraft);
+  const [cronDraft, setCronDraft] = useState(emptyCronDraft);
+  const [backupDraft, setBackupDraft] = useState(emptyBackupDraft);
+  const [mcpDraft, setMCPDraft] = useState(emptyMCPDraft);
   const [keyDraft, setKeyDraft] = useState({ name: "", type: "service" as "anon" | "service" });
   const [fileDraft, setFileDraft] = useState({ recordId: "", field: "" });
   const [fileResult, setFileResult] = useState<RecordItem | null>(null);
@@ -305,10 +359,20 @@ export default function AdminApp() {
       if (!authToken) return;
       setBusy(true);
       try {
-        const [healthResponse, projectsResponse, settingsResponse] = await Promise.all([health(), listProjects(authToken), getSettings(authToken)]);
+        const [healthResponse, projectsResponse, settingsResponse, cronResponse, backupResponse, mcpResponse] = await Promise.all([
+          health(),
+          listProjects(authToken),
+          getSettings(authToken),
+          listCronJobs(authToken),
+          listBackupJobs(authToken),
+          listMCPTokens(authToken),
+        ]);
         setHealthState(healthResponse);
         setProjects(projectsResponse.items);
         setSettingsState(settingsResponse);
+        setCronJobs(cronResponse.items);
+        setBackupJobs(backupResponse.items);
+        setMCPTokens(mcpResponse.items);
         setSMTPDraft(settingsToSMTPDraft(settingsResponse));
         setStorageDraft(settingsToStorageDraft(settingsResponse));
         const projectSlug = preferredProject || projectsResponse.items[0]?.slug || "";
@@ -452,6 +516,10 @@ export default function AdminApp() {
     setProjects([]);
     setCollections([]);
     setSettingsState(null);
+    setCronJobs([]);
+    setBackupJobs([]);
+    setMCPTokens([]);
+    setOneTimeMCPToken(null);
   }
 
   async function submitProject(event: React.FormEvent<HTMLFormElement>) {
@@ -729,6 +797,167 @@ export default function AdminApp() {
     }
   }
 
+  async function submitCronJob(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    let headers: Record<string, string>;
+    try {
+      headers = parseHeadersJSON(cronDraft.headersJSON);
+    } catch (error) {
+      handleError(error);
+      return;
+    }
+    setBusy(true);
+    try {
+      const projectSlug = cronDraft.projectSlug || selectedProject;
+      const created = await createCronJob(token, {
+        projectSlug,
+        name: cronDraft.name,
+        type: "http",
+        schedule: cronDraft.schedule,
+        timezone: cronDraft.timezone,
+        enabled: cronDraft.enabled,
+        timeoutSeconds: Number.parseInt(cronDraft.timeoutSeconds, 10) || 30,
+        retryCount: Number.parseInt(cronDraft.retryCount, 10) || 0,
+        method: cronDraft.method,
+        url: cronDraft.url,
+        headers,
+        body: cronDraft.body,
+      });
+      setCronDraft({ ...emptyCronDraft, projectSlug });
+      showNotice("success", `Cron ${created.name} created`);
+      const response = await listCronJobs(token);
+      setCronJobs(response.items);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runCron(job: CronJob) {
+    if (!token) return;
+    setBusy(true);
+    try {
+      const run = await runCronJob(token, job.id);
+      setCronRuns((current) => ({ ...current, [job.id]: [run, ...(current[job.id] ?? [])].slice(0, 5) }));
+      const jobs = await listCronJobs(token);
+      setCronJobs(jobs.items);
+      showNotice(run.status === "success" ? "success" : "error", `Cron ${job.name} finished with ${run.status}`);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadCronRuns(job: CronJob) {
+    if (!token) return;
+    try {
+      const response = await listCronRuns(token, job.id);
+      setCronRuns((current) => ({ ...current, [job.id]: response.items }));
+    } catch (error) {
+      handleError(error);
+    }
+  }
+
+  async function submitBackupJob(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    setBusy(true);
+    try {
+      const projectSlug = backupDraft.scope === "project" ? backupDraft.projectSlug || selectedProject : undefined;
+      const created = await createBackupJob(token, {
+        name: backupDraft.name,
+        scope: backupDraft.scope,
+        projectSlug,
+        schedule: backupDraft.schedule,
+        timezone: backupDraft.timezone,
+        enabled: backupDraft.enabled,
+        retentionDays: Number.parseInt(backupDraft.retentionDays, 10) || 14,
+        retentionCount: Number.parseInt(backupDraft.retentionCount, 10) || 10,
+      });
+      setBackupDraft({ ...emptyBackupDraft, projectSlug: projectSlug ?? "" });
+      showNotice("success", `Backup ${created.name} created`);
+      const response = await listBackupJobs(token);
+      setBackupJobs(response.items);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runBackup(job: BackupJob) {
+    if (!token) return;
+    setBusy(true);
+    try {
+      const run = await runBackupJob(token, job.id);
+      setBackupRuns((current) => ({ ...current, [job.id]: [run, ...(current[job.id] ?? [])].slice(0, 5) }));
+      const jobs = await listBackupJobs(token);
+      setBackupJobs(jobs.items);
+      showNotice(run.status === "success" ? "success" : "error", `Backup ${job.name} finished with ${run.status}`);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadBackupRuns(job: BackupJob) {
+    if (!token) return;
+    try {
+      const response = await listBackupRuns(token, job.id);
+      setBackupRuns((current) => ({ ...current, [job.id]: response.items }));
+    } catch (error) {
+      handleError(error);
+    }
+  }
+
+  async function submitMCPToken(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    setBusy(true);
+    try {
+      const projectSlug = mcpDraft.scope === "project" ? mcpDraft.projectSlug || selectedProject : undefined;
+      const created = await createMCPToken(token, {
+        name: mcpDraft.name,
+        scope: mcpDraft.scope,
+        projectSlug,
+        allowedTools: mcpDraft.allowedTools
+          .split(/[\n,]/)
+          .map((item) => item.trim())
+          .filter(Boolean),
+        ...(mcpDraft.expiresAt ? { expiresAt: new Date(mcpDraft.expiresAt).toISOString() } : {}),
+      });
+      setOneTimeMCPToken(created);
+      setMCPDraft({ ...emptyMCPDraft, projectSlug: projectSlug ?? "" });
+      showNotice("success", "MCP token created");
+      const response = await listMCPTokens(token);
+      setMCPTokens(response.items);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revokeMCP(item: MCPToken) {
+    if (!token) return;
+    if (!window.confirm(`Revoke MCP token "${item.name}"?`)) return;
+    setBusy(true);
+    try {
+      await revokeMCPToken(token, item.id);
+      showNotice("success", "MCP token revoked");
+      const response = await listMCPTokens(token);
+      setMCPTokens(response.items);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function loadCollectionExport() {
     if (!token || !selectedProject) return;
     setBusy(true);
@@ -949,6 +1178,27 @@ export default function AdminApp() {
           onTestSMTP={sendSMTPTest}
           onSaveStorage={saveStorageSettings}
           onTestStorage={runStorageTest}
+          cronJobs={cronJobs}
+          cronRuns={cronRuns}
+          cronDraft={cronDraft}
+          setCronDraft={setCronDraft}
+          onCreateCron={submitCronJob}
+          onRunCron={runCron}
+          onLoadCronRuns={loadCronRuns}
+          backupJobs={backupJobs}
+          backupRuns={backupRuns}
+          backupDraft={backupDraft}
+          setBackupDraft={setBackupDraft}
+          onCreateBackup={submitBackupJob}
+          onRunBackup={runBackup}
+          onLoadBackupRuns={loadBackupRuns}
+          mcpTokens={mcpTokens}
+          oneTimeMCPToken={oneTimeMCPToken}
+          mcpDraft={mcpDraft}
+          setMCPDraft={setMCPDraft}
+          onCreateMCPToken={submitMCPToken}
+          onRevokeMCPToken={revokeMCP}
+          onDismissMCPSecret={() => setOneTimeMCPToken(null)}
           apiKeys={apiKeys}
           oneTimeKey={oneTimeKey}
           keyDraft={keyDraft}
@@ -2125,6 +2375,27 @@ function SettingsWorkspace(props: {
   onTestSMTP: () => void;
   onSaveStorage: (event: React.FormEvent<HTMLFormElement>) => void;
   onTestStorage: () => void;
+  cronJobs: CronJob[];
+  cronRuns: Record<string, CronRun[]>;
+  cronDraft: typeof emptyCronDraft;
+  setCronDraft: React.Dispatch<React.SetStateAction<typeof emptyCronDraft>>;
+  onCreateCron: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRunCron: (job: CronJob) => void;
+  onLoadCronRuns: (job: CronJob) => void;
+  backupJobs: BackupJob[];
+  backupRuns: Record<string, BackupRun[]>;
+  backupDraft: typeof emptyBackupDraft;
+  setBackupDraft: React.Dispatch<React.SetStateAction<typeof emptyBackupDraft>>;
+  onCreateBackup: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRunBackup: (job: BackupJob) => void;
+  onLoadBackupRuns: (job: BackupJob) => void;
+  mcpTokens: MCPToken[];
+  oneTimeMCPToken: MCPToken | null;
+  mcpDraft: typeof emptyMCPDraft;
+  setMCPDraft: React.Dispatch<React.SetStateAction<typeof emptyMCPDraft>>;
+  onCreateMCPToken: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRevokeMCPToken: (token: MCPToken) => void;
+  onDismissMCPSecret: () => void;
   apiKeys: APIKey[];
   oneTimeKey: APIKey | null;
   keyDraft: { name: string; type: "anon" | "service" };
@@ -2189,8 +2460,9 @@ function SettingsWorkspace(props: {
           {props.section === "application" ? <ApplicationSettings {...props} /> : null}
           {props.section === "mail" ? <MailSettings {...props} /> : null}
           {props.section === "storage" ? <StorageSettingsPanel {...props} /> : null}
-          {props.section === "backups" ? <BackupsView project={props.project} onExport={props.onLoadCollectionExport} onOpenExport={() => props.onChangeSection("exportCollections")} /> : null}
-          {props.section === "crons" ? <CronsView /> : null}
+          {props.section === "backups" ? <BackupsView {...props} onOpenExport={() => props.onChangeSection("exportCollections")} /> : null}
+          {props.section === "crons" ? <CronsView {...props} /> : null}
+          {props.section === "mcp" ? <MCPAccessView {...props} /> : null}
           {props.section === "exportCollections" ? <ExportCollectionsView {...props} /> : null}
           {props.section === "importCollections" ? <ImportCollectionsView {...props} /> : null}
           {props.section === "sqlConsole" ? <SQLConsoleView {...props} /> : null}
@@ -2232,6 +2504,7 @@ function SettingsIcon({ id }: { id: SettingsSection }) {
   if (id === "storage") return <HardDrive className="h-4 w-4" />;
   if (id === "backups") return <Archive className="h-4 w-4" />;
   if (id === "crons") return <Activity className="h-4 w-4" />;
+  if (id === "mcp") return <KeyRound className="h-4 w-4" />;
   if (id === "exportCollections") return <FileUp className="h-4 w-4" />;
   if (id === "importCollections") return <UploadCloud className="h-4 w-4" />;
   if (id === "sqlConsole") return <Code2 className="h-4 w-4" />;
@@ -2436,40 +2709,396 @@ function StorageSettingsPanel({
   );
 }
 
-function BackupsView({ project, onExport, onOpenExport }: { project: Project | null; onExport: () => void; onOpenExport: () => void }) {
-  const schema = project?.schemaName ?? "proj_app";
+function BackupsView(props: {
+  project: Project | null;
+  projects: Project[];
+  backupJobs: BackupJob[];
+  backupRuns: Record<string, BackupRun[]>;
+  backupDraft: typeof emptyBackupDraft;
+  setBackupDraft: React.Dispatch<React.SetStateAction<typeof emptyBackupDraft>>;
+  onCreateBackup: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRunBackup: (job: BackupJob) => void;
+  onLoadBackupRuns: (job: BackupJob) => void;
+  onLoadCollectionExport: () => void;
+  onOpenExport: () => void;
+}) {
+  const schema = props.project?.schemaName ?? "proj_app";
   return (
     <div className="pb-settings-stack">
       <section className="pb-settings-block">
         <h2>Backups</h2>
-        <div className="pb-inline-alert info">Dublyobase can export collection definitions from the control plane today. Full physical Postgres backups should run from the database host or managed provider until the backup worker lands.</div>
+        <div className="pb-inline-alert info">Backups run with pg_dump and are stored in the configured file storage, including S3-compatible targets.</div>
         <div className="pb-info-grid compact">
           <Info label="Project schema" value={schema} />
-          <Info label="Backup engine" value="Postgres pg_dump compatible" />
+          <Info label="Backup engine" value="pg_dump custom format" />
         </div>
-        <pre className="pb-code-box">{`pg_dump "$DATABASE_URL" --schema=${schema} --format=custom --file=${schema}.dump`}</pre>
         <div className="pb-row-actions">
-          <button type="button" className="pb-btn primary" onClick={onExport}>
+          <button type="button" className="pb-btn secondary" onClick={props.onLoadCollectionExport}>
             <FileUp className="h-4 w-4" />
             Export schema JSON
           </button>
-          <button type="button" className="pb-btn outline" onClick={onOpenExport}>
+          <button type="button" className="pb-btn outline" onClick={props.onOpenExport}>
             Open export
           </button>
+        </div>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Create backup job</h2>
+        <form onSubmit={props.onCreateBackup} className="pb-grid-form ops-grid">
+          <LabeledInput label="Name" value={props.backupDraft.name} onChange={(value) => props.setBackupDraft((draft) => ({ ...draft, name: value }))} placeholder="nightly project backup" />
+          <label className="pb-field">
+            <span>Scope</span>
+            <select value={props.backupDraft.scope} onChange={(event) => props.setBackupDraft((draft) => ({ ...draft, scope: event.target.value as "full" | "project" }))}>
+              <option value="project">Project</option>
+              <option value="full">Full database</option>
+            </select>
+          </label>
+          {props.backupDraft.scope === "project" ? (
+            <label className="pb-field">
+              <span>Project</span>
+              <select value={props.backupDraft.projectSlug || props.project?.slug || ""} onChange={(event) => props.setBackupDraft((draft) => ({ ...draft, projectSlug: event.target.value }))}>
+                <option value="">Select project</option>
+                {props.projects.map((project) => (
+                  <option key={project.id} value={project.slug}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          <LabeledInput label="Schedule" value={props.backupDraft.schedule} onChange={(value) => props.setBackupDraft((draft) => ({ ...draft, schedule: value }))} placeholder="0 2 * * *" />
+          <LabeledInput label="Timezone" value={props.backupDraft.timezone} onChange={(value) => props.setBackupDraft((draft) => ({ ...draft, timezone: value }))} placeholder="UTC" />
+          <LabeledInput label="Retention days" value={props.backupDraft.retentionDays} onChange={(value) => props.setBackupDraft((draft) => ({ ...draft, retentionDays: value }))} />
+          <LabeledInput label="Retention count" value={props.backupDraft.retentionCount} onChange={(value) => props.setBackupDraft((draft) => ({ ...draft, retentionCount: value }))} />
+          <label className="pb-checkline">
+            <input type="checkbox" checked={props.backupDraft.enabled} onChange={(event) => props.setBackupDraft((draft) => ({ ...draft, enabled: event.target.checked }))} />
+            Enabled
+          </label>
+          <button type="submit" className="pb-btn primary">
+            <Plus className="h-4 w-4" />
+            Create backup
+          </button>
+        </form>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Backup jobs</h2>
+        <div className="pb-table-wrap">
+          <table className="pb-records-table compact">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Scope</th>
+                <th>Schedule</th>
+                <th>Next run</th>
+                <th>Status</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {props.backupJobs.map((job) => {
+                const latest = props.backupRuns[job.id]?.[0];
+                return (
+                  <tr key={job.id}>
+                    <td>{job.name}</td>
+                    <td>{job.scope === "project" ? job.projectSlug || "project" : "full"}</td>
+                    <td>{job.schedule}</td>
+                    <td>{formatDate(job.nextRunAt ?? "")}</td>
+                    <td>{latest ? `${latest.status}${latest.storageKey ? ` · ${formatBytes(latest.sizeBytes)}` : ""}` : job.enabled ? "enabled" : "paused"}</td>
+                    <td>
+                      <div className="pb-row-actions tight">
+                        <button type="button" className="pb-btn sm secondary" onClick={() => props.onLoadBackupRuns(job)}>
+                          Runs
+                        </button>
+                        <button type="button" className="pb-btn sm primary" onClick={() => props.onRunBackup(job)}>
+                          Run
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {props.backupJobs.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="pb-empty-cell">
+                    <EmptyState label="No backup jobs yet." />
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+        <RunHistory runs={Object.values(props.backupRuns).flat()} />
+      </section>
+    </div>
+  );
+}
+
+function CronsView(props: {
+  projects: Project[];
+  project: Project | null;
+  cronJobs: CronJob[];
+  cronRuns: Record<string, CronRun[]>;
+  cronDraft: typeof emptyCronDraft;
+  setCronDraft: React.Dispatch<React.SetStateAction<typeof emptyCronDraft>>;
+  onCreateCron: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRunCron: (job: CronJob) => void;
+  onLoadCronRuns: (job: CronJob) => void;
+}) {
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>Crons</h2>
+        <div className="pb-inline-alert info">HTTP jobs support cron expressions and @every durations. Retries and response snippets are stored in the run log.</div>
+        <form onSubmit={props.onCreateCron} className="pb-grid-form ops-grid">
+          <LabeledInput label="Name" value={props.cronDraft.name} onChange={(value) => props.setCronDraft((draft) => ({ ...draft, name: value }))} placeholder="refresh cache" />
+          <label className="pb-field">
+            <span>Project</span>
+            <select value={props.cronDraft.projectSlug || props.project?.slug || ""} onChange={(event) => props.setCronDraft((draft) => ({ ...draft, projectSlug: event.target.value }))}>
+              <option value="">Global</option>
+              {props.projects.map((project) => (
+                <option key={project.id} value={project.slug}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <LabeledInput label="Schedule" value={props.cronDraft.schedule} onChange={(value) => props.setCronDraft((draft) => ({ ...draft, schedule: value }))} placeholder="@every 5m" />
+          <LabeledInput label="Timezone" value={props.cronDraft.timezone} onChange={(value) => props.setCronDraft((draft) => ({ ...draft, timezone: value }))} placeholder="UTC" />
+          <label className="pb-field">
+            <span>Method</span>
+            <select value={props.cronDraft.method} onChange={(event) => props.setCronDraft((draft) => ({ ...draft, method: event.target.value }))}>
+              {["GET", "POST", "PUT", "PATCH", "DELETE"].map((method) => (
+                <option key={method} value={method}>
+                  {method}
+                </option>
+              ))}
+            </select>
+          </label>
+          <LabeledInput label="URL" value={props.cronDraft.url} onChange={(value) => props.setCronDraft((draft) => ({ ...draft, url: value }))} placeholder="https://example.com/api/job" />
+          <LabeledInput label="Timeout seconds" value={props.cronDraft.timeoutSeconds} onChange={(value) => props.setCronDraft((draft) => ({ ...draft, timeoutSeconds: value }))} />
+          <LabeledInput label="Retries" value={props.cronDraft.retryCount} onChange={(value) => props.setCronDraft((draft) => ({ ...draft, retryCount: value }))} />
+          <label className="pb-field wide-field">
+            <span>Headers JSON</span>
+            <textarea value={props.cronDraft.headersJSON} onChange={(event) => props.setCronDraft((draft) => ({ ...draft, headersJSON: event.target.value }))} rows={4} />
+          </label>
+          <label className="pb-field wide-field">
+            <span>Body</span>
+            <textarea value={props.cronDraft.body} onChange={(event) => props.setCronDraft((draft) => ({ ...draft, body: event.target.value }))} rows={4} />
+          </label>
+          <label className="pb-checkline">
+            <input type="checkbox" checked={props.cronDraft.enabled} onChange={(event) => props.setCronDraft((draft) => ({ ...draft, enabled: event.target.checked }))} />
+            Enabled
+          </label>
+          <button type="submit" className="pb-btn primary">
+            <Plus className="h-4 w-4" />
+            Create cron
+          </button>
+        </form>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Cron jobs</h2>
+        <div className="pb-table-wrap">
+          <table className="pb-records-table compact">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Method</th>
+                <th>Schedule</th>
+                <th>Next run</th>
+                <th>Status</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {props.cronJobs.map((job) => {
+                const latest = props.cronRuns[job.id]?.[0];
+                return (
+                  <tr key={job.id}>
+                    <td>{job.name}</td>
+                    <td>{job.method}</td>
+                    <td>{job.schedule}</td>
+                    <td>{formatDate(job.nextRunAt ?? "")}</td>
+                    <td>{latest ? `${latest.status}${latest.statusCode ? ` · ${latest.statusCode}` : ""}` : job.enabled ? "enabled" : "paused"}</td>
+                    <td>
+                      <div className="pb-row-actions tight">
+                        <button type="button" className="pb-btn sm secondary" onClick={() => props.onLoadCronRuns(job)}>
+                          Runs
+                        </button>
+                        <button type="button" className="pb-btn sm primary" onClick={() => props.onRunCron(job)}>
+                          Run
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {props.cronJobs.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="pb-empty-cell">
+                    <EmptyState label="No cron jobs registered." />
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+        <RunHistory runs={Object.values(props.cronRuns).flat()} />
+      </section>
+    </div>
+  );
+}
+
+function MCPAccessView(props: {
+  project: Project | null;
+  projects: Project[];
+  mcpTokens: MCPToken[];
+  oneTimeMCPToken: MCPToken | null;
+  mcpDraft: typeof emptyMCPDraft;
+  setMCPDraft: React.Dispatch<React.SetStateAction<typeof emptyMCPDraft>>;
+  onCreateMCPToken: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRevokeMCPToken: (token: MCPToken) => void;
+  onDismissMCPSecret: () => void;
+  onCopy: (text: string) => void;
+}) {
+  const endpoint = typeof window !== "undefined" ? `${window.location.origin}/mcp` : "/mcp";
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>MCP access</h2>
+        <div className="pb-inline-alert info">Create scoped tokens for AI tools. Admin tokens can manage the instance; project tokens are restricted to one project and their allowlist.</div>
+        <div className="pb-info-grid compact">
+          <Info label="Remote endpoint" value={endpoint} />
+          <Info label="Protocol" value="HTTP JSON-RPC MCP" />
+        </div>
+      </section>
+      <section className="pb-settings-block">
+        <h2>Create MCP token</h2>
+        <form onSubmit={props.onCreateMCPToken} className="pb-grid-form ops-grid">
+          <LabeledInput label="Name" value={props.mcpDraft.name} onChange={(value) => props.setMCPDraft((draft) => ({ ...draft, name: value }))} placeholder="codex project agent" />
+          <label className="pb-field">
+            <span>Scope</span>
+            <select value={props.mcpDraft.scope} onChange={(event) => props.setMCPDraft((draft) => ({ ...draft, scope: event.target.value as "admin" | "project" }))}>
+              <option value="project">Project</option>
+              <option value="admin">Admin</option>
+            </select>
+          </label>
+          {props.mcpDraft.scope === "project" ? (
+            <label className="pb-field">
+              <span>Project</span>
+              <select value={props.mcpDraft.projectSlug || props.project?.slug || ""} onChange={(event) => props.setMCPDraft((draft) => ({ ...draft, projectSlug: event.target.value }))}>
+                <option value="">Select project</option>
+                {props.projects.map((project) => (
+                  <option key={project.id} value={project.slug}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          <label className="pb-field">
+            <span>Expires at</span>
+            <input type="datetime-local" value={props.mcpDraft.expiresAt} onChange={(event) => props.setMCPDraft((draft) => ({ ...draft, expiresAt: event.target.value }))} />
+          </label>
+          <label className="pb-field wide-field">
+            <span>Allowed tools</span>
+            <textarea value={props.mcpDraft.allowedTools} onChange={(event) => props.setMCPDraft((draft) => ({ ...draft, allowedTools: event.target.value }))} rows={5} placeholder="Leave empty for safe defaults, or enter comma/newline separated tool names." />
+          </label>
+          <button type="submit" className="pb-btn primary">
+            <Plus className="h-4 w-4" />
+            Create token
+          </button>
+        </form>
+        {props.oneTimeMCPToken?.token ? (
+          <div className="pb-secret-box">
+            <strong>Copy this token now. It will not be shown again.</strong>
+            <code>{props.oneTimeMCPToken.token}</code>
+            <div className="pb-row-actions">
+              <button type="button" className="pb-btn secondary" onClick={() => props.onCopy(props.oneTimeMCPToken?.token ?? "")}>
+                <Copy className="h-4 w-4" />
+                Copy token
+              </button>
+              <button type="button" className="pb-btn transparent" onClick={props.onDismissMCPSecret}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </section>
+      <section className="pb-settings-block">
+        <h2>Tokens</h2>
+        <div className="pb-table-wrap">
+          <table className="pb-records-table compact">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Scope</th>
+                <th>Prefix</th>
+                <th>Tools</th>
+                <th>Status</th>
+                <th aria-label="Actions" />
+              </tr>
+            </thead>
+            <tbody>
+              {props.mcpTokens.map((token) => (
+                <tr key={token.id}>
+                  <td>{token.name}</td>
+                  <td>{token.scope === "project" ? token.projectSlug || "project" : "admin"}</td>
+                  <td>{token.prefix}</td>
+                  <td>{token.allowedTools.length ? token.allowedTools.join(", ") : "default"}</td>
+                  <td>{token.revokedAt ? "revoked" : token.expiresAt ? `expires ${formatDate(token.expiresAt)}` : "active"}</td>
+                  <td>
+                    <button type="button" className="pb-btn sm transparent danger" onClick={() => props.onRevokeMCPToken(token)} disabled={Boolean(token.revokedAt)}>
+                      Revoke
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {props.mcpTokens.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="pb-empty-cell">
+                    <EmptyState label="No MCP tokens yet." />
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
         </div>
       </section>
     </div>
   );
 }
 
-function CronsView() {
+function RunHistory({ runs }: { runs: Array<CronRun | BackupRun> }) {
+  const recent = runs.slice(0, 8);
+  if (recent.length === 0) return null;
   return (
-    <div className="pb-settings-stack">
-      <section className="pb-settings-block">
-        <h2>Crons</h2>
-        <div className="pb-inline-alert info">No scheduled jobs are registered in this build. This panel is ready for programmatic jobs once the background worker milestone is enabled.</div>
-        <CompactTable headers={["Name", "Schedule", "Last run", "Status"]} rows={[]} empty="No cron jobs registered." />
-      </section>
+    <div className="pb-run-history">
+      <h3>Recent runs</h3>
+      <div className="pb-table-wrap">
+        <table className="pb-records-table compact">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Started</th>
+              <th>Result</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recent.map((run) => {
+              const result = "statusCode" in run ? String(run.statusCode ?? "-") : "storageKey" in run ? `${formatBytes(run.sizeBytes)} ${run.storageKey}` : "-";
+              return (
+                <tr key={run.id}>
+                  <td>{run.status}</td>
+                  <td>{formatDate(run.startedAt)}</td>
+                  <td>{result}</td>
+                  <td>{run.error || "-"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -3278,6 +3907,33 @@ function formatDate(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "-";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function parseHeadersJSON(value: string): Record<string, string> {
+  const raw = value.trim() ? JSON.parse(value) : {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Headers must be a JSON object");
+  }
+  const headers: Record<string, string> = {};
+  for (const [key, headerValue] of Object.entries(raw)) {
+    if (typeof headerValue !== "string") {
+      throw new Error("Header values must be strings");
+    }
+    headers[key] = headerValue;
+  }
+  return headers;
 }
 
 type FileMeta = { recordId: string; field: string; id: string; name: string; size: string };
