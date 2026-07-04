@@ -1274,6 +1274,9 @@ export default function AdminApp() {
           onChange={(event) => {
             const slug = event.target.value;
             setSelectedProject(slug);
+            setSelectedCollection("");
+            setSelectedRecordId("");
+            setRecords({ items: [], page: 1, perPage: recordPerPage, totalItems: 0 });
             if (token) loadProjectData(token, slug).catch(handleError);
           }}
           className="pb-project-select"
