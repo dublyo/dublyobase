@@ -22,6 +22,7 @@ export type Field = {
   required?: boolean;
   hidden?: boolean;
   presentable?: boolean;
+  searchable?: boolean;
   help?: string;
   options?: Record<string, unknown>;
 };

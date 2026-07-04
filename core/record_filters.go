@@ -1,0 +1,426 @@
+package core
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+const (
+	maxRecordFilterBytes      = 8192
+	maxRecordFilterDepth      = 16
+	maxRecordFilterPredicates = 128
+	maxRecordSearchBytes      = 200
+)
+
+type recordFilterBuilder struct {
+	collection *Collection
+	args       []any
+	base       int
+	predicates int
+}
+
+func CompileRecordListFilter(filter string, search string, collection *Collection) (*SQLExpression, error) {
+	filterExpr, err := compileRecordFilter(filter, collection)
+	if err != nil {
+		return nil, err
+	}
+	searchExpr, err := compileRecordSearch(search, collection, len(filterExpr.Args))
+	if err != nil {
+		return nil, err
+	}
+	return combineRecordExpressions(filterExpr, searchExpr), nil
+}
+
+func compileRecordFilter(raw string, collection *Collection) (*SQLExpression, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return &SQLExpression{}, nil
+	}
+	if !strings.HasPrefix(raw, "{") {
+		return CompileFilter(raw, collection)
+	}
+	if len(raw) > maxRecordFilterBytes {
+		return nil, fmt.Errorf("%w: JSON filter is too large", ErrInvalidFilter)
+	}
+	dec := json.NewDecoder(bytes.NewReader([]byte(raw)))
+	dec.UseNumber()
+	var body map[string]any
+	if err := dec.Decode(&body); err != nil {
+		return nil, fmt.Errorf("%w: invalid JSON filter", ErrInvalidFilter)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("%w: invalid JSON filter", ErrInvalidFilter)
+	}
+	if len(body) == 0 {
+		return &SQLExpression{}, nil
+	}
+	builder := &recordFilterBuilder{collection: collection}
+	sql, err := builder.compileObject(body, "and", 0)
+	if err != nil {
+		return nil, err
+	}
+	return &SQLExpression{SQL: sql, Args: builder.args}, nil
+}
+
+func compileRecordSearch(raw string, collection *Collection, base int) (*SQLExpression, error) {
+	search := strings.TrimSpace(raw)
+	if search == "" {
+		return &SQLExpression{}, nil
+	}
+	if len(search) > maxRecordSearchBytes {
+		return nil, fmt.Errorf("%w: search is too long", ErrInvalidFilter)
+	}
+	builder := &recordFilterBuilder{collection: collection, base: base}
+	var parts []string
+	for _, field := range collection.Fields {
+		if !field.Searchable || !fieldCanSearch(field) {
+			continue
+		}
+		column := quoteIdent(field.Name)
+		switch field.Type {
+		case "number":
+			if n, ok := parseSearchNumber(search); ok {
+				parts = append(parts, fmt.Sprintf("%s = %s", column, builder.arg(n)))
+			}
+		case "bool":
+			if b, ok := parseSearchBool(search); ok {
+				parts = append(parts, fmt.Sprintf("%s = %s", column, builder.arg(b)))
+			}
+		default:
+			parts = append(parts, fmt.Sprintf("lower(coalesce(%s::text, '')) like %s", column, builder.arg("%"+strings.ToLower(search)+"%")))
+		}
+	}
+	if len(parts) == 0 {
+		return &SQLExpression{SQL: "false"}, nil
+	}
+	return &SQLExpression{SQL: "(" + strings.Join(parts, " or ") + ")", Args: builder.args}, nil
+}
+
+func combineRecordExpressions(filter *SQLExpression, search *SQLExpression) *SQLExpression {
+	if filter == nil || filter.SQL == "" {
+		if search == nil {
+			return &SQLExpression{}
+		}
+		return search
+	}
+	if search == nil || search.SQL == "" {
+		return filter
+	}
+	return &SQLExpression{
+		SQL:  fmt.Sprintf("(%s) and (%s)", filter.SQL, search.SQL),
+		Args: append(append([]any{}, filter.Args...), search.Args...),
+	}
+}
+
+func (b *recordFilterBuilder) compileObject(body map[string]any, logical string, depth int) (string, error) {
+	if depth > maxRecordFilterDepth {
+		return "", fmt.Errorf("%w: JSON filter nesting is too deep", ErrInvalidFilter)
+	}
+	keys := sortedMapKeys(body)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := body[key]
+		switch key {
+		case "_and", "_or":
+			group, err := b.compileLogicalArray(key, value, depth+1)
+			if err != nil {
+				return "", err
+			}
+			if group != "" {
+				parts = append(parts, group)
+			}
+		case "_not":
+			sub, ok := value.(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("%w: _not requires an object", ErrInvalidFilter)
+			}
+			sql, err := b.compileObject(sub, "and", depth+1)
+			if err != nil {
+				return "", err
+			}
+			if sql != "" {
+				parts = append(parts, "not ("+sql+")")
+			}
+		default:
+			sql, err := b.compileField(key, value, depth+1)
+			if err != nil {
+				return "", err
+			}
+			if sql != "" {
+				parts = append(parts, sql)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return "(" + strings.Join(parts, " "+logical+" ") + ")", nil
+}
+
+func (b *recordFilterBuilder) compileLogicalArray(operator string, value any, depth int) (string, error) {
+	items, ok := value.([]any)
+	if !ok {
+		return "", fmt.Errorf("%w: %s requires an array", ErrInvalidFilter, operator)
+	}
+	logical := "and"
+	if operator == "_or" {
+		logical = "or"
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		body, ok := item.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("%w: %s entries must be objects", ErrInvalidFilter, operator)
+		}
+		sql, err := b.compileObject(body, "and", depth)
+		if err != nil {
+			return "", err
+		}
+		if sql != "" {
+			parts = append(parts, sql)
+		}
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return "(" + strings.Join(parts, " "+logical+" ") + ")", nil
+}
+
+func (b *recordFilterBuilder) compileField(rawName string, rawValue any, depth int) (string, error) {
+	name := NormalizeIdentifier(rawName)
+	field, ok := filterableRecordField(b.collection, name)
+	if !ok {
+		return "", fmt.Errorf("%w: unknown filter field %q", ErrInvalidFilter, name)
+	}
+	ops, ok := rawValue.(map[string]any)
+	if !ok || len(ops) == 0 {
+		return b.compilePredicate(field, "_eq", rawValue)
+	}
+	keys := sortedMapKeys(ops)
+	parts := make([]string, 0, len(keys))
+	for _, op := range keys {
+		sql, err := b.compilePredicate(field, op, ops[op])
+		if err != nil {
+			return "", err
+		}
+		if sql != "" {
+			parts = append(parts, sql)
+		}
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	if depth > maxRecordFilterDepth {
+		return "", fmt.Errorf("%w: JSON filter nesting is too deep", ErrInvalidFilter)
+	}
+	return "(" + strings.Join(parts, " and ") + ")", nil
+}
+
+func (b *recordFilterBuilder) compilePredicate(field Field, operator string, value any) (string, error) {
+	b.predicates++
+	if b.predicates > maxRecordFilterPredicates {
+		return "", fmt.Errorf("%w: JSON filter has too many predicates", ErrInvalidFilter)
+	}
+	column := quoteIdent(field.Name)
+	value = normalizeFilterJSONValue(value)
+	switch operator {
+	case "_eq":
+		if value == nil {
+			return column + " is null", nil
+		}
+		return column + " = " + b.arg(value), nil
+	case "_neq":
+		if value == nil {
+			return column + " is not null", nil
+		}
+		return column + " <> " + b.arg(value), nil
+	case "_gt", "_gte", "_lt", "_lte":
+		sqlOp := map[string]string{"_gt": ">", "_gte": ">=", "_lt": "<", "_lte": "<="}[operator]
+		return column + " " + sqlOp + " " + b.arg(value), nil
+	case "_contains", "_ncontains", "_icontains", "_nicontains", "_starts_with", "_nstarts_with", "_istarts_with", "_nistarts_with", "_ends_with", "_nends_with", "_iends_with", "_niends_with":
+		return b.compileTextPredicate(column, operator, value)
+	case "_in", "_nin":
+		return b.compileListPredicate(column, operator, value)
+	case "_null":
+		if filterBool(value) == false {
+			return column + " is not null", nil
+		}
+		return column + " is null", nil
+	case "_nnull":
+		if filterBool(value) == false {
+			return column + " is null", nil
+		}
+		return column + " is not null", nil
+	case "_empty":
+		if filterBool(value) == false {
+			return fmt.Sprintf("(%s is not null and %s::text <> '')", column, column), nil
+		}
+		return fmt.Sprintf("(%s is null or %s::text = '')", column, column), nil
+	case "_nempty":
+		if filterBool(value) == false {
+			return fmt.Sprintf("(%s is null or %s::text = '')", column, column), nil
+		}
+		return fmt.Sprintf("(%s is not null and %s::text <> '')", column, column), nil
+	default:
+		return "", fmt.Errorf("%w: unsupported filter operator %q", ErrInvalidFilter, operator)
+	}
+}
+
+func (b *recordFilterBuilder) compileTextPredicate(column string, operator string, value any) (string, error) {
+	text := fmt.Sprint(value)
+	negated := strings.HasPrefix(operator, "_n")
+	insensitive := strings.HasPrefix(operator, "_i") || strings.HasPrefix(operator, "_ni")
+	pattern := text
+	switch {
+	case strings.Contains(operator, "contains"):
+		pattern = "%" + text + "%"
+	case strings.Contains(operator, "starts_with"):
+		pattern = text + "%"
+	case strings.Contains(operator, "ends_with"):
+		pattern = "%" + text
+	}
+	target := column + "::text"
+	op := "like"
+	if negated {
+		op = "not like"
+	}
+	if insensitive {
+		target = "lower(coalesce(" + target + ", ''))"
+		pattern = strings.ToLower(pattern)
+	}
+	return target + " " + op + " " + b.arg(pattern), nil
+}
+
+func (b *recordFilterBuilder) compileListPredicate(column string, operator string, value any) (string, error) {
+	values := filterList(value)
+	if len(values) == 0 {
+		if operator == "_nin" {
+			return "true", nil
+		}
+		return "false", nil
+	}
+	placeholders := make([]string, 0, len(values))
+	for _, value := range values {
+		placeholders = append(placeholders, b.arg(value))
+	}
+	op := "in"
+	if operator == "_nin" {
+		op = "not in"
+	}
+	return column + " " + op + " (" + strings.Join(placeholders, ", ") + ")", nil
+}
+
+func (b *recordFilterBuilder) arg(value any) string {
+	b.args = append(b.args, value)
+	return fmt.Sprintf("$%d", b.base+len(b.args))
+}
+
+func filterableRecordField(collection *Collection, name string) (Field, bool) {
+	if name == "id" || name == "created" || name == "updated" {
+		return Field{Name: name, Type: "text"}, true
+	}
+	for _, field := range collection.Fields {
+		if field.Name == name && !field.Hidden && field.Type != "password" && !isAuthUsersHiddenField(collection, field.Name) {
+			return field, true
+		}
+	}
+	return Field{}, false
+}
+
+func fieldCanSearch(field Field) bool {
+	if field.Hidden || field.Type == "password" {
+		return false
+	}
+	switch field.Type {
+	case "text", "editor", "email", "url", "select", "number", "bool", "date", "autodate", "relation":
+		return true
+	default:
+		return false
+	}
+}
+
+func sortedMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func normalizeFilterJSONValue(value any) any {
+	switch v := value.(type) {
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return i
+		}
+		if f, err := v.Float64(); err == nil {
+			return f
+		}
+		return v.String()
+	case []any:
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			out = append(out, normalizeFilterJSONValue(item))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func filterList(value any) []any {
+	value = normalizeFilterJSONValue(value)
+	switch v := value.(type) {
+	case []any:
+		return v
+	case string:
+		parts := strings.Split(v, ",")
+		out := make([]any, 0, len(parts))
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+		return out
+	default:
+		if value == nil {
+			return nil
+		}
+		return []any{value}
+	}
+}
+
+func filterBool(value any) bool {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(v, "true") || v == "1"
+	default:
+		return true
+	}
+}
+
+func parseSearchNumber(search string) (float64, bool) {
+	n, err := strconv.ParseFloat(search, 64)
+	return n, err == nil
+}
+
+func parseSearchBool(search string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(search)) {
+	case "true", "1", "yes":
+		return true, true
+	case "false", "0", "no":
+		return false, true
+	default:
+		return false, false
+	}
+}

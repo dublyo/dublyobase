@@ -14,7 +14,7 @@ The runtime is intentionally small:
 - GHCR image: `ghcr.io/dublyo/dublyobase`
 - No Redis, no nginx sidecar, no separate admin service
 
-Current public release: `v0.10.4`. Realtime subscriptions are not included in
+Current public release: `v0.10.5`. Realtime subscriptions are not included in
 this release.
 
 ## Features
@@ -36,7 +36,8 @@ this release.
   URL, select, JSON, relation, and file.
 - Required, hidden, presentable, help text, validation options, and rule-driven
   access.
-- Query support for list filters, sorting, field projection, and pagination.
+- Query support for list filters, Directus-style JSON filters, selected-field
+  search, sorting, field projection, and pagination.
 
 ### App Auth
 
@@ -137,7 +138,7 @@ curl http://localhost:8080/health
 Use a pinned image tag in production:
 
 ```yaml
-image: ghcr.io/dublyo/dublyobase:v0.10.4
+image: ghcr.io/dublyo/dublyobase:v0.10.5
 ```
 
 ### Existing Postgres
@@ -150,7 +151,7 @@ docker run --rm -p 8080:8080 \
   -e APP_URL="https://dublyobase.example.com" \
   -e JWT_SECRET="$(openssl rand -base64 32)" \
   -v dublyobase-storage:/data/storage \
-  ghcr.io/dublyo/dublyobase:v0.10.4
+  ghcr.io/dublyo/dublyobase:v0.10.5
 ```
 
 `DATABASE_URL`, `APP_URL`, and `JWT_SECRET` are required. On an empty install,
@@ -244,6 +245,19 @@ can also be managed from the admin panel after setup.
 | `DELETE /api/projects/{slug}/collections/{name}/records/{id}` | Delete a record. |
 | `GET /admin/api/projects/{slug}/collections/export` | Export collection schema JSON. |
 | `POST /admin/api/projects/{slug}/collections/import` | Preview or apply collection schema imports. |
+
+Record list APIs support `page`, `perPage` (`10`, `25`, `100`, `250`, or `500`),
+`offset`, `sort`, `fields`, `search`, PocketBase-style string `filter`, and
+Directus-style JSON filters such as:
+
+```text
+GET /api/projects/app/collections/posts/records?search=hello&perPage=25
+GET /api/projects/app/collections/posts/records?filter={"title":{"_icontains":"hello"}}
+GET /api/projects/app/collections/posts/records?filter[title][_icontains]=hello
+```
+
+The `search` parameter only scans fields marked `searchable` in the collection
+editor.
 
 ### App Auth
 

@@ -259,8 +259,10 @@ func (s *server) callMCPTool(ctx context.Context, token *core.MCPToken, name str
 			Collection  string `json:"collection"`
 			Page        int    `json:"page"`
 			PerPage     int    `json:"perPage"`
+			Offset      int    `json:"offset"`
 			Sort        string `json:"sort"`
 			Filter      string `json:"filter"`
+			Search      string `json:"search"`
 			Fields      string `json:"fields"`
 		}
 		if err := decodeMCPArgs(rawArgs, &input); err != nil {
@@ -275,7 +277,7 @@ func (s *server) callMCPTool(ctx context.Context, token *core.MCPToken, name str
 			return nil, projectSlug, err
 		}
 		result, err := core.ListRecords(ctx, s.app.Pool, core.ServiceRecordAuth(project), input.Collection, core.RecordListOptions{
-			Page: input.Page, PerPage: input.PerPage, Sort: input.Sort, Filter: input.Filter, Fields: input.Fields,
+			Page: input.Page, PerPage: input.PerPage, Offset: input.Offset, Sort: input.Sort, Filter: input.Filter, Search: input.Search, Fields: input.Fields,
 		})
 		return result, projectSlug, err
 	case "records.create":
@@ -757,8 +759,10 @@ func recordsListSchema() map[string]any {
 		"collection":  stringSchema(),
 		"page":        integerSchema(),
 		"perPage":     integerSchema(),
+		"offset":      integerSchema(),
 		"sort":        stringSchema(),
 		"filter":      stringSchema(),
+		"search":      stringSchema(),
 		"fields":      stringSchema(),
 	})
 }

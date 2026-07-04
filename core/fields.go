@@ -14,6 +14,7 @@ type Field struct {
 	Required    bool           `json:"required,omitempty"`
 	Hidden      bool           `json:"hidden,omitempty"`
 	Presentable bool           `json:"presentable,omitempty"`
+	Searchable  bool           `json:"searchable,omitempty"`
 	Help        string         `json:"help,omitempty"`
 	Options     map[string]any `json:"options,omitempty"`
 }
@@ -78,6 +79,9 @@ func validateFieldOptions(field Field) error {
 	}
 	if field.Hidden && field.Presentable {
 		return fmt.Errorf("%w: hidden field %q cannot be presentable", ErrValidation, field.Name)
+	}
+	if field.Searchable && !fieldCanSearch(field) {
+		return fmt.Errorf("%w: field %q cannot be searchable", ErrValidation, field.Name)
 	}
 	switch field.Type {
 	case "autodate":

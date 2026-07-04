@@ -99,6 +99,7 @@ import type { APIKey, Admin, AuditEntry, BackupJob, BackupRun, Collection, Colle
 
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
+const recordPageSizes = [10, 25, 100, 250, 500] as const;
 const fieldTypes: FieldType[] = ["text", "editor", "password", "number", "bool", "date", "autodate", "email", "url", "select", "json", "relation", "file"];
 type FieldTypeChoice = {
   type?: FieldType;
@@ -242,8 +243,10 @@ export default function AdminApp() {
   const [selectedProject, setSelectedProject] = useState("");
   const [collections, setCollections] = useState<Collection[]>([]);
   const [selectedCollection, setSelectedCollection] = useState("");
-  const [records, setRecords] = useState<RecordList>({ items: [], page: 1, perPage: 30, totalItems: 0 });
+  const [records, setRecords] = useState<RecordList>({ items: [], page: 1, perPage: 25, totalItems: 0 });
+  const [recordSearch, setRecordSearch] = useState("");
   const [recordFilter, setRecordFilter] = useState("");
+  const [recordPerPage, setRecordPerPage] = useState<(typeof recordPageSizes)[number]>(25);
   const [recordJSON, setRecordJSON] = useState("{}");
   const [selectedRecordId, setSelectedRecordId] = useState("");
   const [recordEditorOpen, setRecordEditorOpen] = useState(false);
@@ -286,6 +289,7 @@ export default function AdminApp() {
   const [sqlResult, setSQLResult] = useState<SQLResult | null>(null);
   const [sqlHistory, setSQLHistory] = useState<string[]>([]);
   const bootstrapped = useRef(false);
+  const recordQueryRef = useRef({ search: "", filter: "", perPage: 25 });
 
   const selectedProjectModel = useMemo(() => projects.find((project) => project.slug === selectedProject) ?? null, [projects, selectedProject]);
   const selectedCollectionModel = useMemo(
@@ -333,6 +337,10 @@ export default function AdminApp() {
     [showNotice],
   );
 
+  useEffect(() => {
+    recordQueryRef.current = { search: recordSearch, filter: recordFilter, perPage: recordPerPage };
+  }, [recordFilter, recordPerPage, recordSearch]);
+
   const loadProjectData = useCallback(
     async (authToken: string, projectSlug: string, preferredCollection = "") => {
       if (!projectSlug) return;
@@ -349,13 +357,20 @@ export default function AdminApp() {
       const nextCollection = currentExists ? targetCollection : collectionResponse.items[0]?.name || "";
       setSelectedCollection(nextCollection);
       if (nextCollection) {
-        const recordsResponse = await listRecords(authToken, projectSlug, nextCollection, 1, recordFilter);
+        const nextCollectionModel = collectionResponse.items.find((collection) => collection.name === nextCollection);
+        const activeSearch = nextCollectionModel?.fields.some((field) => field.searchable && canSearchField(field)) ? recordSearch : "";
+        const recordsResponse = await listRecords(authToken, projectSlug, nextCollection, {
+          page: 1,
+          perPage: recordPerPage,
+          filter: recordFilter,
+          search: activeSearch,
+        });
         setRecords(recordsResponse);
       } else {
-        setRecords({ items: [], page: 1, perPage: 30, totalItems: 0 });
+        setRecords({ items: [], page: 1, perPage: recordPerPage, totalItems: 0 });
       }
     },
-    [recordFilter, selectedCollection],
+    [recordFilter, recordPerPage, recordSearch, selectedCollection],
   );
 
   const refreshAll = useCallback(
@@ -386,7 +401,7 @@ export default function AdminApp() {
         } else {
           setCollections([]);
           setSelectedCollection("");
-          setRecords({ items: [], page: 1, perPage: 30, totalItems: 0 });
+          setRecords({ items: [], page: 1, perPage: recordPerPage, totalItems: 0 });
         }
       } catch (error) {
         handleError(error);
@@ -394,7 +409,7 @@ export default function AdminApp() {
         setBusy(false);
       }
     },
-    [handleError, loadProjectData, selectedProject, token],
+    [handleError, loadProjectData, recordPerPage, selectedProject, token],
   );
 
   useEffect(() => {
@@ -426,7 +441,9 @@ export default function AdminApp() {
   useEffect(() => {
     if (!token || !selectedProject || !selectedCollection) return;
     let cancelled = false;
-    listRecords(token, selectedProject, selectedCollection, 1, recordFilter)
+    const { filter, search, perPage } = recordQueryRef.current;
+    const activeSearch = selectedCollectionModel?.fields.some((field) => field.searchable && canSearchField(field)) ? search : "";
+    listRecords(token, selectedProject, selectedCollection, { page: 1, perPage, filter, search: activeSearch })
       .then((response) => {
         if (!cancelled) setRecords(response);
       })
@@ -436,7 +453,7 @@ export default function AdminApp() {
     return () => {
       cancelled = true;
     };
-  }, [handleError, recordFilter, selectedCollection, selectedProject, token]);
+  }, [handleError, selectedCollection, selectedCollectionModel, selectedProject, token]);
 
   useEffect(() => {
     if (!selectedCollectionModel) {
@@ -452,6 +469,9 @@ export default function AdminApp() {
       updateRule: selectedCollectionModel.updateRule ?? "",
       deleteRule: selectedCollectionModel.deleteRule ?? "",
     });
+    if (!selectedCollectionModel.fields.some((field) => field.searchable && canSearchField(field))) {
+      setRecordSearch("");
+    }
     setSelectedRecordId("");
     setRecordJSON("{}");
     setFileDraft((draft) => ({ ...draft, field: selectedCollectionModel.fields.find((field) => field.type === "file")?.name ?? "" }));
@@ -648,11 +668,16 @@ export default function AdminApp() {
     setEditingFields((fields) => [...fields, newDefaultField(type)]);
   }
 
-  async function refreshRecords(page = records.page) {
+  async function refreshRecords(page = records.page, perPage = recordPerPage) {
     if (!token || !selectedProject || !selectedCollectionModel) return;
     setBusy(true);
     try {
-      const response = await listRecords(token, selectedProject, selectedCollectionModel.name, page, recordFilter);
+      const response = await listRecords(token, selectedProject, selectedCollectionModel.name, {
+        page,
+        perPage,
+        filter: recordFilter,
+        search: selectedCollectionModel.fields.some((field) => field.searchable && canSearchField(field)) ? recordSearch : "",
+      });
       setRecords(response);
     } catch (error) {
       handleError(error);
@@ -1181,10 +1206,20 @@ export default function AdminApp() {
           selectedCollection={selectedCollectionModel}
           selectedCollectionName={selectedCollection}
           records={records}
+          recordSearch={recordSearch}
+          setRecordSearch={setRecordSearch}
           recordFilter={recordFilter}
           setRecordFilter={setRecordFilter}
+          recordPerPage={recordPerPage}
           onSelectCollection={setSelectedCollection}
           onRefresh={() => refreshRecords(1)}
+          onPageChange={(page) => {
+            void refreshRecords(page);
+          }}
+          onPageSizeChange={(pageSize) => {
+            setRecordPerPage(pageSize);
+            void refreshRecords(1, pageSize);
+          }}
           onOpenCreateCollection={() => setCollectionModal("create")}
           onOpenCollectionSettings={() => selectedCollectionModel && setCollectionModal("settings")}
           onOpenAPIPreview={() => selectedCollectionModel && setAPIPreviewOpen(true)}
@@ -1577,10 +1612,15 @@ function CollectionsWorkspace({
   selectedCollection,
   selectedCollectionName,
   records,
+  recordSearch,
+  setRecordSearch,
   recordFilter,
   setRecordFilter,
+  recordPerPage,
   onSelectCollection,
   onRefresh,
+  onPageChange,
+  onPageSizeChange,
   onOpenCreateCollection,
   onOpenCollectionSettings,
   onOpenAPIPreview,
@@ -1595,10 +1635,15 @@ function CollectionsWorkspace({
   selectedCollection: Collection | null;
   selectedCollectionName: string;
   records: RecordList;
+  recordSearch: string;
+  setRecordSearch: (value: string) => void;
   recordFilter: string;
   setRecordFilter: (value: string) => void;
+  recordPerPage: (typeof recordPageSizes)[number];
   onSelectCollection: (name: string) => void;
   onRefresh: () => void;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: (typeof recordPageSizes)[number]) => void;
   onOpenCreateCollection: () => void;
   onOpenCollectionSettings: () => void;
   onOpenAPIPreview: () => void;
@@ -1609,6 +1654,9 @@ function CollectionsWorkspace({
   version: string;
 }) {
   const columns = selectedCollection ? Array.from(new Set(["id", ...selectedCollection.fields.filter(isVisibleRecordField).map((field) => field.name), "created", "updated"])) : ["id"];
+  const totalPages = Math.max(1, Math.ceil(records.totalItems / Math.max(1, records.perPage || recordPerPage)));
+  const currentPage = Math.max(1, records.page || 1);
+  const searchableFields = selectedCollection?.fields.filter(canSearchField).filter((field) => field.searchable).map((field) => field.name) ?? [];
   return (
     <section className="pb-page">
       <CollectionSidebar collections={collections} selected={selectedCollectionName} onSelect={onSelectCollection} onNewCollection={onOpenCreateCollection} />
@@ -1644,18 +1692,41 @@ function CollectionsWorkspace({
         </header>
 
         <form
-          className="pb-searchbar"
+          className="pb-record-toolbar"
           onSubmit={(event) => {
             event.preventDefault();
             onRefresh();
           }}
         >
-          <button type="button" className="pb-btn sm pill secondary transparent" title="Search history">
+          <label className="pb-record-control search">
             <Search className="h-4 w-4" />
-          </button>
-          <input value={recordFilter} onChange={(event) => setRecordFilter(event.target.value)} placeholder='Search records, for example title = "hello"' />
+            <input
+              value={recordSearch}
+              onChange={(event) => setRecordSearch(event.target.value)}
+              placeholder={searchableFields.length > 0 ? `Search ${searchableFields.slice(0, 3).join(", ")}` : "Search selected fields"}
+              disabled={!selectedCollection || searchableFields.length === 0}
+            />
+          </label>
+          <label className="pb-record-control filter">
+            <ListFilter className="h-4 w-4" />
+            <input value={recordFilter} onChange={(event) => setRecordFilter(event.target.value)} placeholder='{"title":{"_icontains":"hello"}}' disabled={!selectedCollection} />
+          </label>
+          <label className="pb-page-size-control">
+            <span>Rows</span>
+            <select
+              value={recordPerPage}
+              disabled={!selectedCollection}
+              onChange={(event) => onPageSizeChange(Number(event.target.value) as (typeof recordPageSizes)[number])}
+            >
+              {recordPageSizes.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </label>
           <button type="submit" className="pb-btn sm secondary">
-            Load
+            Apply
           </button>
         </form>
 
@@ -1704,7 +1775,19 @@ function CollectionsWorkspace({
           </table>
         </div>
 
-        <PageFooter left={selectedCollection ? `Total: ${records.totalItems}` : "No collection selected"} version={version} />
+        <div className="pb-record-pagination" aria-label="Record pagination">
+          <span>{selectedCollection ? `Total ${records.totalItems} · Page ${currentPage} of ${totalPages}` : "No collection selected"}</span>
+          <div className="pb-pagination-actions">
+            <button type="button" className="pb-btn sm secondary" disabled={!selectedCollection || currentPage <= 1} onClick={() => onPageChange(currentPage - 1)}>
+              Previous
+            </button>
+            <button type="button" className="pb-btn sm secondary" disabled={!selectedCollection || currentPage >= totalPages} onClick={() => onPageChange(currentPage + 1)}>
+              Next
+            </button>
+          </div>
+        </div>
+
+        <PageFooter left={selectedCollection ? `Showing ${records.items.length} of ${records.totalItems}` : "No collection selected"} version={version} />
       </div>
     </section>
   );
@@ -1967,6 +2050,7 @@ function FieldRows({
 }
 
 function FieldOptionsEditor({ field, collections, onChange }: { field: Field; collections: Collection[]; onChange: (field: Field) => void }) {
+  const searchSupported = canSearchField(field);
   const commonOptions = (
     <div className="pb-field-options common">
       <label className="pb-field">
@@ -1983,8 +2067,28 @@ function FieldOptionsEditor({ field, collections, onChange }: { field: Field; co
         Presentable
       </label>
       <label className="pb-checkline">
-        <input type="checkbox" checked={Boolean(field.hidden)} onChange={(event) => onChange({ ...field, hidden: event.target.checked, presentable: event.target.checked ? false : field.presentable })} />
+        <input
+          type="checkbox"
+          checked={Boolean(field.hidden)}
+          onChange={(event) =>
+            onChange({
+              ...field,
+              hidden: event.target.checked,
+              presentable: event.target.checked ? false : field.presentable,
+              searchable: event.target.checked ? false : field.searchable,
+            })
+          }
+        />
         Hidden
+      </label>
+      <label className="pb-checkline" title={searchSupported ? "Include this field in the records search input" : "This field type cannot be searched"}>
+        <input
+          type="checkbox"
+          checked={Boolean(field.searchable) && searchSupported}
+          disabled={!searchSupported}
+          onChange={(event) => onChange({ ...field, searchable: event.target.checked })}
+        />
+        Searchable
       </label>
     </div>
   );
@@ -2461,7 +2565,14 @@ function JSONFieldEditor({ value, onChange }: { value: unknown; onChange: (value
 
 function APIPreviewModal({ project, collection, onClose, onCopy }: { project: string; collection: Collection; onClose: () => void; onCopy: (text: string) => void }) {
   const basePath = `/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection.name)}`;
-  const sample = `GET ${basePath}/records\nPOST ${basePath}/records\nPATCH ${basePath}/records/{id}\nDELETE ${basePath}/records/{id}`;
+  const searchField = collection.fields.find((field) => field.searchable && canSearchField(field))?.name ?? "title";
+  const filterSample = encodeURIComponent(JSON.stringify({ [searchField]: { _icontains: "hello" } }));
+  const sample = `GET ${basePath}/records?page=1&perPage=25&search=hello
+GET ${basePath}/records?filter=${filterSample}
+GET ${basePath}/records?filter[${searchField}][_icontains]=hello
+POST ${basePath}/records
+PATCH ${basePath}/records/{id}
+DELETE ${basePath}/records/{id}`;
   return (
     <div className="pb-modal-layer" role="presentation">
       <section className="pb-modal api-preview-modal" role="dialog" aria-modal="true" aria-labelledby="api-preview-title">
@@ -4095,25 +4206,38 @@ function isVisibleRecordField(field: Field): boolean {
   return !field.hidden && field.type !== "password";
 }
 
+function canSearchField(field: Field): boolean {
+  if (field.hidden || field.type === "password") return false;
+  return ["text", "editor", "email", "url", "select", "number", "bool", "date", "autodate", "relation"].includes(field.type);
+}
+
 function fieldWithType(field: Field, type: FieldType): Field {
-  return {
+  const hidden = type === "password" ? true : field.hidden;
+  const nextField = {
     ...field,
     type,
-    hidden: type === "password" ? true : field.hidden,
-    presentable: type === "password" || field.hidden ? false : field.presentable,
+    hidden,
+    presentable: type === "password" || hidden ? false : field.presentable,
     options: defaultOptionsForType(type, field.options),
+  };
+  return {
+    ...nextField,
+    searchable: Boolean(field.searchable) && canSearchField(nextField),
   };
 }
 
 function cleanField(field: Field): Field {
   const name = field.name.trim();
   const type = field.type;
+  const hidden = Boolean(field.hidden) || type === "password";
+  const normalizedField = { ...field, type, hidden };
   return {
     name,
     type,
     required: Boolean(field.required),
-    hidden: Boolean(field.hidden) || type === "password",
-    presentable: Boolean(field.presentable) && !field.hidden && type !== "password",
+    hidden,
+    presentable: Boolean(field.presentable) && !hidden,
+    searchable: Boolean(field.searchable) && canSearchField(normalizedField),
     help: field.help?.trim() || undefined,
     options: defaultOptionsForType(type, field.options),
   };

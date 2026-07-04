@@ -109,6 +109,57 @@ func TestProjectionAndSortValidation(t *testing.T) {
 	}
 }
 
+func TestDirectusJSONFilterCompilation(t *testing.T) {
+	c := testRecordCollection()
+	expr, err := CompileRecordListFilter(`{"_or":[{"title":{"_icontains":"hello"}},{"score":{"_gte":7}}],"status":{"_in":["draft","live"]}}`, "", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSQL := `((((lower(coalesce("title"::text, '')) like $1)) or (("score" >= $2))) and ("status" in ($3, $4)))`
+	if expr.SQL != wantSQL {
+		t.Fatalf("SQL = %q, want %q", expr.SQL, wantSQL)
+	}
+	if len(expr.Args) != 4 || expr.Args[0] != "%hello%" || expr.Args[1] != int64(7) || expr.Args[2] != "draft" || expr.Args[3] != "live" {
+		t.Fatalf("args = %#v", expr.Args)
+	}
+}
+
+func TestRecordSearchUsesOnlySearchableFields(t *testing.T) {
+	c := testRecordCollection()
+	c.Fields[0].Searchable = true
+	c.Fields[1].Searchable = false
+	c.Fields[5].Searchable = true
+	expr, err := CompileRecordListFilter("", "Hello", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(expr.SQL, "summary") || !strings.Contains(expr.SQL, `"title"::text`) {
+		t.Fatalf("search SQL should use only searchable fields, got %q", expr.SQL)
+	}
+	if strings.Contains(expr.SQL, `"score"`) {
+		t.Fatalf("non-numeric search should not include numeric field: %q", expr.SQL)
+	}
+
+	expr, err = CompileRecordListFilter("", "7", c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(expr.SQL, `"score" =`) {
+		t.Fatalf("numeric search should include searchable number field: %q", expr.SQL)
+	}
+}
+
+func TestNormalizeListOptionsSupportsAllowedPageSizesAndOffset(t *testing.T) {
+	opts := normalizeListOptions(RecordListOptions{Page: 2, PerPage: 250})
+	if opts.PerPage != 250 || opts.Offset != 250 {
+		t.Fatalf("page size normalization = %+v", opts)
+	}
+	opts = normalizeListOptions(RecordListOptions{PerPage: 999, Offset: 1000})
+	if opts.PerPage != 500 || opts.Page != 3 || opts.Offset != 1000 {
+		t.Fatalf("offset normalization = %+v", opts)
+	}
+}
+
 func TestNormalizeDBValueFormatsUUIDArrays(t *testing.T) {
 	first := [16]byte{0x9c, 0x10, 0xd5, 0xb9, 0x3a, 0x23, 0x4f, 0x25, 0x91, 0xc3, 0x09, 0xa4, 0x0d, 0x7e, 0x9f, 0x7e}
 	second := [16]byte{0x56, 0xf3, 0xa6, 0x2c, 0x9a, 0x5d, 0x46, 0x47, 0xbd, 0xea, 0x5f, 0x0f, 0xff, 0x2e, 0xcd, 0xd3}

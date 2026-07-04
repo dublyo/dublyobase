@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dublyo/dublyobase/core"
@@ -14,11 +15,21 @@ func (s *server) listRecords(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	perPage := queryInt(r, "perPage", 25)
+	if r.URL.Query().Get("limit") != "" {
+		perPage = queryInt(r, "limit", perPage)
+	}
+	filter := r.URL.Query().Get("filter")
+	if strings.TrimSpace(filter) == "" {
+		filter = directusFilterQuery(r)
+	}
 	opts := core.RecordListOptions{
 		Page:    queryInt(r, "page", 1),
-		PerPage: queryInt(r, "perPage", 30),
+		PerPage: perPage,
+		Offset:  queryInt(r, "offset", 0),
 		Sort:    r.URL.Query().Get("sort"),
-		Filter:  r.URL.Query().Get("filter"),
+		Filter:  filter,
+		Search:  r.URL.Query().Get("search"),
 		Fields:  r.URL.Query().Get("fields"),
 	}
 	result, err := core.ListRecords(r.Context(), s.app.Pool, auth, r.PathValue("name"), opts)
@@ -27,6 +38,66 @@ func (s *server) listRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func directusFilterQuery(r *http.Request) string {
+	root := map[string]any{}
+	for key, values := range r.URL.Query() {
+		if !strings.HasPrefix(key, "filter[") || len(values) == 0 {
+			continue
+		}
+		segments := directusFilterSegments(key)
+		if len(segments) < 2 || segments[0] != "filter" {
+			continue
+		}
+		assignFilterValue(root, segments[1:], values[len(values)-1])
+	}
+	if len(root) == 0 {
+		return ""
+	}
+	body, err := json.Marshal(root)
+	if err != nil {
+		return ""
+	}
+	return string(body)
+}
+
+func directusFilterSegments(key string) []string {
+	var segments []string
+	for key != "" {
+		start := strings.IndexByte(key, '[')
+		if start < 0 {
+			segments = append(segments, key)
+			break
+		}
+		if start > 0 {
+			segments = append(segments, key[:start])
+		}
+		key = key[start+1:]
+		end := strings.IndexByte(key, ']')
+		if end < 0 {
+			break
+		}
+		segments = append(segments, key[:end])
+		key = key[end+1:]
+	}
+	return segments
+}
+
+func assignFilterValue(root map[string]any, segments []string, value string) {
+	if len(segments) == 0 {
+		return
+	}
+	if len(segments) == 1 {
+		root[segments[0]] = value
+		return
+	}
+	next, _ := root[segments[0]].(map[string]any)
+	if next == nil {
+		next = map[string]any{}
+		root[segments[0]] = next
+	}
+	assignFilterValue(next, segments[1:], value)
 }
 
 func (s *server) createRecord(w http.ResponseWriter, r *http.Request) {

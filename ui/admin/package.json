@@ -1,7 +1,7 @@
 {
   "name": "dublyobase-admin",
   "private": true,
-  "version": "0.10.4",
+  "version": "0.10.5",
   "scripts": {
     "build": "next build && node scripts/copy-dist.mjs",
     "typecheck": "tsc --noEmit",

@@ -48,7 +48,7 @@ compose: |
         retries: 10
 
     app:
-      image: ghcr.io/dublyo/dublyobase:v0.10.4
+      image: ghcr.io/dublyo/dublyobase:v0.10.5
       restart: unless-stopped
       environment:
         - DATABASE_URL=postgres://dublyobase:${DB_PASSWORD}@db:5432/dublyobase?sslmode=disable

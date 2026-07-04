@@ -238,9 +238,26 @@ export function runSQL(token: string, project: string, input: { query: string; m
   });
 }
 
-export function listRecords(token: string, project: string, collection: string, page = 1, filter = "") {
-  const params = new URLSearchParams({ page: String(page), perPage: "30", sort: "-created" });
-  if (filter.trim()) params.set("filter", filter.trim());
+export type RecordListParams = {
+  page?: number;
+  perPage?: number;
+  offset?: number;
+  filter?: string;
+  search?: string;
+  sort?: string;
+  fields?: string;
+};
+
+export function listRecords(token: string, project: string, collection: string, input: RecordListParams = {}) {
+  const params = new URLSearchParams({
+    page: String(input.page ?? 1),
+    perPage: String(input.perPage ?? 25),
+    sort: input.sort ?? "-created",
+  });
+  if (typeof input.offset === "number" && Number.isFinite(input.offset)) params.set("offset", String(input.offset));
+  if (input.filter?.trim()) params.set("filter", input.filter.trim());
+  if (input.search?.trim()) params.set("search", input.search.trim());
+  if (input.fields?.trim()) params.set("fields", input.fields.trim());
   return request<RecordList>(`/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection)}/records?${params}`, { token }).then(
     normalizeRecordList,
   );

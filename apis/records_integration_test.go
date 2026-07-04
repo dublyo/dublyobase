@@ -26,7 +26,7 @@ func TestRecordsAPIAndRLS(t *testing.T) {
 		"name":"posts",
 		"type":"base",
 		"fields":[
-			{"name":"title","type":"text","required":true},
+			{"name":"title","type":"text","required":true,"searchable":true},
 			{"name":"published","type":"bool"},
 			{"name":"owner","type":"relation","options":{"collection":"users"}}
 		],
@@ -95,6 +95,21 @@ func TestRecordsAPIAndRLS(t *testing.T) {
 	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/posts/records?filter=title%%20=%%20%%22Public%%22&sort=-created&fields=id,title", slug), serviceKey)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("filtered service list: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertRecordListCount(t, rec.Body.Bytes(), 1)
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/posts/records?filter=%%7B%%22title%%22%%3A%%7B%%22_icontains%%22%%3A%%22pub%%22%%7D%%7D&limit=10", slug), serviceKey)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("JSON filtered service list: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertRecordListCount(t, rec.Body.Bytes(), 1)
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/posts/records?filter[title][_icontains]=pub&limit=10", slug), serviceKey)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bracket filtered service list: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertRecordListCount(t, rec.Body.Bytes(), 1)
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/posts/records?search=pub&perPage=10", slug), serviceKey)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("search service list: want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	assertRecordListCount(t, rec.Body.Bytes(), 1)
 	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/posts/records?filter=missing%%20=%%20true", slug), serviceKey)

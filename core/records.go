@@ -23,8 +23,10 @@ type Record map[string]any
 type RecordListOptions struct {
 	Page    int
 	PerPage int
+	Offset  int
 	Sort    string
 	Filter  string
+	Search  string
 	Fields  string
 }
 
@@ -54,7 +56,7 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 	if err != nil {
 		return nil, err
 	}
-	filter, err := CompileFilter(opts.Filter, collection)
+	filter, err := CompileRecordListFilter(opts.Filter, opts.Search, collection)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +79,7 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 		limitPos := len(args) + 1
 		args = append(args, opts.PerPage)
 		offsetPos := len(args) + 1
-		args = append(args, (opts.Page-1)*opts.PerPage)
+		args = append(args, opts.Offset)
 		query := fmt.Sprintf(`select %s from %s%s order by %s limit $%d offset $%d`,
 			selectList(columns),
 			table,
@@ -259,10 +261,18 @@ func normalizeListOptions(opts RecordListOptions) RecordListOptions {
 		opts.Page = 1
 	}
 	if opts.PerPage < 1 {
-		opts.PerPage = 30
+		opts.PerPage = 25
 	}
 	if opts.PerPage > 500 {
 		opts.PerPage = 500
+	}
+	if opts.Offset < 0 {
+		opts.Offset = 0
+	}
+	if opts.Offset == 0 {
+		opts.Offset = (opts.Page - 1) * opts.PerPage
+	} else {
+		opts.Page = (opts.Offset / opts.PerPage) + 1
 	}
 	return opts
 }
