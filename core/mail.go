@@ -115,7 +115,7 @@ func (m *SMTPMailer) Send(ctx context.Context, msg MailMessage) error {
 	return client.Quit()
 }
 
-func BuildAuthTokenEmail(cfg *Config, kind string, projectSlug string, email string, token string) (MailMessage, error) {
+func BuildAuthTokenEmail(cfg *Config, kind string, projectSlug string, projectName string, email string, token string) (MailMessage, error) {
 	if cfg == nil {
 		return MailMessage{}, fmt.Errorf("%w: config is required", ErrValidation)
 	}
@@ -131,6 +131,10 @@ func BuildAuthTokenEmail(cfg *Config, kind string, projectSlug string, email str
 	if token == "" {
 		return MailMessage{}, fmt.Errorf("%w: token is required", ErrValidation)
 	}
+	projectLabel := strings.TrimSpace(projectName)
+	if projectLabel == "" {
+		projectLabel = projectSlug
+	}
 	switch kind {
 	case "verify_email":
 		link, err := authActionLink(cfg.AppURL, "/auth/verify", projectSlug, email, token)
@@ -140,8 +144,8 @@ func BuildAuthTokenEmail(cfg *Config, kind string, projectSlug string, email str
 		return MailMessage{
 			From:    cfg.SMTPFrom,
 			To:      email,
-			Subject: "Verify your email",
-			Text: "Verify your email for project " + projectSlug + ".\n\n" +
+			Subject: "Verify your email for " + projectLabel,
+			Text: "Verify your email for " + projectLabel + ".\n\n" +
 				"Open this link:\n" + link + "\n\n" +
 				"Token:\n" + token + "\n",
 		}, nil
@@ -153,8 +157,8 @@ func BuildAuthTokenEmail(cfg *Config, kind string, projectSlug string, email str
 		return MailMessage{
 			From:    cfg.SMTPFrom,
 			To:      email,
-			Subject: "Reset your password",
-			Text: "Reset your password for project " + projectSlug + ".\n\n" +
+			Subject: "Reset your " + projectLabel + " password",
+			Text: "Reset your password for " + projectLabel + ".\n\n" +
 				"Open this link:\n" + link + "\n\n" +
 				"Token:\n" + token + "\n",
 		}, nil

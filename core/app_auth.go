@@ -22,11 +22,12 @@ type AppAuthResult struct {
 }
 
 type AuthTokenRequestResult struct {
-	Accepted bool   `json:"accepted"`
-	DevToken string `json:"devToken,omitempty"`
-	Email    string `json:"-"`
-	Token    string `json:"-"`
-	Type     string `json:"-"`
+	Accepted    bool   `json:"accepted"`
+	DevToken    string `json:"devToken,omitempty"`
+	Email       string `json:"-"`
+	Token       string `json:"-"`
+	Type        string `json:"-"`
+	ProjectName string `json:"-"`
 }
 
 type appRefreshSession struct {
@@ -552,12 +553,12 @@ func requestAuthToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, proj
 	cred, err := getAppUserByEmail(ctx, pool, project, email)
 	if err != nil {
 		if errors.Is(err, ErrUnauthorized) {
-			return &AuthTokenRequestResult{Accepted: true, Email: email, Type: tokenType}, nil
+			return &AuthTokenRequestResult{Accepted: true, Email: email, Type: tokenType, ProjectName: project.Name}, nil
 		}
 		return nil, err
 	}
 	if cred.DisabledAt.Valid {
-		return &AuthTokenRequestResult{Accepted: true, Email: email, Type: tokenType}, nil
+		return &AuthTokenRequestResult{Accepted: true, Email: email, Type: tokenType, ProjectName: project.Name}, nil
 	}
 	token, err := generate()
 	if err != nil {
@@ -592,7 +593,7 @@ func requestAuthToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, proj
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	out := &AuthTokenRequestResult{Accepted: true, Email: email, Token: token, Type: tokenType}
+	out := &AuthTokenRequestResult{Accepted: true, Email: email, Token: token, Type: tokenType, ProjectName: project.Name}
 	if cfg != nil && cfg.AuthDevTokens {
 		out.DevToken = token
 	}

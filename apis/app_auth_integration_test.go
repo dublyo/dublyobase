@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dublyo/dublyobase/core"
 )
@@ -153,6 +155,48 @@ func TestAppAuthSendsVerificationAndResetEmails(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("confirm mailed reset: want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestAppAuthEmailActionPages(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	adminToken := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := fmt.Sprintf("auth%d", time.Now().UnixNano()%1_000_000_000)
+	rec := postJSON(srv.Handler, "/admin/api/projects", adminToken, fmt.Sprintf(`{"slug":%q,"name":"Customer Portal"}`, slug))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create project: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	_ = signupAppUserForTest(t, srv.Handler, slug, "action@example.com")
+
+	verifyToken := requestDevTokenForTest(t, srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-verification", slug), "action@example.com")
+	rec = getJSON(srv.Handler, fmt.Sprintf("/auth/verify?project=%s&email=action%%40example.com&token=%s", slug, url.QueryEscape(verifyToken)), "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Customer Portal") || !strings.Contains(rec.Body.String(), "Verify email") {
+		t.Fatalf("verify page: want 200 with project name, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postForm(srv.Handler, "/auth/verify", url.Values{
+		"project": {slug},
+		"email":   {"action@example.com"},
+		"token":   {verifyToken},
+	})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Your email has been verified.") {
+		t.Fatalf("verify submit: want success, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	resetToken := requestDevTokenForTest(t, srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-password-reset", slug), "action@example.com")
+	rec = getJSON(srv.Handler, fmt.Sprintf("/auth/reset-password?project=%s&email=action%%40example.com&token=%s", slug, url.QueryEscape(resetToken)), "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Customer Portal") || !strings.Contains(rec.Body.String(), "New password") {
+		t.Fatalf("reset page: want 200 with project name and password field, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postForm(srv.Handler, "/auth/reset-password", url.Values{
+		"project":  {slug},
+		"email":    {"action@example.com"},
+		"token":    {resetToken},
+		"password": {"new-password-123"},
+	})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Your password has been changed.") {
+		t.Fatalf("reset submit: want success, got %d: %s", rec.Code, rec.Body.String())
+	}
+	_ = loginAppUserForTest(t, srv.Handler, slug, "action@example.com", "new-password-123")
 }
 
 func TestAppAuthEmailFailureDoesNotFailRequests(t *testing.T) {
@@ -332,4 +376,12 @@ func requestDevTokenForTest(t *testing.T, handler http.Handler, path string, ema
 		t.Fatalf("missing dev token: %s", rec.Body.String())
 	}
 	return out.DevToken
+}
+
+func postForm(handler http.Handler, path string, values url.Values) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", path, strings.NewReader(values.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
 }
