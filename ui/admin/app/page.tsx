@@ -288,6 +288,7 @@ export default function AdminApp() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState("");
   const [collections, setCollections] = useState<Collection[]>([]);
+  const [collectionsProject, setCollectionsProject] = useState("");
   const [selectedCollection, setSelectedCollection] = useState("");
   const [records, setRecords] = useState<RecordList>({ items: [], page: 1, perPage: 25, totalItems: 0 });
   const [recordSearch, setRecordSearch] = useState("");
@@ -346,8 +347,8 @@ export default function AdminApp() {
 
   const selectedProjectModel = useMemo(() => projects.find((project) => project.slug === selectedProject) ?? null, [projects, selectedProject]);
   const selectedCollectionModel = useMemo(
-    () => collections.find((collection) => collection.name === selectedCollection) ?? collections[0] ?? null,
-    [collections, selectedCollection],
+    () => (collectionsProject === selectedProject ? collections.find((collection) => collection.name === selectedCollection) ?? collections[0] ?? null : null),
+    [collections, collectionsProject, selectedCollection, selectedProject],
   );
   const fileFields = useMemo(() => selectedCollectionModel?.fields.filter((field) => field.type === "file") ?? [], [selectedCollectionModel]);
   const selectedExportItems = useMemo(() => {
@@ -403,6 +404,7 @@ export default function AdminApp() {
         listAudit(authToken, projectSlug),
       ]);
       setCollections(collectionResponse.items);
+      setCollectionsProject(projectSlug);
       setApiKeys(keysResponse.items);
       setAudit(auditResponse.items);
       const targetCollection = preferredCollection ?? selectedCollection;
@@ -453,6 +455,7 @@ export default function AdminApp() {
           await loadProjectData(authToken, projectSlug);
         } else {
           setCollections([]);
+          setCollectionsProject("");
           setSelectedCollection("");
           setRecords({ items: [], page: 1, perPage: recordPerPage, totalItems: 0 });
         }
@@ -493,6 +496,7 @@ export default function AdminApp() {
 
   useEffect(() => {
     if (!token || !selectedProject || !selectedCollection) return;
+    if (collectionsProject !== selectedProject) return;
     let cancelled = false;
     const { filter, search, perPage } = recordQueryRef.current;
     const activeSearch = selectedCollectionModel?.fields.some((field) => field.searchable && canSearchField(field)) ? search : "";
@@ -506,7 +510,7 @@ export default function AdminApp() {
     return () => {
       cancelled = true;
     };
-  }, [handleError, selectedCollection, selectedCollectionModel, selectedProject, token]);
+  }, [collectionsProject, handleError, selectedCollection, selectedCollectionModel, selectedProject, token]);
 
   useEffect(() => {
     if (!selectedCollectionModel) {
@@ -588,6 +592,7 @@ export default function AdminApp() {
     setAdmin(null);
     setProjects([]);
     setCollections([]);
+    setCollectionsProject("");
     setSettingsState(null);
     setCronJobs([]);
     setBackupJobs([]);
@@ -1275,6 +1280,7 @@ export default function AdminApp() {
             const slug = event.target.value;
             setSelectedProject(slug);
             setCollections([]);
+            setCollectionsProject("");
             setApiKeys([]);
             setAudit([]);
             setSelectedCollection("");
