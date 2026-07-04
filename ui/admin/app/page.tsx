@@ -4,32 +4,51 @@ import {
   Activity,
   AlertCircle,
   Archive,
+  Bold,
+  Braces,
+  Calendar,
+  CalendarCheck2,
   Check,
   ChevronDown,
   Code2,
   Copy,
   Database,
+  Download,
   Eye,
   EyeOff,
   FileUp,
   HardDrive,
+  Hash,
+  Heading,
+  Image,
+  Italic,
   KeyRound,
   Layers3,
+  Link2,
+  List,
   ListFilter,
   LogOut,
   Mail,
+  MapPin,
   MoreHorizontal,
+  PencilLine,
   Plus,
+  Quote,
   RefreshCw,
   Save,
   Search,
   Server,
   Settings,
   ShieldCheck,
+  Share2,
   Table2,
+  ToggleLeft,
   Trash2,
+  Type,
+  Underline,
   UploadCloud,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -41,8 +60,10 @@ import {
   createRecord,
   deleteCollection,
   deleteRecord,
+  exportCollections,
   health,
   getSettings,
+  importCollections,
   listAPIKeys,
   listAudit,
   listCollections,
@@ -52,6 +73,7 @@ import {
   logout,
   me,
   revokeAPIKey,
+  runSQL,
   setup,
   testSMTPSettings,
   testStorageSettings,
@@ -61,10 +83,32 @@ import {
   updateStorageSettings,
   uploadFile,
 } from "../src/lib/api";
-import type { APIKey, Admin, AuditEntry, Collection, Field, FieldType, Health, InstanceSettings, Project, RecordItem, RecordList } from "../src/lib/types";
+import type { APIKey, Admin, AuditEntry, Collection, CollectionExport, CollectionImportResult, Field, FieldType, Health, InstanceSettings, Project, RecordItem, RecordList, SQLResult } from "../src/lib/types";
 
 const TOKEN_KEY = "dublyobase.adminToken.v1";
-const fieldTypes: FieldType[] = ["text", "number", "bool", "date", "email", "url", "select", "json", "relation", "file"];
+const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
+const fieldTypes: FieldType[] = ["text", "editor", "password", "number", "bool", "date", "autodate", "email", "url", "select", "json", "relation", "file"];
+type FieldTypeChoice = {
+  type?: FieldType;
+  label: string;
+  icon: LucideIcon;
+  disabled?: boolean;
+};
+const fieldTypeChoices: FieldTypeChoice[] = [
+  { type: "text", label: "Plain text", icon: Type },
+  { type: "editor", label: "Rich editor", icon: PencilLine },
+  { type: "number", label: "Number", icon: Hash },
+  { type: "bool", label: "Bool", icon: ToggleLeft },
+  { type: "email", label: "Email", icon: Mail },
+  { type: "url", label: "URL", icon: Link2 },
+  { type: "date", label: "Datetime", icon: Calendar },
+  { type: "autodate", label: "Autodate", icon: CalendarCheck2 },
+  { type: "file", label: "File", icon: Image },
+  { type: "relation", label: "Relation", icon: Share2 },
+  { type: "select", label: "Select", icon: List },
+  { type: "json", label: "JSON", icon: Braces },
+  { label: "Geo Point", icon: MapPin, disabled: true },
+];
 const navItems = [
   { id: "collections", label: "Collections", icon: Layers3 },
   { id: "logs", label: "Logs", icon: Archive },
@@ -74,6 +118,11 @@ const settingsItems = [
   { id: "application", label: "Application", group: "System" },
   { id: "mail", label: "Mail settings", group: "System" },
   { id: "storage", label: "Files storage", group: "System" },
+  { id: "backups", label: "Backups", group: "System" },
+  { id: "crons", label: "Crons", group: "System" },
+  { id: "exportCollections", label: "Export collections", group: "Sync" },
+  { id: "importCollections", label: "Import collections", group: "Sync" },
+  { id: "sqlConsole", label: "SQL console", group: "Debug" },
   { id: "apiKeys", label: "API keys", group: "Project" },
   { id: "files", label: "File uploads", group: "Project" },
 ] as const;
@@ -168,6 +217,16 @@ export default function AdminApp() {
   const [keyDraft, setKeyDraft] = useState({ name: "", type: "service" as "anon" | "service" });
   const [fileDraft, setFileDraft] = useState({ recordId: "", field: "" });
   const [fileResult, setFileResult] = useState<RecordItem | null>(null);
+  const [collectionExport, setCollectionExport] = useState<CollectionExport | null>(null);
+  const [exportSelection, setExportSelection] = useState<string[]>([]);
+  const [importJSON, setImportJSON] = useState("");
+  const [importMode, setImportMode] = useState<"create_missing" | "upsert">("create_missing");
+  const [importDropMissingFields, setImportDropMissingFields] = useState(false);
+  const [importResult, setImportResult] = useState<CollectionImportResult | null>(null);
+  const [sqlQuery, setSQLQuery] = useState("select * from users limit 25");
+  const [sqlMaxRows, setSQLMaxRows] = useState("250");
+  const [sqlResult, setSQLResult] = useState<SQLResult | null>(null);
+  const [sqlHistory, setSQLHistory] = useState<string[]>([]);
   const bootstrapped = useRef(false);
 
   const selectedProjectModel = useMemo(() => projects.find((project) => project.slug === selectedProject) ?? null, [projects, selectedProject]);
@@ -176,6 +235,24 @@ export default function AdminApp() {
     [collections, selectedCollection],
   );
   const fileFields = useMemo(() => selectedCollectionModel?.fields.filter((field) => field.type === "file") ?? [], [selectedCollectionModel]);
+  const selectedExportItems = useMemo(() => {
+    if (!collectionExport) return [];
+    const selected = new Set(exportSelection);
+    return collectionExport.items.filter((item) => selected.has(item.name));
+  }, [collectionExport, exportSelection]);
+  const exportPreview = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          project: collectionExport?.project ?? selectedProject,
+          exportedAt: collectionExport?.exportedAt ?? new Date().toISOString(),
+          items: selectedExportItems,
+        },
+        null,
+        2,
+      ),
+    [collectionExport, selectedExportItems, selectedProject],
+  );
 
   const showNotice = useCallback((type: "success" | "error", message: string) => {
     setNotice({ type, message });
@@ -255,6 +332,7 @@ export default function AdminApp() {
   useEffect(() => {
     if (bootstrapped.current) return;
     bootstrapped.current = true;
+    setSQLHistory(loadSQLHistory());
     const saved = sessionStorage.getItem(TOKEN_KEY);
     if (!saved) {
       setCheckingSession(false);
@@ -454,12 +532,12 @@ export default function AdminApp() {
     }
   }
 
-  function addDraftField() {
-    setCollectionDraft((draft) => ({ ...draft, fields: [...draft.fields, newDefaultField()] }));
+  function addDraftField(type: FieldType = "text") {
+    setCollectionDraft((draft) => ({ ...draft, fields: [...draft.fields, newDefaultField(type)] }));
   }
 
-  function addEditingField() {
-    setEditingFields((fields) => [...fields, newDefaultField()]);
+  function addEditingField(type: FieldType = "text") {
+    setEditingFields((fields) => [...fields, newDefaultField(type)]);
   }
 
   async function refreshRecords(page = records.page) {
@@ -651,6 +729,99 @@ export default function AdminApp() {
     }
   }
 
+  async function loadCollectionExport() {
+    if (!token || !selectedProject) return;
+    setBusy(true);
+    try {
+      const response = await exportCollections(token, selectedProject);
+      setCollectionExport(response);
+      setExportSelection(response.items.map((item) => item.name));
+      showNotice("success", "Collection schema loaded");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleExportCollection(name: string) {
+    setExportSelection((current) => (current.includes(name) ? current.filter((item) => item !== name) : [...current, name]));
+  }
+
+  function downloadCollectionExport() {
+    const blob = new Blob([exportPreview], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${selectedProject || "dublyobase"}-collections.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function useExportForImport() {
+    setImportJSON(exportPreview);
+    changeSettings("importCollections");
+  }
+
+  async function submitCollectionImport(dryRun: boolean) {
+    if (!token || !selectedProject) return;
+    let items: unknown[];
+    try {
+      items = extractImportItems(importJSON);
+    } catch (error) {
+      handleError(error);
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await importCollections(token, selectedProject, {
+        items,
+        mode: importMode,
+        dryRun,
+        dropMissingFields: importDropMissingFields,
+      });
+      setImportResult(response);
+      showNotice("success", dryRun ? "Import preview ready" : "Collections imported");
+      if (!dryRun) {
+        await loadProjectData(token, selectedProject);
+      }
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function executeSQL(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !selectedProject) return;
+    const query = sqlQuery.trim();
+    if (!query) return;
+    if (isDangerousSQL(query) && !window.confirm("This query may change data or schema. Execute it?")) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await runSQL(token, selectedProject, {
+        query,
+        maxRows: Number.parseInt(sqlMaxRows, 10) || 250,
+      });
+      setSQLResult(response);
+      const history = saveSQLHistory(query, sqlHistory);
+      setSQLHistory(history);
+      showNotice("success", response.columns.length > 0 ? `${response.rows.length} rows returned` : response.command || "SQL executed");
+      if (!response.readOnly) {
+        await loadProjectData(token, selectedProject);
+      }
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function copyText(text: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -747,7 +918,7 @@ export default function AdminApp() {
           }}
           onEditRecord={(record) => {
             setSelectedRecordId(String(record.id ?? ""));
-            setRecordJSON(JSON.stringify(stripSystemFields(record), null, 2));
+            setRecordJSON(JSON.stringify(stripSystemFields(record, selectedCollectionModel), null, 2));
             setRecordEditorOpen(true);
           }}
           onDeleteRecord={removeRecord}
@@ -808,6 +979,34 @@ export default function AdminApp() {
               handleError(error);
               return "";
             }
+          }}
+          collectionExport={collectionExport}
+          exportSelection={exportSelection}
+          exportPreview={exportPreview}
+          selectedExportItems={selectedExportItems}
+          onLoadCollectionExport={loadCollectionExport}
+          onToggleExportCollection={toggleExportCollection}
+          onCopyExport={() => copyText(exportPreview)}
+          onDownloadExport={downloadCollectionExport}
+          onUseExportForImport={useExportForImport}
+          importJSON={importJSON}
+          setImportJSON={setImportJSON}
+          importMode={importMode}
+          setImportMode={setImportMode}
+          importDropMissingFields={importDropMissingFields}
+          setImportDropMissingFields={setImportDropMissingFields}
+          importResult={importResult}
+          onPreviewImport={() => submitCollectionImport(true)}
+          onApplyImport={() => submitCollectionImport(false)}
+          sqlQuery={sqlQuery}
+          setSQLQuery={setSQLQuery}
+          sqlMaxRows={sqlMaxRows}
+          setSQLMaxRows={setSQLMaxRows}
+          sqlResult={sqlResult}
+          sqlHistory={sqlHistory}
+          onExecuteSQL={executeSQL}
+          onCopySQLCSV={() => {
+            if (sqlResult) void copyText(sqlResultToCSV(sqlResult));
           }}
         />
       ) : null}
@@ -971,7 +1170,7 @@ function CollectionsWorkspace({
   onDeleteCollection: (collection: Collection) => void;
   version: string;
 }) {
-  const columns = selectedCollection ? Array.from(new Set(["id", ...selectedCollection.fields.map((field) => field.name), "created", "updated"])) : ["id"];
+  const columns = selectedCollection ? Array.from(new Set(["id", ...selectedCollection.fields.filter(isVisibleRecordField).map((field) => field.name), "created", "updated"])) : ["id"];
   return (
     <section className="pb-page">
       <CollectionSidebar collections={collections} selected={selectedCollectionName} onSelect={onSelectCollection} onNewCollection={onOpenCreateCollection} />
@@ -1265,9 +1464,14 @@ function FieldRows({
   fields: Field[];
   collections: Collection[];
   onChange: (fields: Field[]) => void;
-  onAdd: () => void;
+  onAdd: (type?: FieldType) => void;
 }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
   const update = (index: number, field: Field) => onChange(fields.map((item, i) => (i === index ? field : item)));
+  const addField = (type: FieldType) => {
+    onAdd(type);
+    setPickerOpen(false);
+  };
   return (
     <div className="pb-fields-editor">
       {fields.length === 0 ? <EmptyState label="No fields yet" /> : null}
@@ -1296,31 +1500,78 @@ function FieldRows({
           <FieldOptionsEditor field={field} collections={collections} onChange={(next) => update(index, next)} />
         </div>
       ))}
-      <button type="button" className="pb-btn outline block" onClick={onAdd}>
+      <button type="button" className={`pb-new-field-toggle ${pickerOpen ? "open" : ""}`} onClick={() => setPickerOpen((value) => !value)} aria-expanded={pickerOpen}>
         <Plus className="h-4 w-4" />
         New field
       </button>
+      {pickerOpen ? (
+        <div className="pb-field-type-picker" role="list" aria-label="Choose field type">
+          {fieldTypeChoices.map((choice) => {
+            const Icon = choice.icon;
+            return (
+              <button
+                key={choice.label}
+                type="button"
+                className={`pb-field-type-choice ${choice.disabled ? "disabled" : ""}`}
+                disabled={choice.disabled}
+                title={choice.disabled ? `${choice.label} is not implemented yet` : `Add ${choice.label} field`}
+                onClick={() => choice.type && addField(choice.type)}
+              >
+                <Icon className="h-5 w-5" />
+                <span>{choice.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
 
 function FieldOptionsEditor({ field, collections, onChange }: { field: Field; collections: Collection[]; onChange: (field: Field) => void }) {
+  const commonOptions = (
+    <div className="pb-field-options common">
+      <label className="pb-field">
+        <span>Help text</span>
+        <input value={field.help ?? ""} onChange={(event) => onChange({ ...field, help: event.target.value })} placeholder="Shown below the generated input" />
+      </label>
+      <label className="pb-checkline">
+        <input
+          type="checkbox"
+          checked={Boolean(field.presentable)}
+          disabled={Boolean(field.hidden) || field.type === "password"}
+          onChange={(event) => onChange({ ...field, presentable: event.target.checked })}
+        />
+        Presentable
+      </label>
+      <label className="pb-checkline">
+        <input type="checkbox" checked={Boolean(field.hidden)} onChange={(event) => onChange({ ...field, hidden: event.target.checked, presentable: event.target.checked ? false : field.presentable })} />
+        Hidden
+      </label>
+    </div>
+  );
+  let typeOptions: React.ReactNode = null;
   if (field.type === "select") {
-    return (
+    typeOptions = (
       <div className="pb-field-options two">
         <label className="pb-field">
           <span>Values</span>
           <textarea value={optionValuesText(field.options)} onChange={(event) => onChange(setFieldOption(field, "values", splitOptionValues(event.target.value)))} rows={3} placeholder={"draft\npublished"} />
         </label>
-        <label className="pb-checkline">
-          <input type="checkbox" checked={Boolean(field.options?.multi)} onChange={(event) => onChange(setFieldOption(field, "multi", event.target.checked))} />
-          Multiple
-        </label>
+        <div className="pb-option-grid">
+          <label className="pb-field">
+            <span>Min select</span>
+            <input type="number" min={0} value={numberOptionValue(field.options, "minSelect")} onChange={(event) => onChange(setNumberFieldOption(field, "minSelect", event.target.value))} placeholder="0" />
+          </label>
+          <label className="pb-field">
+            <span>Max select</span>
+            <input type="number" min={1} value={numberOptionValue(field.options, "maxSelect")} onChange={(event) => onChange(setNumberFieldOption(field, "maxSelect", event.target.value))} placeholder="1" />
+          </label>
+        </div>
       </div>
     );
-  }
-  if (field.type === "relation") {
-    return (
+  } else if (field.type === "relation") {
+    typeOptions = (
       <div className="pb-field-options two">
         <label className="pb-field">
           <span>Target collection</span>
@@ -1333,24 +1584,137 @@ function FieldOptionsEditor({ field, collections, onChange }: { field: Field; co
             ))}
           </select>
         </label>
+        <div className="pb-option-grid">
+          <label className="pb-field">
+            <span>Min select</span>
+            <input type="number" min={0} value={numberOptionValue(field.options, "minSelect")} onChange={(event) => onChange(setNumberFieldOption(field, "minSelect", event.target.value))} placeholder="0" />
+          </label>
+          <label className="pb-field">
+            <span>Max select</span>
+            <input type="number" min={1} value={numberOptionValue(field.options, "maxSelect")} onChange={(event) => onChange(setNumberFieldOption(field, "maxSelect", event.target.value))} placeholder="1" />
+          </label>
+          <label className="pb-checkline">
+            <input type="checkbox" checked={Boolean(field.options?.cascadeDelete)} onChange={(event) => onChange(setFieldOption(field, "cascadeDelete", event.target.checked))} />
+            Cascade delete
+          </label>
+        </div>
+      </div>
+    );
+  } else if (field.type === "file") {
+    typeOptions = (
+      <div className="pb-field-options two">
+        <div className="pb-option-grid">
+          <label className="pb-checkline">
+            <input type="checkbox" checked={Boolean(field.options?.multiple)} onChange={(event) => onChange(setFieldOption(field, "multiple", event.target.checked))} />
+            Allow multiple files
+          </label>
+          <label className="pb-checkline">
+            <input type="checkbox" checked={Boolean(field.options?.protected)} onChange={(event) => onChange(setFieldOption(field, "protected", event.target.checked))} />
+            Protected
+          </label>
+          <label className="pb-field">
+            <span>Max select</span>
+            <input type="number" min={1} value={numberOptionValue(field.options, "maxSelect")} onChange={(event) => onChange(setNumberFieldOption(field, "maxSelect", event.target.value))} placeholder="1" />
+          </label>
+          <label className="pb-field">
+            <span>Max size</span>
+            <input type="number" min={0} value={numberOptionValue(field.options, "maxSize")} onChange={(event) => onChange(setNumberFieldOption(field, "maxSize", event.target.value))} placeholder="global upload limit" />
+          </label>
+        </div>
+        <label className="pb-field">
+          <span>MIME types</span>
+          <textarea value={optionValuesText(field.options, "mimeTypes")} onChange={(event) => onChange(setFieldOption(field, "mimeTypes", splitOptionValues(event.target.value)))} rows={3} placeholder={"image/png\ntext/*"} />
+        </label>
+      </div>
+    );
+  } else if (field.type === "number") {
+    typeOptions = (
+      <div className="pb-field-options three">
+        <label className="pb-field">
+          <span>Min</span>
+          <input type="number" value={numberOptionValue(field.options, "min")} onChange={(event) => onChange(setNumberFieldOption(field, "min", event.target.value))} placeholder="No min" />
+        </label>
+        <label className="pb-field">
+          <span>Max</span>
+          <input type="number" value={numberOptionValue(field.options, "max")} onChange={(event) => onChange(setNumberFieldOption(field, "max", event.target.value))} placeholder="No max" />
+        </label>
         <label className="pb-checkline">
-          <input type="checkbox" checked={Boolean(field.options?.multi)} onChange={(event) => onChange(setFieldOption(field, "multi", event.target.checked))} />
-          Multiple
+          <input type="checkbox" checked={Boolean(field.options?.onlyInt)} onChange={(event) => onChange(setFieldOption(field, "onlyInt", event.target.checked))} />
+          Only integer
+        </label>
+      </div>
+    );
+  } else if (field.type === "text" || field.type === "url" || field.type === "password") {
+    typeOptions = (
+      <div className="pb-field-options three">
+        <label className="pb-field">
+          <span>Min length</span>
+          <input type="number" min={0} max={field.type === "password" ? 71 : undefined} value={numberOptionValue(field.options, "min")} onChange={(event) => onChange(setNumberFieldOption(field, "min", event.target.value))} placeholder="No min" />
+        </label>
+        <label className="pb-field">
+          <span>Max length</span>
+          <input type="number" min={0} max={field.type === "password" ? 71 : undefined} value={numberOptionValue(field.options, "max")} onChange={(event) => onChange(setNumberFieldOption(field, "max", event.target.value))} placeholder={field.type === "password" ? "71" : "No max"} />
+        </label>
+        <label className="pb-field">
+          <span>Pattern</span>
+          <input value={String(field.options?.pattern ?? "")} onChange={(event) => onChange(setFieldOption(field, "pattern", event.target.value))} placeholder="^[a-z0-9]+$" />
+        </label>
+        {field.type === "password" ? (
+          <label className="pb-field">
+            <span>Bcrypt cost</span>
+            <input type="number" min={4} max={31} value={numberOptionValue(field.options, "cost")} onChange={(event) => onChange(setNumberFieldOption(field, "cost", event.target.value))} placeholder="10" />
+          </label>
+        ) : null}
+      </div>
+    );
+  } else if (field.type === "email") {
+    typeOptions = (
+      <div className="pb-field-options two">
+        <label className="pb-field">
+          <span>Only domains</span>
+          <textarea value={optionValuesText(field.options, "onlyDomains")} onChange={(event) => onChange(setFieldOption(field, "onlyDomains", splitOptionValues(event.target.value)))} rows={3} placeholder={"example.com\nexample.org"} />
+        </label>
+        <label className="pb-field">
+          <span>Except domains</span>
+          <textarea value={optionValuesText(field.options, "exceptDomains")} onChange={(event) => onChange(setFieldOption(field, "exceptDomains", splitOptionValues(event.target.value)))} rows={3} placeholder={"blocked.com"} />
+        </label>
+      </div>
+    );
+  } else if (field.type === "editor" || field.type === "json") {
+    typeOptions = (
+      <div className="pb-field-options two">
+        <label className="pb-field">
+          <span>Max size</span>
+          <input type="number" min={0} value={numberOptionValue(field.options, "maxSize")} onChange={(event) => onChange(setNumberFieldOption(field, "maxSize", event.target.value))} placeholder={field.type === "editor" ? "5MB default" : "1MB default"} />
+        </label>
+        {field.type === "editor" ? (
+          <label className="pb-checkline">
+            <input type="checkbox" checked={Boolean(field.options?.convertURLs)} onChange={(event) => onChange(setFieldOption(field, "convertURLs", event.target.checked))} />
+            Strip URLs domain
+          </label>
+        ) : null}
+      </div>
+    );
+  } else if (field.type === "autodate") {
+    typeOptions = (
+      <div className="pb-field-options two">
+        <label className="pb-checkline">
+          <input type="checkbox" checked={Boolean(field.options?.onCreate)} onChange={(event) => onChange(setFieldOption(field, "onCreate", event.target.checked))} />
+          On create
+        </label>
+        <label className="pb-checkline">
+          <input type="checkbox" checked={Boolean(field.options?.onUpdate)} onChange={(event) => onChange(setFieldOption(field, "onUpdate", event.target.checked))} />
+          On update
         </label>
       </div>
     );
   }
-  if (field.type === "file") {
-    return (
-      <div className="pb-field-options">
-        <label className="pb-checkline">
-          <input type="checkbox" checked={Boolean(field.options?.multiple)} onChange={(event) => onChange(setFieldOption(field, "multiple", event.target.checked))} />
-          Allow multiple files
-        </label>
-      </div>
-    );
-  }
-  return null;
+  return (
+    <div className="pb-field-options-stack">
+      {commonOptions}
+      {typeOptions}
+    </div>
+  );
 }
 
 function RuleInputs({ rules, onChange }: { rules: RuleDraft; onChange: (rules: RuleDraft) => void }) {
@@ -1390,6 +1754,17 @@ function RecordModal({
   onClose: () => void;
   onSave: () => void;
 }) {
+  const parsed = parseRecordDraft(recordJSON);
+  const draft = parsed.ok ? parsed.value : {};
+  const updateDraft = (field: Field, value: unknown) => {
+    const next = { ...(parsed.ok ? parsed.value : {}) };
+    if (value === undefined) {
+      delete next[field.name];
+    } else {
+      next[field.name] = value;
+    }
+    setRecordJSON(JSON.stringify(next, null, 2));
+  };
   return (
     <div className="pb-modal-layer" role="presentation">
       <section className="pb-modal record-upsert-modal" role="dialog" aria-modal="true" aria-labelledby="record-modal-title">
@@ -1407,10 +1782,22 @@ function RecordModal({
               <span>{selectedRecordId || "new record"}</span>
             </div>
           </div>
-          <label className="pb-field">
-            <span>JSON</span>
-            <textarea value={recordJSON} onChange={(event) => setRecordJSON(event.target.value)} rows={20} className="mono json-editor" />
-          </label>
+          {parsed.ok ? (
+            <div className="pb-record-form">
+              {collection.fields.filter(isRecordFormField).map((field) => (
+                <RecordFieldInput key={field.name} field={field} value={draft[field.name]} editing={Boolean(selectedRecordId)} onChange={(value) => updateDraft(field, value)} />
+              ))}
+            </div>
+          ) : (
+            <div className="pb-inline-alert danger">Fix the raw JSON before using the field form: {parsed.error}</div>
+          )}
+          <details className="pb-raw-json-panel" open={!parsed.ok}>
+            <summary>Raw JSON</summary>
+            <label className="pb-field">
+              <span>Payload</span>
+              <textarea value={recordJSON} onChange={(event) => setRecordJSON(event.target.value)} rows={14} className="mono json-editor" spellCheck={false} />
+            </label>
+          </details>
         </div>
         <footer className="pb-modal-footer">
           <button type="button" className="pb-btn transparent" onClick={onClose}>
@@ -1422,6 +1809,215 @@ function RecordModal({
         </footer>
       </section>
     </div>
+  );
+}
+
+function RecordFieldInput({ field, value, editing, onChange }: { field: Field; value: unknown; editing: boolean; onChange: (value: unknown) => void }) {
+  const label = field.name;
+  const multiple = fieldIsMultiple(field);
+  if (field.type === "file") {
+    return <ManagedRecordField field={field} note="Use the files upload section or API to update this field." />;
+  }
+  if (field.type === "autodate") {
+    return <ManagedRecordField field={field} note="Managed automatically by the server." />;
+  }
+  if (field.type === "editor") {
+    return (
+      <label className="pb-field record-field full">
+        <span>{label}</span>
+        <RichTextEditor value={typeof value === "string" ? value : ""} onChange={onChange} />
+      </label>
+    );
+  }
+  if (field.type === "json") {
+    return (
+      <label className="pb-field record-field full">
+        <span>{label}</span>
+        <JSONFieldEditor value={value} onChange={onChange} />
+      </label>
+    );
+  }
+  if (field.type === "select") {
+    const values = optionValues(field.options);
+    const selected = multiple ? (Array.isArray(value) ? value.map(String) : []) : typeof value === "string" ? value : "";
+    return (
+      <label className="pb-field record-field">
+        <span>{label}</span>
+        <select
+          multiple={multiple}
+          value={selected}
+          onChange={(event) => {
+            if (multiple) {
+              onChange(Array.from(event.currentTarget.selectedOptions).map((option) => option.value));
+            } else {
+              onChange(event.currentTarget.value || undefined);
+            }
+          }}
+        >
+          {!multiple ? <option value="">Choose value</option> : null}
+          {values.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+  if (field.type === "relation") {
+    if (multiple) {
+      return (
+        <label className="pb-field record-field full">
+          <span>{label}</span>
+          <textarea value={Array.isArray(value) ? value.map(String).join("\n") : ""} onChange={(event) => onChange(splitOptionValues(event.target.value))} rows={3} placeholder="One record id per line" />
+        </label>
+      );
+    }
+    return (
+      <label className="pb-field record-field">
+        <span>{label}</span>
+        <input value={typeof value === "string" ? value : ""} onChange={(event) => onChange(event.target.value || undefined)} placeholder="Record id" />
+      </label>
+    );
+  }
+  if (field.type === "bool") {
+    return (
+      <label className="pb-checkline record-checkline">
+        <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} />
+        {label}
+      </label>
+    );
+  }
+  if (field.type === "number") {
+    return (
+      <label className="pb-field record-field">
+        <span>{label}</span>
+        <input type="number" value={typeof value === "number" ? String(value) : ""} onChange={(event) => onChange(event.target.value === "" ? undefined : Number(event.target.value))} />
+      </label>
+    );
+  }
+  if (field.type === "date") {
+    return (
+      <label className="pb-field record-field">
+        <span>{label}</span>
+        <input type="datetime-local" value={toDateTimeLocal(value)} onChange={(event) => onChange(event.target.value ? new Date(event.target.value).toISOString() : undefined)} />
+      </label>
+    );
+  }
+  if (field.type === "password") {
+    return (
+      <label className="pb-field record-field">
+        <span>{label}</span>
+        <input type="password" value={typeof value === "string" ? value : ""} onChange={(event) => onChange(event.target.value || (editing ? undefined : ""))} placeholder={editing ? "Leave blank to keep current" : ""} autoComplete="new-password" />
+      </label>
+    );
+  }
+  const inputType = field.type === "email" ? "email" : field.type === "url" ? "url" : "text";
+  return (
+    <label className="pb-field record-field">
+      <span>{label}</span>
+      <input type={inputType} value={typeof value === "string" ? value : ""} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
+function ManagedRecordField({ field, note }: { field: Field; note: string }) {
+  return (
+    <div className="record-managed-field">
+      <span>{field.name}</span>
+      <em>{note}</em>
+    </div>
+  );
+}
+
+function RichTextEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const editorRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const next = sanitizeEditorHTML(value);
+    if (editor.innerHTML !== next) {
+      editor.innerHTML = next;
+    }
+  }, [value]);
+  const run = (command: string, commandValue?: string) => {
+    editorRef.current?.focus();
+    document.execCommand(command, false, commandValue);
+    onChange(sanitizeEditorHTML(editorRef.current?.innerHTML ?? ""));
+  };
+  const addLink = () => {
+    const href = window.prompt("URL");
+    if (href) run("createLink", href);
+  };
+  return (
+    <div className="rich-editor">
+      <div className="rich-editor-toolbar" aria-label="Rich editor toolbar">
+        <button type="button" onClick={() => run("bold")} aria-label="Bold">
+          <Bold className="h-4 w-4" />
+        </button>
+        <button type="button" onClick={() => run("italic")} aria-label="Italic">
+          <Italic className="h-4 w-4" />
+        </button>
+        <button type="button" onClick={() => run("underline")} aria-label="Underline">
+          <Underline className="h-4 w-4" />
+        </button>
+        <button type="button" onClick={() => run("formatBlock", "h2")} aria-label="Heading">
+          <Heading className="h-4 w-4" />
+        </button>
+        <button type="button" onClick={() => run("formatBlock", "blockquote")} aria-label="Quote">
+          <Quote className="h-4 w-4" />
+        </button>
+        <button type="button" onClick={() => run("insertUnorderedList")} aria-label="Bullet list">
+          <List className="h-4 w-4" />
+        </button>
+        <button type="button" onClick={addLink} aria-label="Link">
+          <Link2 className="h-4 w-4" />
+        </button>
+        <button type="button" onClick={() => run("removeFormat")} aria-label="Clear formatting">
+          <Type className="h-4 w-4" />
+        </button>
+      </div>
+      <div
+        ref={editorRef}
+        className="rich-editor-surface"
+        contentEditable
+        role="textbox"
+        aria-multiline="true"
+        spellCheck
+        suppressContentEditableWarning
+        onInput={(event) => onChange(sanitizeEditorHTML(event.currentTarget.innerHTML))}
+        onBlur={(event) => onChange(sanitizeEditorHTML(event.currentTarget.innerHTML))}
+      />
+    </div>
+  );
+}
+
+function JSONFieldEditor({ value, onChange }: { value: unknown; onChange: (value: unknown) => void }) {
+  const [text, setText] = useState(formatJSONInput(value));
+  const [error, setError] = useState("");
+  useEffect(() => {
+    setText(formatJSONInput(value));
+    setError("");
+  }, [value]);
+  return (
+    <>
+      <textarea
+        value={text}
+        onChange={(event) => {
+          setText(event.target.value);
+          try {
+            onChange(event.target.value.trim() ? JSON.parse(event.target.value) : undefined);
+            setError("");
+          } catch {
+            setError("Invalid JSON");
+          }
+        }}
+        rows={5}
+        className="mono"
+        spellCheck={false}
+      />
+      {error ? <span className="pb-field-error">{error}</span> : null}
+    </>
   );
 }
 
@@ -1550,6 +2146,32 @@ function SettingsWorkspace(props: {
   projectSlug: string;
   onSubmitUpload: (event: React.FormEvent<HTMLFormElement>) => void;
   onCreateFileToken: (recordId: string, field: string, fileId: string) => Promise<string>;
+  collectionExport: CollectionExport | null;
+  exportSelection: string[];
+  exportPreview: string;
+  selectedExportItems: CollectionExport["items"];
+  onLoadCollectionExport: () => void;
+  onToggleExportCollection: (name: string) => void;
+  onCopyExport: () => void;
+  onDownloadExport: () => void;
+  onUseExportForImport: () => void;
+  importJSON: string;
+  setImportJSON: React.Dispatch<React.SetStateAction<string>>;
+  importMode: "create_missing" | "upsert";
+  setImportMode: React.Dispatch<React.SetStateAction<"create_missing" | "upsert">>;
+  importDropMissingFields: boolean;
+  setImportDropMissingFields: React.Dispatch<React.SetStateAction<boolean>>;
+  importResult: CollectionImportResult | null;
+  onPreviewImport: () => void;
+  onApplyImport: () => void;
+  sqlQuery: string;
+  setSQLQuery: React.Dispatch<React.SetStateAction<string>>;
+  sqlMaxRows: string;
+  setSQLMaxRows: React.Dispatch<React.SetStateAction<string>>;
+  sqlResult: SQLResult | null;
+  sqlHistory: string[];
+  onExecuteSQL: (event: React.FormEvent<HTMLFormElement>) => void;
+  onCopySQLCSV: () => void;
   version: string;
 }) {
   const active = settingsItems.find((item) => item.id === props.section);
@@ -1567,6 +2189,11 @@ function SettingsWorkspace(props: {
           {props.section === "application" ? <ApplicationSettings {...props} /> : null}
           {props.section === "mail" ? <MailSettings {...props} /> : null}
           {props.section === "storage" ? <StorageSettingsPanel {...props} /> : null}
+          {props.section === "backups" ? <BackupsView project={props.project} onExport={props.onLoadCollectionExport} onOpenExport={() => props.onChangeSection("exportCollections")} /> : null}
+          {props.section === "crons" ? <CronsView /> : null}
+          {props.section === "exportCollections" ? <ExportCollectionsView {...props} /> : null}
+          {props.section === "importCollections" ? <ImportCollectionsView {...props} /> : null}
+          {props.section === "sqlConsole" ? <SQLConsoleView {...props} /> : null}
           {props.section === "apiKeys" ? <APIKeysView {...props} /> : null}
           {props.section === "files" ? <FilesView {...props} /> : null}
         </div>
@@ -1603,6 +2230,11 @@ function SettingsSidebar({ active, onChange }: { active: SettingsSection; onChan
 function SettingsIcon({ id }: { id: SettingsSection }) {
   if (id === "mail") return <Mail className="h-4 w-4" />;
   if (id === "storage") return <HardDrive className="h-4 w-4" />;
+  if (id === "backups") return <Archive className="h-4 w-4" />;
+  if (id === "crons") return <Activity className="h-4 w-4" />;
+  if (id === "exportCollections") return <FileUp className="h-4 w-4" />;
+  if (id === "importCollections") return <UploadCloud className="h-4 w-4" />;
+  if (id === "sqlConsole") return <Code2 className="h-4 w-4" />;
   if (id === "apiKeys") return <KeyRound className="h-4 w-4" />;
   if (id === "files") return <UploadCloud className="h-4 w-4" />;
   return <Settings className="h-4 w-4" />;
@@ -1801,6 +2433,265 @@ function StorageSettingsPanel({
         </button>
       </section>
     </form>
+  );
+}
+
+function BackupsView({ project, onExport, onOpenExport }: { project: Project | null; onExport: () => void; onOpenExport: () => void }) {
+  const schema = project?.schemaName ?? "proj_app";
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>Backups</h2>
+        <div className="pb-inline-alert info">Dublyobase can export collection definitions from the control plane today. Full physical Postgres backups should run from the database host or managed provider until the backup worker lands.</div>
+        <div className="pb-info-grid compact">
+          <Info label="Project schema" value={schema} />
+          <Info label="Backup engine" value="Postgres pg_dump compatible" />
+        </div>
+        <pre className="pb-code-box">{`pg_dump "$DATABASE_URL" --schema=${schema} --format=custom --file=${schema}.dump`}</pre>
+        <div className="pb-row-actions">
+          <button type="button" className="pb-btn primary" onClick={onExport}>
+            <FileUp className="h-4 w-4" />
+            Export schema JSON
+          </button>
+          <button type="button" className="pb-btn outline" onClick={onOpenExport}>
+            Open export
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function CronsView() {
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>Crons</h2>
+        <div className="pb-inline-alert info">No scheduled jobs are registered in this build. This panel is ready for programmatic jobs once the background worker milestone is enabled.</div>
+        <CompactTable headers={["Name", "Schedule", "Last run", "Status"]} rows={[]} empty="No cron jobs registered." />
+      </section>
+    </div>
+  );
+}
+
+function ExportCollectionsView(props: {
+  collectionExport: CollectionExport | null;
+  exportSelection: string[];
+  selectedExportItems: CollectionExport["items"];
+  exportPreview: string;
+  onLoadCollectionExport: () => void;
+  onToggleExportCollection: (name: string) => void;
+  onCopyExport: () => void;
+  onDownloadExport: () => void;
+  onUseExportForImport: () => void;
+}) {
+  const items = props.collectionExport?.items ?? [];
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <div className="pb-section-title-row">
+          <h2>Export collections</h2>
+          <div className="pb-row-actions tight">
+            <button type="button" className="pb-btn outline" onClick={props.onLoadCollectionExport}>
+              <RefreshCw className="h-4 w-4" />
+              Refresh
+            </button>
+            <button type="button" className="pb-btn secondary" onClick={props.onCopyExport} disabled={items.length === 0}>
+              <Copy className="h-4 w-4" />
+              Copy
+            </button>
+            <button type="button" className="pb-btn secondary" onClick={props.onDownloadExport} disabled={items.length === 0}>
+              <Download className="h-4 w-4" />
+              Download JSON
+            </button>
+          </div>
+        </div>
+        <div className="pb-sync-grid">
+          <div className="pb-sync-list" aria-label="Collections to export">
+            {items.map((item) => (
+              <label key={item.name} className="pb-sync-item">
+                <input type="checkbox" checked={props.exportSelection.includes(item.name)} onChange={() => props.onToggleExportCollection(item.name)} />
+                <span>
+                  <strong>{item.name}</strong>
+                  <em>{item.system ? "system" : item.type}</em>
+                </span>
+              </label>
+            ))}
+            {items.length === 0 ? <EmptyState label="Load collection schema from the selected project." action="Load schema" onAction={props.onLoadCollectionExport} /> : null}
+          </div>
+          <div className="pb-sync-preview">
+            <div className="pb-sync-preview-bar">
+              <span>{props.selectedExportItems.length} selected</span>
+              <button type="button" className="pb-btn sm primary" onClick={props.onUseExportForImport} disabled={props.selectedExportItems.length === 0}>
+                Use for import
+              </button>
+            </div>
+            <pre className="pb-code-box schema-preview">{props.exportPreview}</pre>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ImportCollectionsView(props: {
+  importJSON: string;
+  setImportJSON: React.Dispatch<React.SetStateAction<string>>;
+  importMode: "create_missing" | "upsert";
+  setImportMode: React.Dispatch<React.SetStateAction<"create_missing" | "upsert">>;
+  importDropMissingFields: boolean;
+  setImportDropMissingFields: React.Dispatch<React.SetStateAction<boolean>>;
+  importResult: CollectionImportResult | null;
+  onPreviewImport: () => void;
+  onApplyImport: () => void;
+}) {
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>Import collections</h2>
+        <label className="pb-field">
+          <span>Collections JSON</span>
+          <textarea className="mono import-json-editor" value={props.importJSON} onChange={(event) => props.setImportJSON(event.target.value)} placeholder='{"items":[{"name":"posts","type":"base","fields":[]}]}' />
+        </label>
+        <div className="pb-grid-form import-options">
+          <label className="pb-field">
+            <span>Mode</span>
+            <select value={props.importMode} onChange={(event) => props.setImportMode(event.target.value as "create_missing" | "upsert")}>
+              <option value="create_missing">Create missing</option>
+              <option value="upsert">Create and update</option>
+            </select>
+          </label>
+          <label className="pb-checkline switchline">
+            <input type="checkbox" checked={props.importDropMissingFields} onChange={(event) => props.setImportDropMissingFields(event.target.checked)} />
+            Drop fields missing from JSON
+          </label>
+          <div className="pb-row-actions import-actions">
+            <button type="button" className="pb-btn outline expanded-lg" onClick={props.onPreviewImport}>
+              Preview import
+            </button>
+            <button
+              type="button"
+              className="pb-btn primary expanded-lg"
+              onClick={() => {
+                if (props.importDropMissingFields && !window.confirm("Drop fields that are missing from the import JSON?")) return;
+                props.onApplyImport();
+              }}
+            >
+              Apply import
+            </button>
+          </div>
+        </div>
+      </section>
+      {props.importResult ? (
+        <section className="pb-settings-block">
+          <h2>{props.importResult.dryRun ? "Import preview" : "Import result"}</h2>
+          <div className="pb-info-grid compact">
+            <Info label="Create" value={String(props.importResult.created)} />
+            <Info label="Update" value={String(props.importResult.updated)} />
+            <Info label="Skip" value={String(props.importResult.skipped)} />
+          </div>
+          <CompactTable headers={["Collection", "Action", "Status", "Message"]} rows={props.importResult.items.map((item) => [item.name, item.action, item.status, item.message ?? ""])} empty="No import changes." />
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function SQLConsoleView(props: {
+  sqlQuery: string;
+  setSQLQuery: React.Dispatch<React.SetStateAction<string>>;
+  sqlMaxRows: string;
+  setSQLMaxRows: React.Dispatch<React.SetStateAction<string>>;
+  sqlResult: SQLResult | null;
+  sqlHistory: string[];
+  onExecuteSQL: (event: React.FormEvent<HTMLFormElement>) => void;
+  onCopySQLCSV: () => void;
+}) {
+  const hasRows = Boolean(props.sqlResult?.columns.length);
+  return (
+    <form onSubmit={props.onExecuteSQL} className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <div className="pb-section-title-row">
+          <h2>SQL console</h2>
+          <div className="pb-row-actions tight">
+            <label className="pb-field sql-history-field">
+              <span>History</span>
+              <select value="" onChange={(event) => event.target.value && props.setSQLQuery(event.target.value)}>
+                <option value="">Recent queries</option>
+                {props.sqlHistory.map((query) => (
+                  <option key={query} value={query}>
+                    {query}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+        <label className="pb-field">
+          <span>Query</span>
+          <textarea className="mono sql-editor" value={props.sqlQuery} onChange={(event) => props.setSQLQuery(event.target.value)} spellCheck={false} />
+        </label>
+        <div className="pb-settings-actions sql-actions">
+          <label className="pb-field max-rows-field">
+            <span>Max rows</span>
+            <input value={props.sqlMaxRows} onChange={(event) => props.setSQLMaxRows(event.target.value)} inputMode="numeric" />
+          </label>
+          {hasRows ? (
+            <button type="button" className="pb-btn outline expanded-lg" onClick={props.onCopySQLCSV}>
+              <Copy className="h-4 w-4" />
+              Copy CSV
+            </button>
+          ) : null}
+          <button type="submit" className="pb-btn primary expanded-lg">
+            <Code2 className="h-4 w-4" />
+            Execute
+          </button>
+        </div>
+      </section>
+      {props.sqlResult ? (
+        <section className="pb-settings-block">
+          <div className={`pb-inline-alert ${props.sqlResult.readOnly ? "info" : "warning"}`}>
+            {props.sqlResult.command || "SQL"} in {props.sqlResult.durationMs}ms. {props.sqlResult.columns.length > 0 ? `${props.sqlResult.rows.length} rows returned.` : `${props.sqlResult.affectedRows} rows affected.`}
+            {props.sqlResult.truncated ? " Result truncated by max rows." : ""}
+          </div>
+          {hasRows ? <SQLResultTable result={props.sqlResult} /> : null}
+        </section>
+      ) : null}
+    </form>
+  );
+}
+
+function SQLResultTable({ result }: { result: SQLResult }) {
+  return (
+    <div className="pb-table-wrap sql-result-table">
+      <table className="pb-records-table compact">
+        <thead>
+          <tr>
+            {result.columns.map((column, index) => (
+              <th key={`${column.name}-${index}`}>{column.name}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {result.rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {result.columns.map((column, columnIndex) => (
+                <td key={`${column.name}-${columnIndex}`} className="truncate-cell">
+                  {formatSQLValue(row[columnIndex])}
+                </td>
+              ))}
+            </tr>
+          ))}
+          {result.rows.length === 0 ? (
+            <tr>
+              <td colSpan={Math.max(result.columns.length, 1)} className="pb-empty-cell">
+                <EmptyState label="No rows returned." />
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -2070,24 +2961,141 @@ function renderValue(value: unknown) {
   return JSON.stringify(value);
 }
 
-function stripSystemFields(record: RecordItem): RecordItem {
+function extractImportItems(raw: string): unknown[] {
+  const parsed = JSON.parse(raw);
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && typeof parsed === "object") {
+    const body = parsed as { items?: unknown; collections?: unknown };
+    if (Array.isArray(body.items)) return body.items;
+    if (Array.isArray(body.collections)) return body.collections;
+  }
+  throw new Error("Import JSON must be an array or include an items array");
+}
+
+function isDangerousSQL(query: string) {
+  const first = query.trim().split(/\s+/, 1)[0]?.toLowerCase().replace(/;$/, "") ?? "";
+  return ["alter", "replace", "insert", "create", "update", "delete", "drop", "truncate", "grant", "revoke"].includes(first);
+}
+
+function loadSQLHistory() {
+  try {
+    const raw = window.localStorage.getItem(SQL_HISTORY_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string").slice(0, 20) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSQLHistory(query: string, current: string[]) {
+  const next = [query, ...current.filter((item) => item !== query)].slice(0, 20);
+  try {
+    window.localStorage.setItem(SQL_HISTORY_KEY, JSON.stringify(next));
+  } catch {
+    // Query history is a convenience; failing to persist it must not block SQL execution.
+  }
+  return next;
+}
+
+function formatSQLValue(value: unknown) {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function sqlResultToCSV(result: SQLResult) {
+  const rows = [result.columns.map((column) => column.name), ...result.rows.map((row) => result.columns.map((_, index) => formatSQLValue(row[index])))];
+  return rows.map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function csvCell(value: string) {
+  if (/[",\n\r]/.test(value)) {
+    return `"${value.replaceAll('"', '""')}"`;
+  }
+  return value;
+}
+
+function stripSystemFields(record: RecordItem, collection?: Collection | null): RecordItem {
+  const writable = collection ? new Set(collection.fields.filter(isRecordFormField).map((field) => field.name)) : null;
   const next: RecordItem = {};
   for (const [key, value] of Object.entries(record)) {
-    if (!["id", "created", "updated"].includes(key)) {
+    if (!["id", "created", "updated"].includes(key) && (!writable || writable.has(key))) {
       next[key] = value;
     }
   }
   return next;
 }
 
-function newDefaultField(): Field {
-  return { name: "", type: "text", required: false, options: {} };
+function parseRecordDraft(raw: string): { ok: true; value: RecordItem } | { ok: false; error: string } {
+  try {
+    const parsed = raw.trim() ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { ok: false, error: "Payload must be a JSON object." };
+    }
+    return { ok: true, value: parsed as RecordItem };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Invalid JSON." };
+  }
+}
+
+function isRecordFormField(field: Field): boolean {
+  if (field.type === "password") return true;
+  return !field.hidden && field.type !== "file" && field.type !== "autodate";
+}
+
+function fieldIsMultiple(field: Field): boolean {
+  if (Boolean(field.options?.multiple) || Boolean(field.options?.multi)) return true;
+  const maxSelect = field.options?.maxSelect;
+  return typeof maxSelect === "number" && maxSelect > 1;
+}
+
+function toDateTimeLocal(value: unknown) {
+  if (typeof value !== "string" || !value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function formatJSONInput(value: unknown) {
+  if (value === undefined || value === null || value === "") return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "";
+  }
+}
+
+function sanitizeEditorHTML(value: string) {
+  if (typeof window === "undefined" || !value) return value || "";
+  const doc = new DOMParser().parseFromString(value, "text/html");
+  doc.querySelectorAll("script,style,iframe,object,embed,link,meta").forEach((node) => node.remove());
+  doc.body.querySelectorAll("*").forEach((node) => {
+    for (const attr of Array.from(node.attributes)) {
+      const name = attr.name.toLowerCase();
+      const attrValue = attr.value.trim().toLowerCase();
+      if (name.startsWith("on") || ((name === "href" || name === "src") && attrValue.startsWith("javascript:"))) {
+        node.removeAttribute(attr.name);
+      }
+    }
+  });
+  return doc.body.innerHTML;
+}
+
+function newDefaultField(type: FieldType = "text"): Field {
+  return fieldWithType({ name: "", type, required: false, options: {} }, type);
+}
+
+function isVisibleRecordField(field: Field): boolean {
+  return !field.hidden && field.type !== "password";
 }
 
 function fieldWithType(field: Field, type: FieldType): Field {
   return {
     ...field,
     type,
+    hidden: type === "password" ? true : field.hidden,
+    presentable: type === "password" || field.hidden ? false : field.presentable,
     options: defaultOptionsForType(type, field.options),
   };
 }
@@ -2099,25 +3107,91 @@ function cleanField(field: Field): Field {
     name,
     type,
     required: Boolean(field.required),
+    hidden: Boolean(field.hidden) || type === "password",
+    presentable: Boolean(field.presentable) && !field.hidden && type !== "password",
+    help: field.help?.trim() || undefined,
     options: defaultOptionsForType(type, field.options),
   };
 }
 
 function defaultOptionsForType(type: FieldType, options: Record<string, unknown> = {}): Record<string, unknown> {
+  const withNumber = (key: string) => {
+    const value = options[key];
+    return typeof value === "number" && Number.isFinite(value) ? { [key]: value } : {};
+  };
+  const withBool = (key: string) => (Boolean(options[key]) ? { [key]: true } : {});
+  const withString = (key: string) => {
+    const value = typeof options[key] === "string" ? options[key].trim() : "";
+    return value ? { [key]: value } : {};
+  };
+  const withStringList = (key: string) => {
+    const values = optionValues(options, key);
+    return values.length > 0 ? { [key]: values } : {};
+  };
+  if (type === "text" || type === "url" || type === "password") {
+    return {
+      ...withNumber("min"),
+      ...withNumber("max"),
+      ...withString("pattern"),
+      ...(type === "password" ? withNumber("cost") : {}),
+    };
+  }
+  if (type === "number") {
+    return {
+      ...withNumber("min"),
+      ...withNumber("max"),
+      ...withBool("onlyInt"),
+    };
+  }
+  if (type === "email") {
+    return {
+      ...withStringList("onlyDomains"),
+      ...withStringList("exceptDomains"),
+    };
+  }
+  if (type === "editor") {
+    return {
+      ...withNumber("maxSize"),
+      ...withBool("convertURLs"),
+    };
+  }
+  if (type === "json") {
+    return {
+      ...withNumber("maxSize"),
+    };
+  }
+  if (type === "autodate") {
+    const onCreate = options.onCreate !== false;
+    const onUpdate = Boolean(options.onUpdate);
+    return {
+      ...(onCreate ? { onCreate: true } : {}),
+      ...(onUpdate ? { onUpdate: true } : {}),
+    };
+  }
   if (type === "select") {
     return {
       values: splitOptionValues(optionValuesText(options)),
-      ...(Boolean(options.multi) ? { multi: true } : {}),
+      ...withNumber("minSelect"),
+      ...withNumber("maxSelect"),
     };
   }
   if (type === "relation") {
     return {
       collection: typeof options.collection === "string" ? options.collection : "",
-      ...(Boolean(options.multi) ? { multi: true } : {}),
+      ...withNumber("minSelect"),
+      ...withNumber("maxSelect"),
+      ...withBool("cascadeDelete"),
     };
   }
   if (type === "file") {
-    return Boolean(options.multiple) ? { multiple: true } : {};
+    return {
+      ...withBool("multiple"),
+      ...withBool("protected"),
+      ...withNumber("maxSelect"),
+      ...withNumber("maxSize"),
+      ...withStringList("mimeTypes"),
+      ...withStringList("thumbs"),
+    };
   }
   return {};
 }
@@ -2127,12 +3201,33 @@ function setFieldOption(field: Field, key: string, value: unknown): Field {
   return { ...field, options: defaultOptionsForType(field.type, options) };
 }
 
-function optionValuesText(options: Record<string, unknown> = {}) {
-  const values = options.values;
-  if (Array.isArray(values)) {
-    return values.map((value) => String(value)).join("\n");
+function setNumberFieldOption(field: Field, key: string, value: string): Field {
+  const trimmed = value.trim();
+  const options = { ...(field.options ?? {}) };
+  if (trimmed === "") {
+    delete options[key];
+  } else {
+    const parsed = Number(trimmed);
+    options[key] = Number.isFinite(parsed) ? parsed : options[key];
   }
-  return "";
+  return { ...field, options: defaultOptionsForType(field.type, options) };
+}
+
+function numberOptionValue(options: Record<string, unknown> = {}, key: string) {
+  const value = options[key];
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+}
+
+function optionValuesText(options: Record<string, unknown> = {}, key = "values") {
+  return optionValues(options, key).join("\n");
+}
+
+function optionValues(options: Record<string, unknown> = {}, key = "values") {
+  const values = options[key];
+  if (Array.isArray(values)) {
+    return values.map((value) => String(value).trim()).filter(Boolean);
+  }
+  return [];
 }
 
 function splitOptionValues(raw: string) {

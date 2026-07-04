@@ -19,11 +19,17 @@ export type Field = {
   name: string;
   type: FieldType;
   required?: boolean;
+  hidden?: boolean;
+  presentable?: boolean;
+  help?: string;
   options?: Record<string, unknown>;
 };
 
 export type FieldType =
+  | "autodate"
   | "text"
+  | "editor"
+  | "password"
   | "number"
   | "bool"
   | "date"
@@ -47,6 +53,49 @@ export type Collection = {
   updateRule: string | null;
   deleteRule: string | null;
   options?: unknown;
+};
+
+export type CollectionSchemaItem = {
+  name: string;
+  type: Collection["type"];
+  system?: boolean;
+  fields: Field[];
+  listRule: string | null;
+  viewRule: string | null;
+  createRule: string | null;
+  updateRule: string | null;
+  deleteRule: string | null;
+  options?: unknown;
+};
+
+export type CollectionExport = {
+  project: string;
+  exportedAt: string;
+  items: CollectionSchemaItem[];
+};
+
+export type CollectionImportResult = {
+  items: Array<{
+    name: string;
+    action: string;
+    status: string;
+    message?: string;
+  }>;
+  created: number;
+  updated: number;
+  skipped: number;
+  dryRun: boolean;
+};
+
+export type SQLResult = {
+  columns: Array<{ name: string; typeOid: number }>;
+  rows: unknown[][];
+  command: string;
+  affectedRows: number;
+  durationMs: number;
+  maxRows: number;
+  truncated: boolean;
+  readOnly: boolean;
 };
 
 export type APIKey = {

@@ -88,13 +88,16 @@ func CreateFileUploadSession(ctx context.Context, pool *pgxpool.Pool, cfg *Confi
 	if mode != "replace" && mode != "append" {
 		return nil, fmt.Errorf("%w: file upload mode must be replace or append", ErrValidation)
 	}
-	if !boolOption(field.Options, "multiple") && mode == "append" {
+	if !fieldIsMultiple(field) && mode == "append" {
 		return nil, fmt.Errorf("%w: field %q accepts one file", ErrValidation, field.Name)
 	}
 	if input.TotalSize <= 0 {
 		return nil, fmt.Errorf("%w: upload size must be greater than zero", ErrValidation)
 	}
 	if input.TotalSize > MaxUploadBytes(cfg) {
+		return nil, ErrFileTooLarge
+	}
+	if maxSize := maxSizeOption(field, 0); maxSize > 0 && input.TotalSize > maxSize {
 		return nil, ErrFileTooLarge
 	}
 	if input.ChunkSize <= 0 {

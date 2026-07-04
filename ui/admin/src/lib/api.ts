@@ -1,4 +1,4 @@
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, Collection, Health, InstanceSettings, Project, RecordItem, RecordList } from "./types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, Collection, CollectionExport, CollectionImportResult, Health, InstanceSettings, Project, RecordItem, RecordList, SQLResult } from "./types";
 
 type RequestOptions = RequestInit & {
   token?: string | null;
@@ -198,6 +198,35 @@ export function deleteCollection(token: string, project: string, name: string) {
   return request<void>(`/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(name)}?confirm=${encodeURIComponent(name)}`, {
     method: "DELETE",
     token,
+  });
+}
+
+export function exportCollections(token: string, project: string) {
+  return request<CollectionExport>(`/admin/api/projects/${encodeURIComponent(project)}/collections/export`, { token });
+}
+
+export function importCollections(
+  token: string,
+  project: string,
+  input: {
+    items: unknown[];
+    mode: "create_missing" | "upsert";
+    dryRun: boolean;
+    dropMissingFields: boolean;
+  },
+) {
+  return request<CollectionImportResult>(`/admin/api/projects/${encodeURIComponent(project)}/collections/import`, {
+    method: "POST",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function runSQL(token: string, project: string, input: { query: string; maxRows: number }) {
+  return request<SQLResult>(`/admin/api/projects/${encodeURIComponent(project)}/sql`, {
+    method: "POST",
+    token,
+    body: JSON.stringify(input),
   });
 }
 

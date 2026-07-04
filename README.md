@@ -73,6 +73,9 @@ var → the process exits `1` with a clear message rather than failing mysteriou
 | `GET /admin/api/projects/{slug}` | Project detail |
 | `GET/POST /admin/api/projects/{slug}/api-keys` | List/create project API keys |
 | `DELETE /admin/api/projects/{slug}/api-keys/{id}` | Revoke project API key |
+| `GET /admin/api/projects/{slug}/collections/export` | Export collection schema JSON for the selected project |
+| `POST /admin/api/projects/{slug}/collections/import` | Preview or apply collection schema imports |
+| `POST /admin/api/projects/{slug}/sql` | Execute admin SQL in the selected project schema |
 | `GET /admin/api/audit-log` | Newest-first audit log, with secret-like data redacted |
 | `POST /api/projects/{slug}/auth/signup` | App-user signup; returns access + refresh tokens |
 | `POST /api/projects/{slug}/auth/login` | App-user login |

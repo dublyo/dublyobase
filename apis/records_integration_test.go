@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/dublyo/dublyobase/core"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestRecordsAPIAndRLS(t *testing.T) {
@@ -106,6 +109,95 @@ func TestRecordsAPIAndRLS(t *testing.T) {
 	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/posts/records/%s", slug, privateRecord["id"]), serviceKey)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("get deleted: want 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPocketBaseStyleFieldOptionsAPI(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	adminToken := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, adminToken)
+	schema, _ := core.ProjectNames(slug)
+	serviceKey := createAPIKeyForRecords(t, srv.Handler, adminToken, slug, "service")
+
+	createCollectionBody := `{
+		"name":"entries",
+		"type":"base",
+		"fields":[
+			{"name":"title","type":"text","required":true,"presentable":true,"help":"Shown in relation previews","options":{"min":3,"max":30,"pattern":"^[A-Z].*"}},
+			{"name":"body","type":"editor","options":{"maxSize":64}},
+			{"name":"secret","type":"password","required":true,"hidden":true,"options":{"min":8,"max":20,"cost":4}},
+			{"name":"score","type":"number","options":{"onlyInt":true,"min":1,"max":10}},
+			{"name":"contact","type":"email","options":{"onlyDomains":["example.com"]}},
+			{"name":"labels","type":"select","required":true,"options":{"values":["a","b","c"],"maxSelect":2}},
+			{"name":"created_auto","type":"autodate","options":{"onCreate":true}},
+			{"name":"touched_auto","type":"autodate","options":{"onCreate":true,"onUpdate":true}}
+		]
+	}`
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), adminToken, createCollectionBody)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create collection: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	record := createRecordInCollectionForTest(t, srv.Handler, slug, "entries", serviceKey, `{
+		"title":"Hello",
+		"body":"<p>Hello</p>",
+		"secret":"secret-123",
+		"score":4,
+		"contact":"me@example.com",
+		"labels":["a","b"]
+	}`)
+	if _, ok := record["secret"]; ok {
+		t.Fatalf("password field must not be returned: %+v", record)
+	}
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/entries/records?fields=secret", slug), serviceKey)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("password field projection: want 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	createdAuto, _ := record["created_auto"].(string)
+	touchedAuto, _ := record["touched_auto"].(string)
+	if createdAuto == "" || touchedAuto == "" {
+		t.Fatalf("autodate fields missing from create response: %+v", record)
+	}
+
+	var passwordHash string
+	if err := app.Pool.QueryRow(context.Background(), fmt.Sprintf(`select secret from %s where id = $1`, pgx.Identifier{schema, "entries"}.Sanitize()), record["id"]).Scan(&passwordHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte("secret-123")); err != nil {
+		t.Fatalf("password was not stored as bcrypt hash: %v", err)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/entries/records/%s", slug, record["id"]), serviceKey, `{"title":"Hello updated"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch record: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var updated map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated["created_auto"] != createdAuto {
+		t.Fatalf("created_auto changed on update: before=%v after=%v", createdAuto, updated["created_auto"])
+	}
+	if updated["touched_auto"] == touchedAuto {
+		t.Fatalf("touched_auto did not change on update: %+v", updated)
+	}
+
+	invalidCases := map[string]string{
+		"bad title pattern": `{"title":"lower","secret":"secret-123","labels":["a"]}`,
+		"bad body size":     `{"title":"Hello","body":"` + strings.Repeat("x", 65) + `","secret":"secret-123","labels":["a"]}`,
+		"bad secret":        `{"title":"Hello","secret":"short","labels":["a"]}`,
+		"bad score":         `{"title":"Hello","secret":"secret-123","score":1.5,"labels":["a"]}`,
+		"bad email domain":  `{"title":"Hello","secret":"secret-123","contact":"me@example.net","labels":["a"]}`,
+		"too many labels":   `{"title":"Hello","secret":"secret-123","labels":["a","b","c"]}`,
+		"autodate write":    `{"title":"Hello","secret":"secret-123","labels":["a"],"created_auto":"2026-07-04T00:00:00Z"}`,
+	}
+	for name, body := range invalidCases {
+		rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/entries/records", slug), serviceKey, body)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("%s: want 422, got %d: %s", name, rec.Code, rec.Body.String())
+		}
 	}
 }
 

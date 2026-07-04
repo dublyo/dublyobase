@@ -13,6 +13,7 @@ import (
 	"image/jpeg"
 	_ "image/png"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path"
@@ -135,7 +136,7 @@ func UpdateRecordFileField(ctx context.Context, pool *pgxpool.Pool, auth *Record
 	if err != nil {
 		return nil, nil, err
 	}
-	multiple := boolOption(field.Options, "multiple")
+	multiple := fieldIsMultiple(field)
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
 		mode = "replace"
@@ -169,6 +170,9 @@ func UpdateRecordFileField(ctx context.Context, pool *pgxpool.Pool, auth *Record
 			next = append(append([]FileMeta{}, oldFiles...), newFiles...)
 		} else {
 			removed = oldFiles
+		}
+		if err := validateFileFieldSelection(field, next); err != nil {
+			return err
 		}
 		value, err := fileMetasJSON(next, multiple)
 		if err != nil {
@@ -205,7 +209,7 @@ func MintFileToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, auth *R
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	files, err := parseFileMetas(record[field.Name], boolOption(field.Options, "multiple"))
+	files, err := parseFileMetas(record[field.Name], fieldIsMultiple(field))
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -285,7 +289,7 @@ func GetFileForToken(ctx context.Context, pool *pgxpool.Pool, claims *FileTokenC
 			}
 			return mapRecordDBError(err)
 		}
-		files, err := parseFileMetas(raw, boolOption(field.Options, "multiple"))
+		files, err := parseFileMetas(raw, fieldIsMultiple(field))
 		if err != nil {
 			return err
 		}
@@ -517,6 +521,50 @@ func validFileMetas(files []FileMeta) ([]FileMeta, error) {
 		seen[file.ID] = struct{}{}
 	}
 	return files, nil
+}
+
+func validateFileFieldSelection(field Field, files []FileMeta) error {
+	if field.Required && len(files) == 0 {
+		return fmt.Errorf("%w: field %q requires a file", ErrValidation, field.Name)
+	}
+	if maxSelect, ok := intOption(field.Options, "maxSelect"); ok && maxSelect > 0 && len(files) > maxSelect {
+		return fmt.Errorf("%w: field %q accepts no more than %d file(s)", ErrValidation, field.Name, maxSelect)
+	}
+	maxSize := maxSizeOption(field, 0)
+	if maxSize > 0 {
+		for _, file := range files {
+			if file.Size > maxSize {
+				return fmt.Errorf("%w: field %q file exceeds max size", ErrValidation, field.Name)
+			}
+		}
+	}
+	allowedTypes := stringSlice(field.Options["mimeTypes"])
+	if len(allowedTypes) == 0 {
+		return nil
+	}
+	for _, file := range files {
+		allowed := false
+		fileMime := baseMIMEType(file.Mime)
+		for _, mimeType := range allowedTypes {
+			allowedMime := strings.ToLower(strings.TrimSpace(mimeType))
+			if fileMime == allowedMime || strings.HasSuffix(allowedMime, "/*") && strings.HasPrefix(fileMime, strings.TrimSuffix(allowedMime, "*")) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("%w: field %q does not allow MIME type %s", ErrValidation, field.Name, file.Mime)
+		}
+	}
+	return nil
+}
+
+func baseMIMEType(value string) string {
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+	return strings.ToLower(mediaType)
 }
 
 func findFileMeta(files []FileMeta, fileID string) (FileMeta, bool) {

@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/mail"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Record map[string]any
@@ -109,6 +111,7 @@ func CreateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	if err != nil {
 		return nil, err
 	}
+	payload = appendAutodatePayload(collection, payload, "create")
 	columns := allRecordColumns(collection)
 	table := quoteIdent(auth.Project.SchemaName, collection.Name)
 
@@ -177,6 +180,7 @@ func UpdateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	if err != nil {
 		return nil, err
 	}
+	payload = appendAutodatePayload(collection, payload, "update")
 	columns := allRecordColumns(collection)
 	table := quoteIdent(auth.Project.SchemaName, collection.Name)
 
@@ -269,6 +273,9 @@ func allRecordColumns(collection *Collection) []string {
 		if isAuthUsersHiddenField(collection, field.Name) {
 			continue
 		}
+		if field.Hidden || field.Type == "password" {
+			continue
+		}
 		columns = append(columns, field.Name)
 	}
 	return columns
@@ -341,6 +348,9 @@ func allowedRecordColumns(collection *Collection) map[string]struct{} {
 		if isAuthUsersHiddenField(collection, field.Name) {
 			continue
 		}
+		if field.Hidden || field.Type == "password" {
+			continue
+		}
 		out[field.Name] = struct{}{}
 	}
 	return out
@@ -392,6 +402,9 @@ func normalizeRecordPayload(collection *Collection, raw map[string]json.RawMessa
 		if !ok {
 			return nil, fmt.Errorf("%w: unknown field %q", ErrValidation, name)
 		}
+		if field.Type == "autodate" {
+			return nil, fmt.Errorf("%w: autodate field %q is managed by the server", ErrValidation, field.Name)
+		}
 		if _, err := normalizeRecordValue(field, body); err != nil {
 			return nil, err
 		}
@@ -423,14 +436,59 @@ func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {
 	}
 	switch field.Type {
 	case "text":
-		return decodeStringField(field, raw)
+		v, err := decodeStringField(field, raw)
+		if err != nil {
+			return nil, err
+		}
+		return v, validateStringField(field, v, 0)
+	case "editor":
+		v, err := decodeStringField(field, raw)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateStringField(field, v, 0); err != nil {
+			return nil, err
+		}
+		if int64(len(v)) > maxSizeOption(field, 5<<20) {
+			return nil, fmt.Errorf("%w: field %q exceeds max size", ErrValidation, field.Name)
+		}
+		return v, nil
+	case "password":
+		v, err := decodeStringField(field, raw)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateStringField(field, v, 71); err != nil {
+			return nil, err
+		}
+		if v == "" {
+			return "", nil
+		}
+		cost := bcrypt.DefaultCost
+		if configured, ok := intOption(field.Options, "cost"); ok {
+			cost = configured
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(v), cost)
+		if err != nil {
+			return nil, err
+		}
+		return string(hash), nil
 	case "email":
 		v, err := decodeStringField(field, raw)
 		if err != nil {
 			return nil, err
 		}
+		if v == "" {
+			if field.Required {
+				return nil, fmt.Errorf("%w: field %q is required", ErrValidation, field.Name)
+			}
+			return "", nil
+		}
 		if _, err := mail.ParseAddress(v); err != nil {
 			return nil, fmt.Errorf("%w: field %q must be an email", ErrValidation, field.Name)
+		}
+		if err := validateEmailDomain(field, v); err != nil {
+			return nil, err
 		}
 		return v, nil
 	case "url":
@@ -438,9 +496,18 @@ func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if v == "" {
+			if field.Required {
+				return nil, fmt.Errorf("%w: field %q is required", ErrValidation, field.Name)
+			}
+			return "", nil
+		}
 		u, err := url.ParseRequestURI(v)
 		if err != nil || u.Scheme == "" {
 			return nil, fmt.Errorf("%w: field %q must be a URL", ErrValidation, field.Name)
+		}
+		if err := validateStringField(field, v, 0); err != nil {
+			return nil, err
 		}
 		return v, nil
 	case "number":
@@ -448,11 +515,26 @@ func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {
 		if err := json.Unmarshal(raw, &v); err != nil || math.IsInf(v, 0) || math.IsNaN(v) {
 			return nil, fmt.Errorf("%w: field %q must be a number", ErrValidation, field.Name)
 		}
+		if field.Required && v == 0 {
+			return nil, fmt.Errorf("%w: field %q is required", ErrValidation, field.Name)
+		}
+		if boolOption(field.Options, "onlyInt") && v != math.Trunc(v) {
+			return nil, fmt.Errorf("%w: field %q must be an integer", ErrValidation, field.Name)
+		}
+		if min, ok := floatOption(field.Options, "min"); ok && v < min {
+			return nil, fmt.Errorf("%w: field %q must be greater than or equal to %v", ErrValidation, field.Name, min)
+		}
+		if max, ok := floatOption(field.Options, "max"); ok && v > max {
+			return nil, fmt.Errorf("%w: field %q must be less than or equal to %v", ErrValidation, field.Name, max)
+		}
 		return v, nil
 	case "bool":
 		var v bool
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return nil, fmt.Errorf("%w: field %q must be a boolean", ErrValidation, field.Name)
+		}
+		if field.Required && !v {
+			return nil, fmt.Errorf("%w: field %q is required", ErrValidation, field.Name)
 		}
 		return v, nil
 	case "date":
@@ -470,9 +552,17 @@ func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return nil, fmt.Errorf("%w: field %q must be valid JSON", ErrValidation, field.Name)
 		}
+		if field.Required && emptyJSONValue(v) {
+			return nil, fmt.Errorf("%w: field %q is required", ErrValidation, field.Name)
+		}
+		if int64(len(raw)) > maxSizeOption(field, 1<<20) {
+			return nil, fmt.Errorf("%w: field %q exceeds max size", ErrValidation, field.Name)
+		}
 		return string(raw), nil
 	case "file":
 		return nil, fmt.Errorf("%w: field %q must be updated through the file upload API", ErrValidation, field.Name)
+	case "autodate":
+		return nil, fmt.Errorf("%w: autodate field %q is managed by the server", ErrValidation, field.Name)
 	case "select":
 		return normalizeSelectValue(field, raw)
 	case "relation":
@@ -490,15 +580,72 @@ func decodeStringField(field Field, raw json.RawMessage) (string, error) {
 	return v, nil
 }
 
+func validateStringField(field Field, value string, defaultMax int) error {
+	if value == "" {
+		if field.Required {
+			return fmt.Errorf("%w: field %q is required", ErrValidation, field.Name)
+		}
+		return nil
+	}
+	length := len([]rune(value))
+	if min, ok := intOption(field.Options, "min"); ok && min > 0 && length < min {
+		return fmt.Errorf("%w: field %q must be at least %d characters", ErrValidation, field.Name, min)
+	}
+	maxValue := defaultMax
+	if max, ok := intOption(field.Options, "max"); ok {
+		maxValue = max
+	}
+	if maxValue > 0 && length > maxValue {
+		return fmt.Errorf("%w: field %q must be at most %d characters", ErrValidation, field.Name, maxValue)
+	}
+	if pattern, _ := field.Options["pattern"].(string); pattern != "" {
+		matches, err := regexp.MatchString(pattern, value)
+		if err != nil {
+			return fmt.Errorf("%w: field %q has invalid validation pattern", ErrValidation, field.Name)
+		}
+		if !matches {
+			return fmt.Errorf("%w: field %q has invalid format", ErrValidation, field.Name)
+		}
+	}
+	return nil
+}
+
+func validateEmailDomain(field Field, value string) error {
+	at := strings.LastIndex(value, "@")
+	if at < 0 || at == len(value)-1 {
+		return fmt.Errorf("%w: field %q must be an email", ErrValidation, field.Name)
+	}
+	domain := strings.ToLower(value[at+1:])
+	if allowed := stringSlice(field.Options["onlyDomains"]); len(allowed) > 0 && !containsFold(allowed, domain) {
+		return fmt.Errorf("%w: field %q domain is not allowed", ErrValidation, field.Name)
+	}
+	if blocked := stringSlice(field.Options["exceptDomains"]); len(blocked) > 0 && containsFold(blocked, domain) {
+		return fmt.Errorf("%w: field %q domain is not allowed", ErrValidation, field.Name)
+	}
+	return nil
+}
+
+func containsFold(values []string, target string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, target) {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeSelectValue(field Field, raw json.RawMessage) (any, error) {
 	allowed := map[string]struct{}{}
 	for _, value := range stringSlice(field.Options["values"]) {
 		allowed[value] = struct{}{}
 	}
-	if boolOption(field.Options, "multi") {
+	if fieldIsMultiple(field) {
 		var values []string
 		if err := json.Unmarshal(raw, &values); err != nil {
 			return nil, fmt.Errorf("%w: field %q must be a string array", ErrValidation, field.Name)
+		}
+		if err := validateSelectedCount(field, len(values)); err != nil {
+			return nil, err
 		}
 		for _, value := range values {
 			if _, ok := allowed[value]; !ok {
@@ -511,6 +658,9 @@ func normalizeSelectValue(field Field, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if field.Required && value == "" {
+		return nil, fmt.Errorf("%w: field %q is required", ErrValidation, field.Name)
+	}
 	if _, ok := allowed[value]; !ok {
 		return nil, fmt.Errorf("%w: field %q has unsupported select value", ErrValidation, field.Name)
 	}
@@ -518,10 +668,13 @@ func normalizeSelectValue(field Field, raw json.RawMessage) (any, error) {
 }
 
 func normalizeRelationValue(field Field, raw json.RawMessage) (any, error) {
-	if boolOption(field.Options, "multi") {
+	if fieldIsMultiple(field) {
 		var values []string
 		if err := json.Unmarshal(raw, &values); err != nil {
 			return nil, fmt.Errorf("%w: field %q must be a UUID array", ErrValidation, field.Name)
+		}
+		if err := validateSelectedCount(field, len(values)); err != nil {
+			return nil, err
 		}
 		for _, value := range values {
 			if err := ValidateUUID(value); err != nil {
@@ -534,24 +687,88 @@ func normalizeRelationValue(field Field, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if field.Required && value == "" {
+		return nil, fmt.Errorf("%w: field %q is required", ErrValidation, field.Name)
+	}
 	if err := ValidateUUID(value); err != nil {
 		return nil, fmt.Errorf("%w: field %q must be a UUID", ErrValidation, field.Name)
 	}
 	return value, nil
 }
 
+func validateSelectedCount(field Field, count int) error {
+	minSelect := 0
+	if configured, ok := intOption(field.Options, "minSelect"); ok {
+		minSelect = configured
+	}
+	if field.Required && minSelect < 1 {
+		minSelect = 1
+	}
+	if count < minSelect {
+		return fmt.Errorf("%w: field %q must include at least %d value(s)", ErrValidation, field.Name, minSelect)
+	}
+	if maxSelect, ok := intOption(field.Options, "maxSelect"); ok && maxSelect > 0 && count > maxSelect {
+		return fmt.Errorf("%w: field %q must include no more than %d value(s)", ErrValidation, field.Name, maxSelect)
+	}
+	return nil
+}
+
+func maxSizeOption(field Field, defaultValue int64) int64 {
+	maxSize, ok := int64Option(field.Options, "maxSize")
+	if !ok || maxSize <= 0 {
+		return defaultValue
+	}
+	return maxSize
+}
+
+func emptyJSONValue(v any) bool {
+	switch value := v.(type) {
+	case nil:
+		return true
+	case string:
+		return value == ""
+	case []any:
+		return len(value) == 0
+	case map[string]any:
+		return len(value) == 0
+	default:
+		return false
+	}
+}
+
+func appendAutodatePayload(collection *Collection, payload *normalizedPayload, operation string) *normalizedPayload {
+	if payload == nil {
+		payload = &normalizedPayload{}
+	}
+	now := time.Now().UTC()
+	for _, field := range collection.Fields {
+		if field.Type != "autodate" {
+			continue
+		}
+		if operation == "create" && !boolOption(field.Options, "onCreate") {
+			continue
+		}
+		if operation == "update" && !boolOption(field.Options, "onUpdate") {
+			continue
+		}
+		payload.Columns = append(payload.Columns, field.Name)
+		payload.Values = append(payload.Values, now)
+	}
+	return payload
+}
+
 func fieldRequiredOnCreate(field Field) bool {
 	if !field.Required {
 		return false
 	}
-	return field.Type != "json" && field.Type != "file"
+	return field.Type != "json" && field.Type != "file" && field.Type != "autodate"
 }
 
 func fieldCanBeNull(field Field) bool {
 	if field.Required {
 		return false
 	}
-	return field.Type != "bool" && field.Type != "json" && field.Type != "file"
+	return field.Type != "bool" && field.Type != "json" && field.Type != "file" && field.Type != "autodate"
 }
 
 func selectList(columns []string) string {
@@ -579,15 +796,17 @@ func valuePlaceholder(field Field, pos int) string {
 		return p + "::boolean"
 	case "date":
 		return p + "::timestamptz"
+	case "autodate":
+		return p + "::timestamptz"
 	case "json", "file":
 		return p + "::jsonb"
 	case "select":
-		if boolOption(field.Options, "multi") {
+		if fieldIsMultiple(field) {
 			return p + "::text[]"
 		}
 		return p + "::text"
 	case "relation":
-		if boolOption(field.Options, "multi") {
+		if fieldIsMultiple(field) {
 			return p + "::uuid[]"
 		}
 		return p + "::uuid"
@@ -661,8 +880,20 @@ func normalizeDBValue(v any) any {
 			return nil
 		}
 		return formatUUIDBytes(value.Bytes)
+	case []pgtype.UUID:
+		out := make([]any, 0, len(value))
+		for _, item := range value {
+			out = append(out, normalizeDBValue(item))
+		}
+		return out
 	case [16]byte:
 		return formatUUIDBytes(value)
+	case [][16]byte:
+		out := make([]string, 0, len(value))
+		for _, item := range value {
+			out = append(out, formatUUIDBytes(item))
+		}
+		return out
 	case []byte:
 		if json.Valid(value) {
 			var decoded any
@@ -671,6 +902,12 @@ func normalizeDBValue(v any) any {
 			}
 		}
 		return string(value)
+	case []any:
+		out := make([]any, 0, len(value))
+		for _, item := range value {
+			out = append(out, normalizeDBValue(item))
+		}
+		return out
 	default:
 		return value
 	}
