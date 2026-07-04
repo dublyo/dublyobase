@@ -909,6 +909,32 @@ button:disabled {
   width: min(560px, 100%);
 }
 
+.account-modal {
+  width: min(480px, 100%);
+}
+
+.account-form {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+}
+
+.account-form h3 {
+  margin: 6px 0 0;
+  color: var(--surface-txt);
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.account-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--surface-alt-2);
+  padding-top: 16px;
+}
+
 .pb-modal-header {
   display: flex;
   align-items: center;
@@ -1810,6 +1836,14 @@ button:disabled {
   .pb-dropzone .pb-btn,
   .pb-dropzone .pb-icon-btn {
     grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .account-actions {
+    display: grid;
+  }
+
+  .account-actions .pb-btn {
     width: 100%;
   }
 }

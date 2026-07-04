@@ -248,6 +248,7 @@ export default function AdminApp() {
   const [selectedRecordId, setSelectedRecordId] = useState("");
   const [recordEditorOpen, setRecordEditorOpen] = useState(false);
   const [apiPreviewOpen, setAPIPreviewOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [apiKeys, setApiKeys] = useState<APIKey[]>([]);
   const [oneTimeKey, setOneTimeKey] = useState<APIKey | null>(null);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
@@ -532,6 +533,7 @@ export default function AdminApp() {
     setMCPTokens([]);
     setSelectedUploadFile(null);
     setOneTimeMCPToken(null);
+    setAccountOpen(false);
   }
 
   async function submitPasswordChange(event: React.FormEvent<HTMLFormElement>) {
@@ -547,9 +549,11 @@ export default function AdminApp() {
     }
     setBusy(true);
     try {
+      const wasForced = admin?.mustChangePassword;
       const response = await changeAdminPassword(token, currentPassword, newPassword);
       setAdmin(response.admin);
-      showNotice("success", "Password changed. Admin access unlocked.");
+      setAccountOpen(false);
+      showNotice("success", wasForced ? "Password changed. Admin access unlocked." : "Password changed.");
       await refreshAll(token);
     } catch (error) {
       handleError(error);
@@ -1155,11 +1159,13 @@ export default function AdminApp() {
         <button type="button" onClick={() => refreshAll()} className="pb-header-link" aria-label="Refresh">
           <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} />
         </button>
-        <button type="button" onClick={signOut} className="pb-header-link logged-user" title="Log out">
+        <button type="button" onClick={() => setAccountOpen(true)} className="pb-header-link logged-user" title="Account settings">
           <span className="truncate">{admin.email}</span>
-          <LogOut className="h-4 w-4" />
+          <ChevronDown className="h-4 w-4" />
         </button>
       </header>
+
+      {accountOpen ? <AccountModal admin={admin} busy={busy} onSubmit={submitPasswordChange} onClose={() => setAccountOpen(false)} onLogout={signOut} /> : null}
 
       {notice ? (
         <div className={`pb-toast ${notice.type === "error" ? "danger" : "success"}`}>
@@ -1499,6 +1505,69 @@ function PasswordChangeScreen({
         </div>
       </section>
     </main>
+  );
+}
+
+function AccountModal({
+  admin,
+  busy,
+  onSubmit,
+  onClose,
+  onLogout,
+}: {
+  admin: Admin;
+  busy: boolean;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  onClose: () => void;
+  onLogout: () => void;
+}) {
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  return (
+    <div className="pb-modal-layer" role="presentation">
+      <section className="pb-modal account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
+        <header className="pb-modal-header">
+          <h2 id="account-title">Account</h2>
+          <button type="button" className="pb-icon-btn" onClick={onClose} aria-label="Close account settings">
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+        <form onSubmit={onSubmit} className="pb-modal-content account-form">
+          <div className="pb-info-grid compact">
+            <Info label="Signed in as" value={admin.email} />
+          </div>
+          <h3>Change password</h3>
+          <label className="pb-field password-field">
+            <span>Current password</span>
+            <input name="currentPassword" type={showCurrent ? "text" : "password"} autoComplete="current-password" required />
+            <button type="button" className="pb-icon-btn password-toggle" onClick={() => setShowCurrent((value) => !value)} aria-label={showCurrent ? "Hide current password" : "Show current password"}>
+              {showCurrent ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </label>
+          <label className="pb-field password-field">
+            <span>New password</span>
+            <input name="newPassword" type={showNew ? "text" : "password"} autoComplete="new-password" minLength={12} required />
+            <button type="button" className="pb-icon-btn password-toggle" onClick={() => setShowNew((value) => !value)} aria-label={showNew ? "Hide new password" : "Show new password"}>
+              {showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </label>
+          <label className="pb-field">
+            <span>Confirm new password</span>
+            <input name="confirmPassword" type={showNew ? "text" : "password"} autoComplete="new-password" minLength={12} required />
+          </label>
+          <div className="account-actions">
+            <button type="button" onClick={onLogout} disabled={busy} className="pb-btn secondary">
+              <LogOut className="h-4 w-4" />
+              Log out
+            </button>
+            <button type="submit" disabled={busy} className="pb-btn primary">
+              {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              Save password
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 
