@@ -1400,7 +1400,7 @@ export default function AdminApp() {
     <main className="pb-app">
       <header className="pb-app-header accent-surface">
         <button type="button" className="pb-logo" onClick={() => changeView("collections")} aria-label="Open collections">
-          <img className="pb-brand-mark" src="/icon.png" alt="" aria-hidden="true" />
+          <img className="pb-brand-mark" src="/dublyobase-logo.png" alt="" aria-hidden="true" />
         </button>
         <nav className="pb-main-nav" aria-label="Primary">
           {navItems.map((item) => {
@@ -1717,7 +1717,7 @@ function AuthScreen({
     <main className="pb-login-screen">
       <section className="pb-login-card" aria-labelledby="login-title">
         <div className="pb-login-logo">
-          <img className="pb-login-mark" src="/icon.png" alt="" aria-hidden="true" />
+          <img className="pb-login-mark" src="/dublyobase-logo.png" alt="" aria-hidden="true" />
         </div>
         <h1 id="login-title">Superuser login</h1>
         {notice ? (
@@ -1776,7 +1776,7 @@ function PasswordChangeScreen({
     <main className="pb-login-screen">
       <section className="pb-login-card" aria-labelledby="password-change-title">
         <div className="pb-login-logo">
-          <img className="pb-login-mark" src="/icon.png" alt="" aria-hidden="true" />
+          <img className="pb-login-mark" src="/dublyobase-logo.png" alt="" aria-hidden="true" />
         </div>
         <h1 id="password-change-title">Change admin password</h1>
         <p className="pb-muted-copy">Signed in as {admin.email}. Set a new password before opening the control panel.</p>
