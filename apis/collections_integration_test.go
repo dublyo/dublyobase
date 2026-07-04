@@ -64,6 +64,7 @@ func TestAdminCollectionLifecycle(t *testing.T) {
 	createBody := `{
 		"name":"posts",
 		"type":"base",
+		"options":{"icon":{"type":"lucide","name":"book-open"}},
 		"fields":[
 			{"name":"title","type":"text","required":true},
 			{"name":"published","type":"bool"},
@@ -82,6 +83,7 @@ func TestAdminCollectionLifecycle(t *testing.T) {
 	if created.Name != "posts" || created.Type != core.CollectionBase || len(created.Fields) != 4 {
 		t.Fatalf("unexpected collection response: %+v", created)
 	}
+	assertCollectionIcon(t, created.Options, "lucide", "book-open")
 
 	assertCollectionMetadataCount(t, app.Pool, slug, "posts", 1)
 	for _, column := range []string{"id", "created", "updated", "title", "published", "meta", "status"} {
@@ -119,6 +121,7 @@ func TestAdminCollectionLifecycle(t *testing.T) {
 	}
 
 	updateBody := `{
+		"options":{"icon":{"type":"emoji","value":"\uD83D\uDCE6"}},
 		"fields":[
 			{"name":"title","type":"text","required":true},
 			{"name":"published","type":"bool"},
@@ -131,6 +134,11 @@ func TestAdminCollectionLifecycle(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update collection: want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
+	var updated core.Collection
+	if err := json.Unmarshal(rec.Body.Bytes(), &updated); err != nil {
+		t.Fatal(err)
+	}
+	assertCollectionIcon(t, updated.Options, "emoji", "\U0001F4E6")
 	assertColumnExists(t, app.Pool, schema, "posts", "payload")
 	assertColumnExists(t, app.Pool, schema, "posts", "body")
 	assertColumnMissing(t, app.Pool, schema, "posts", "meta")
@@ -255,6 +263,27 @@ func assertCollectionMetadataCount(t *testing.T, pool *pgxpool.Pool, slug string
 	}
 	if count != want {
 		t.Fatalf("metadata count for %s.%s = %d, want %d", slug, collection, count, want)
+	}
+}
+
+func assertCollectionIcon(t *testing.T, raw json.RawMessage, wantType string, wantValue string) {
+	t.Helper()
+	var options struct {
+		Icon struct {
+			Type  string `json:"type"`
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		} `json:"icon"`
+	}
+	if err := json.Unmarshal(raw, &options); err != nil {
+		t.Fatalf("collection options JSON: %v %s", err, string(raw))
+	}
+	got := options.Icon.Name
+	if wantType == "emoji" {
+		got = options.Icon.Value
+	}
+	if options.Icon.Type != wantType || got != wantValue {
+		t.Fatalf("icon = %s/%q, want %s/%q in %s", options.Icon.Type, got, wantType, wantValue, string(raw))
 	}
 }
 

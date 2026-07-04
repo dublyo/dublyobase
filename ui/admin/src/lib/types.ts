@@ -54,7 +54,7 @@ export type Collection = {
   createRule: string | null;
   updateRule: string | null;
   deleteRule: string | null;
-  options?: unknown;
+  options?: CollectionOptions;
 };
 
 export type CollectionSchemaItem = {
@@ -67,7 +67,22 @@ export type CollectionSchemaItem = {
   createRule: string | null;
   updateRule: string | null;
   deleteRule: string | null;
-  options?: unknown;
+  options?: CollectionOptions;
+};
+
+export type CollectionIconOption =
+  | {
+      type: "lucide";
+      name: string;
+    }
+  | {
+      type: "emoji";
+      value: string;
+    };
+
+export type CollectionOptions = {
+  icon?: CollectionIconOption | string;
+  [key: string]: unknown;
 };
 
 export type CollectionExport = {

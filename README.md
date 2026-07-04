@@ -14,7 +14,7 @@ The runtime is intentionally small:
 - GHCR image: `ghcr.io/dublyo/dublyobase`
 - No Redis, no nginx sidecar, no separate admin service
 
-Current public release: `v0.10.6`. Realtime subscriptions are not included in
+Current public release: `v0.10.7`. Realtime subscriptions are not included in
 this release.
 
 ## Features
@@ -140,7 +140,7 @@ curl http://localhost:8080/health
 Use a pinned image tag in production:
 
 ```yaml
-image: ghcr.io/dublyo/dublyobase:v0.10.6
+image: ghcr.io/dublyo/dublyobase:v0.10.7
 ```
 
 ### Existing Postgres
@@ -153,7 +153,7 @@ docker run --rm -p 8080:8080 \
   -e APP_URL="https://dublyobase.example.com" \
   -e JWT_SECRET="$(openssl rand -base64 32)" \
   -v dublyobase-storage:/data/storage \
-  ghcr.io/dublyo/dublyobase:v0.10.6
+  ghcr.io/dublyo/dublyobase:v0.10.7
 ```
 
 `DATABASE_URL`, `APP_URL`, and `JWT_SECRET` are required. On an empty install,

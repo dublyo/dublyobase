@@ -5,18 +5,26 @@ import {
   AlertCircle,
   Archive,
   Bold,
+  Bell,
   Braces,
+  BookOpen,
+  Boxes,
+  BriefcaseBusiness,
   Calendar,
   CalendarCheck2,
   Check,
   ChevronDown,
   Code2,
   Copy,
+  CreditCard,
   Database,
   Download,
   Eye,
   EyeOff,
+  FileText,
   FileUp,
+  Folder,
+  Globe,
   HardDrive,
   Hash,
   Heading,
@@ -31,6 +39,8 @@ import {
   Mail,
   MapPin,
   MoreHorizontal,
+  MessageSquare,
+  Package,
   PencilLine,
   Plus,
   Quote,
@@ -41,12 +51,17 @@ import {
   Settings,
   ShieldCheck,
   Share2,
+  ShoppingCart,
+  Star,
   Table2,
+  Tag,
   ToggleLeft,
   Trash2,
   Type,
   Underline,
   UploadCloud,
+  User,
+  Users,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -94,7 +109,7 @@ import {
   updateStorageSettings,
   uploadFile,
 } from "../src/lib/api";
-import type { APIKey, Admin, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Field, FieldType, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SQLResult } from "../src/lib/types";
+import type { APIKey, Admin, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, Field, FieldType, Health, InstanceSettings, MCPToken, Project, RecordItem, RecordList, SQLResult } from "../src/lib/types";
 
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
@@ -121,6 +136,33 @@ const fieldTypeChoices: FieldTypeChoice[] = [
   { type: "json", label: "JSON", icon: Braces },
   { label: "Geo Point", icon: MapPin, disabled: true },
 ];
+type CollectionIconChoice = {
+  name: string;
+  label: string;
+  icon: LucideIcon;
+};
+const collectionIconChoices: CollectionIconChoice[] = [
+  { name: "table", label: "Table", icon: Table2 },
+  { name: "shield", label: "Auth", icon: ShieldCheck },
+  { name: "eye", label: "View", icon: Eye },
+  { name: "book-open", label: "Content", icon: BookOpen },
+  { name: "boxes", label: "Catalog", icon: Boxes },
+  { name: "users", label: "Users", icon: Users },
+  { name: "user", label: "Profile", icon: User },
+  { name: "package", label: "Package", icon: Package },
+  { name: "shopping-cart", label: "Orders", icon: ShoppingCart },
+  { name: "file-text", label: "Documents", icon: FileText },
+  { name: "folder", label: "Folder", icon: Folder },
+  { name: "message-square", label: "Messages", icon: MessageSquare },
+  { name: "globe", label: "Global", icon: Globe },
+  { name: "tag", label: "Tags", icon: Tag },
+  { name: "star", label: "Featured", icon: Star },
+  { name: "bell", label: "Alerts", icon: Bell },
+  { name: "credit-card", label: "Billing", icon: CreditCard },
+  { name: "briefcase", label: "Business", icon: BriefcaseBusiness },
+  { name: "database", label: "Data", icon: Database },
+];
+const collectionIconMap = Object.fromEntries(collectionIconChoices.map((choice) => [choice.name, choice.icon])) as Record<string, LucideIcon>;
 const navItems = [
   { id: "collections", label: "Collections", icon: Layers3 },
   { id: "logs", label: "Logs", icon: Archive },
@@ -149,6 +191,7 @@ type CollectionModalMode = "create" | "settings" | null;
 type CollectionDraft = {
   name: string;
   type: Collection["type"];
+  icon: CollectionIconOption;
   fields: Field[];
   listRule: string;
   viewRule: string;
@@ -170,6 +213,7 @@ const emptyRules: RuleDraft = {
 const emptyCollectionDraft: CollectionDraft = {
   name: "",
   type: "base",
+  icon: { type: "lucide", name: "table" },
   fields: [{ name: "title", type: "text", required: true, options: {} }],
   ...emptyRules,
 };
@@ -268,6 +312,7 @@ export default function AdminApp() {
   const [collectionModal, setCollectionModal] = useState<CollectionModalMode>(null);
   const [editingFields, setEditingFields] = useState<Field[]>([]);
   const [editingRules, setEditingRules] = useState<RuleDraft>(emptyRules);
+  const [editingIcon, setEditingIcon] = useState<CollectionIconOption>({ type: "lucide", name: "table" });
   const [smtpDraft, setSMTPDraft] = useState(emptySMTPDraft);
   const [storageDraft, setStorageDraft] = useState(emptyStorageDraft);
   const [cronDraft, setCronDraft] = useState(emptyCronDraft);
@@ -468,6 +513,7 @@ export default function AdminApp() {
       updateRule: selectedCollectionModel.updateRule ?? "",
       deleteRule: selectedCollectionModel.deleteRule ?? "",
     });
+    setEditingIcon(collectionIconFromOptions(selectedCollectionModel));
     if (!selectedCollectionModel.fields.some((field) => field.searchable && canSearchField(field))) {
       setRecordSearch("");
     }
@@ -597,6 +643,7 @@ export default function AdminApp() {
         createRule: collectionDraft.createRule,
         updateRule: collectionDraft.updateRule,
         deleteRule: collectionDraft.deleteRule,
+        options: collectionOptionsWithIcon(undefined, collectionDraft.icon),
       });
       setCollectionDraft(emptyCollectionDraft);
       setCollectionModal(null);
@@ -617,6 +664,7 @@ export default function AdminApp() {
       const updated = await updateCollection(token, selectedProject, selectedCollectionModel.name, {
         fields: editingFields.map(cleanField),
         ...editingRules,
+        options: collectionOptionsWithIcon(selectedCollectionModel.options, editingIcon),
       });
       showNotice("success", `Collection ${updated.name} saved`);
       setCollectionModal(null);
@@ -1341,6 +1389,8 @@ export default function AdminApp() {
           collections={collections}
           draft={collectionDraft}
           setDraft={setCollectionDraft}
+          icon={collectionDraft.icon}
+          setIcon={(icon) => setCollectionDraft((next) => ({ ...next, icon }))}
           fields={collectionDraft.fields}
           setFields={(fields) => setCollectionDraft((draft) => ({ ...draft, fields }))}
           rules={collectionDraft}
@@ -1356,6 +1406,8 @@ export default function AdminApp() {
           mode="settings"
           collection={selectedCollectionModel}
           collections={collections}
+          icon={editingIcon}
+          setIcon={setEditingIcon}
           fields={editingFields}
           setFields={setEditingFields}
           rules={editingRules}
@@ -1820,7 +1872,7 @@ function CollectionGroup({
       <summary>{label}</summary>
       {collections.map((collection) => (
         <button key={collection.id} type="button" title={collection.name} className={`pb-nav-item ${selected === collection.name ? "active" : ""}`} onClick={() => onSelect(collection.name)}>
-          <CollectionIcon type={collection.type} />
+          <CollectionIcon collection={collection} />
           <span className="txt">{collection.name}</span>
           {collection.type === "auth" ? <ShieldCheck className="h-3.5 w-3.5 hint" /> : null}
         </button>
@@ -1829,10 +1881,61 @@ function CollectionGroup({
   );
 }
 
-function CollectionIcon({ type }: { type: Collection["type"] }) {
-  if (type === "auth") return <ShieldCheck className="h-4 w-4" />;
-  if (type === "view") return <Eye className="h-4 w-4" />;
-  return <Table2 className="h-4 w-4" />;
+function CollectionIcon({ collection, icon, type }: { collection?: Collection; icon?: CollectionIconOption; type?: Collection["type"] }) {
+  const resolvedType = type ?? collection?.type ?? "base";
+  const resolved = icon ?? (collection ? collectionIconFromOptions(collection) : defaultCollectionIcon(resolvedType));
+  if (resolved.type === "emoji") {
+    return (
+      <span className="pb-collection-emoji" aria-hidden="true">
+        {resolved.value || "📁"}
+      </span>
+    );
+  }
+  const fallback = defaultCollectionIcon(resolvedType);
+  const Icon = collectionIconMap[resolved.name] ?? (fallback.type === "lucide" ? collectionIconMap[fallback.name] : undefined) ?? Table2;
+  return <Icon className="h-4 w-4" />;
+}
+
+function CollectionIconPicker({ icon, onChange }: { icon: CollectionIconOption; onChange: (icon: CollectionIconOption) => void }) {
+  const currentName = icon.type === "lucide" ? icon.name : "table";
+  const currentEmoji = icon.type === "emoji" ? icon.value : "";
+  return (
+    <fieldset className="pb-icon-picker">
+      <legend>Icon</legend>
+      <div className="pb-icon-picker-head">
+        <div className="pb-icon-preview" aria-hidden="true">
+          <CollectionIcon icon={icon} />
+        </div>
+        <div className="pb-segmented-control" role="radiogroup" aria-label="Collection icon type">
+          <button type="button" role="radio" aria-checked={icon.type === "lucide"} className={icon.type === "lucide" ? "active" : ""} onClick={() => onChange({ type: "lucide", name: currentName })}>
+            Lucide
+          </button>
+          <button type="button" role="radio" aria-checked={icon.type === "emoji"} className={icon.type === "emoji" ? "active" : ""} onClick={() => onChange({ type: "emoji", value: currentEmoji || "◆" })}>
+            Emoji
+          </button>
+        </div>
+      </div>
+      {icon.type === "lucide" ? (
+        <div className="pb-icon-grid" role="list" aria-label="Lucide collection icons">
+          {collectionIconChoices.map((choice) => {
+            const Icon = choice.icon;
+            const selected = currentName === choice.name;
+            return (
+              <button key={choice.name} type="button" className={selected ? "active" : ""} aria-pressed={selected} title={choice.label} onClick={() => onChange({ type: "lucide", name: choice.name })}>
+                <Icon className="h-4 w-4" />
+                <span>{choice.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <label className="pb-field emoji-field">
+          <span>Emoji</span>
+          <input value={currentEmoji} maxLength={8} onChange={(event) => onChange({ type: "emoji", value: sanitizeCollectionEmoji(event.target.value) })} placeholder="◆" />
+        </label>
+      )}
+    </fieldset>
+  );
 }
 
 function CollectionModal({
@@ -1841,6 +1944,8 @@ function CollectionModal({
   collections,
   draft,
   setDraft,
+  icon,
+  setIcon,
   fields,
   setFields,
   rules,
@@ -1855,6 +1960,8 @@ function CollectionModal({
   collections: Collection[];
   draft?: CollectionDraft;
   setDraft?: React.Dispatch<React.SetStateAction<CollectionDraft>>;
+  icon: CollectionIconOption;
+  setIcon: (icon: CollectionIconOption) => void;
   fields: Field[];
   setFields: (fields: Field[]) => void;
   rules: RuleDraft;
@@ -1905,13 +2012,15 @@ function CollectionModal({
 
           {mode === "settings" && collection ? (
             <div className="pb-collection-title">
-              <CollectionIcon type={collection.type} />
+              <CollectionIcon collection={collection} icon={icon} />
               <div>
                 <p>{collection.name}</p>
                 <span>{collection.type} collection</span>
               </div>
             </div>
           ) : null}
+
+          <CollectionIconPicker icon={icon} onChange={setIcon} />
 
           <div className="pb-tabs" role="tablist" aria-label="Collection editor">
             <button type="button" role="tab" aria-selected={tab === "fields"} className={`pb-tab-item ${tab === "fields" ? "active" : ""}`} onClick={() => setTab("fields")}>
@@ -2281,7 +2390,7 @@ function RecordModal({
         </header>
         <div className="pb-modal-content">
           <div className="pb-collection-title">
-            <CollectionIcon type={collection.type} />
+            <CollectionIcon collection={collection} />
             <div>
               <p>{collection.name}</p>
               <span>{selectedRecordId || "new record"}</span>
@@ -2547,7 +2656,7 @@ DELETE ${basePath}/records/{id}`;
         </header>
         <div className="pb-modal-content">
           <div className="pb-collection-title">
-            <CollectionIcon type={collection.type} />
+            <CollectionIcon collection={collection} />
             <div>
               <p>{collection.name}</p>
               <span>{collection.fields.length} fields</span>
@@ -4038,6 +4147,64 @@ function renderValue(value: unknown) {
   if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
   return JSON.stringify(value);
+}
+
+function collectionIconFromOptions(collection: Collection): CollectionIconOption {
+  return normalizeCollectionIcon(normalizeCollectionOptions(collection.options).icon, collection.type);
+}
+
+function collectionOptionsWithIcon(options: CollectionOptions | undefined, icon: CollectionIconOption): CollectionOptions {
+  return {
+    ...normalizeCollectionOptions(options),
+    icon: normalizeCollectionIcon(icon, "base"),
+  };
+}
+
+function normalizeCollectionOptions(options: unknown): CollectionOptions {
+  if (!options || typeof options !== "object" || Array.isArray(options)) return {};
+  return { ...(options as CollectionOptions) };
+}
+
+function normalizeCollectionIcon(raw: unknown, collectionType: Collection["type"]): CollectionIconOption {
+  const fallback = defaultCollectionIcon(collectionType);
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const body = raw as { type?: unknown; name?: unknown; value?: unknown };
+    if (body.type === "lucide" && typeof body.name === "string") {
+      const name = normalizeLucideIconName(body.name);
+      return collectionIconMap[name] ? { type: "lucide", name } : fallback;
+    }
+    if (body.type === "emoji" && typeof body.value === "string") {
+      return { type: "emoji", value: sanitizeCollectionEmoji(body.value) || "◆" };
+    }
+  }
+  if (typeof raw === "string") {
+    const value = raw.trim();
+    if (value.startsWith("lucide:")) {
+      const name = normalizeLucideIconName(value.slice("lucide:".length));
+      return collectionIconMap[name] ? { type: "lucide", name } : fallback;
+    }
+    if (value.startsWith("emoji:")) {
+      return { type: "emoji", value: sanitizeCollectionEmoji(value.slice("emoji:".length)) || "◆" };
+    }
+    const name = normalizeLucideIconName(value);
+    if (collectionIconMap[name]) return { type: "lucide", name };
+    if (value) return { type: "emoji", value: sanitizeCollectionEmoji(value) || "◆" };
+  }
+  return fallback;
+}
+
+function defaultCollectionIcon(type: Collection["type"]): CollectionIconOption {
+  if (type === "auth") return { type: "lucide", name: "shield" };
+  if (type === "view") return { type: "lucide", name: "eye" };
+  return { type: "lucide", name: "table" };
+}
+
+function normalizeLucideIconName(value: string) {
+  return value.trim().replaceAll("_", "-").replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+}
+
+function sanitizeCollectionEmoji(value: string) {
+  return Array.from(value.trim()).slice(0, 4).join("");
 }
 
 function extractImportItems(raw: string): unknown[] {

@@ -84,34 +84,89 @@ func TestAdminOpsAndMCP(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"collections.create"`) {
 		t.Fatalf("mcp tools/list failed: status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	rec = postMCP(srv.Handler, mcpToken, fmt.Sprintf(`{
-		"jsonrpc":"2.0",
-		"id":3,
-		"method":"tools/call",
-		"params":{
-			"name":"collections.create",
-			"arguments":{
-				"projectSlug":%q,
-				"name":"mcp_posts",
-				"type":"base",
-				"fields":[{"name":"title","type":"text","required":true,"options":{}}]
-			}
-		}
-	}`, projectSlug))
-	if rec.Code != http.StatusOK || !strings.Contains(mcpToolText(t, rec.Body.Bytes()), `"mcp_posts"`) {
+	rec = postMCPTool(srv.Handler, mcpToken, 3, "collections.create", map[string]any{
+		"projectSlug": projectSlug,
+		"name":        "mcp_posts",
+		"type":        "base",
+		"options":     map[string]any{"icon": map[string]any{"type": "lucide", "name": "book-open"}},
+		"fields": []map[string]any{
+			{"name": "title", "type": "text", "required": true, "searchable": true, "options": map[string]any{"min": 1, "max": 120}},
+			{"name": "rich_body", "type": "editor", "options": map[string]any{"maxSize": 2048}},
+			{"name": "secret", "type": "password", "options": map[string]any{"min": 8, "cost": 4}},
+			{"name": "views", "type": "number", "searchable": true, "options": map[string]any{"onlyInt": true, "min": 0, "max": 10000}},
+			{"name": "active", "type": "bool", "searchable": true},
+			{"name": "launch_at", "type": "date", "searchable": true},
+			{"name": "published_at", "type": "autodate", "options": map[string]any{"onCreate": true}},
+			{"name": "contact", "type": "email", "options": map[string]any{"onlyDomains": []string{"example.com"}}},
+			{"name": "website", "type": "url", "options": map[string]any{"max": 200}},
+			{"name": "status", "type": "select", "searchable": true, "options": map[string]any{"values": []string{"draft", "live"}}},
+			{"name": "payload", "type": "json", "options": map[string]any{"maxSize": 2048}},
+			{"name": "owner", "type": "relation", "options": map[string]any{"collection": "users"}},
+			{"name": "attachment", "type": "file", "options": map[string]any{"multiple": true, "maxSelect": 2, "maxSize": 1024, "mimeTypes": []string{"text/plain"}}},
+		},
+	})
+	createdCollection := mcpToolJSON[mcpCollectionResponse](t, rec.Body.Bytes())
+	if rec.Code != http.StatusOK || createdCollection.Name != "mcp_posts" || len(createdCollection.Fields) != 13 {
 		t.Fatalf("mcp collection create failed: status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	rec = postMCP(srv.Handler, mcpToken, fmt.Sprintf(`{
-		"jsonrpc":"2.0",
-		"id":4,
-		"method":"tools/call",
-		"params":{
-			"name":"records.create",
-			"arguments":{"projectSlug":%q,"collection":"mcp_posts","data":{"title":"via mcp"}}
+
+	for i := 1; i <= 12; i++ {
+		status := "draft"
+		if i%2 == 0 {
+			status = "live"
 		}
-	}`, projectSlug))
-	if rec.Code != http.StatusOK || !strings.Contains(mcpToolText(t, rec.Body.Bytes()), `"via mcp"`) {
-		t.Fatalf("mcp record create failed: status=%d body=%s", rec.Code, rec.Body.String())
+		rec = postMCPTool(srv.Handler, mcpToken, 10+i, "records.create", map[string]any{
+			"projectSlug": projectSlug,
+			"collection":  "mcp_posts",
+			"data": map[string]any{
+				"title":     fmt.Sprintf("via mcp %02d", i),
+				"rich_body": fmt.Sprintf("<p>Body %d</p>", i),
+				"secret":    fmt.Sprintf("password-%02d", i),
+				"views":     i,
+				"active":    i%2 == 0,
+				"launch_at": "2026-07-04T12:00:00Z",
+				"contact":   fmt.Sprintf("user%02d@example.com", i),
+				"website":   fmt.Sprintf("https://example.com/posts/%d", i),
+				"status":    status,
+				"payload":   map[string]any{"index": i},
+				"owner":     "9c10d5b9-3a23-4f25-91c3-09a40d7e9f7e",
+			},
+		})
+		if rec.Code != http.StatusOK || !strings.Contains(mcpToolText(t, rec.Body.Bytes()), fmt.Sprintf(`"via mcp %02d"`, i)) {
+			t.Fatalf("mcp record create %d failed: status=%d body=%s", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	rec = postMCPTool(srv.Handler, mcpToken, 40, "records.list", map[string]any{
+		"projectSlug": projectSlug,
+		"collection":  "mcp_posts",
+		"page":        1,
+		"perPage":     10,
+		"sort":        "views",
+	})
+	firstPage := mcpToolJSON[recordListResponse](t, rec.Body.Bytes())
+	if rec.Code != http.StatusOK || firstPage.Page != 1 || firstPage.PerPage != 10 || firstPage.TotalItems != 12 || len(firstPage.Items) != 10 {
+		t.Fatalf("mcp first page = %+v status=%d body=%s", firstPage, rec.Code, rec.Body.String())
+	}
+	rec = postMCPTool(srv.Handler, mcpToken, 41, "records.list", map[string]any{
+		"projectSlug": projectSlug,
+		"collection":  "mcp_posts",
+		"page":        2,
+		"perPage":     10,
+		"sort":        "views",
+	})
+	secondPage := mcpToolJSON[recordListResponse](t, rec.Body.Bytes())
+	if rec.Code != http.StatusOK || secondPage.Page != 2 || secondPage.PerPage != 10 || secondPage.TotalItems != 12 || len(secondPage.Items) != 2 {
+		t.Fatalf("mcp second page = %+v status=%d body=%s", secondPage, rec.Code, rec.Body.String())
+	}
+	rec = postMCPTool(srv.Handler, mcpToken, 42, "records.list", map[string]any{
+		"projectSlug": projectSlug,
+		"collection":  "mcp_posts",
+		"perPage":     999,
+	})
+	cappedPage := mcpToolJSON[recordListResponse](t, rec.Body.Bytes())
+	if rec.Code != http.StatusOK || cappedPage.PerPage != 500 || cappedPage.TotalItems != 12 || len(cappedPage.Items) != 12 {
+		t.Fatalf("mcp capped page = %+v status=%d body=%s", cappedPage, rec.Code, rec.Body.String())
 	}
 
 	rec = postJSON(srv.Handler, "/admin/api/mcp/tokens", adminToken, fmt.Sprintf(`{
@@ -138,6 +193,22 @@ func postMCP(handler http.Handler, token string, body string) *httptest.Response
 	return rec
 }
 
+func postMCPTool(handler http.Handler, token string, id int, name string, args any) *httptest.ResponseRecorder {
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      name,
+			"arguments": args,
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return postMCP(handler, token, string(body))
+}
+
 func decodeToken(t *testing.T, body []byte) string {
 	t.Helper()
 	var out struct {
@@ -147,6 +218,31 @@ func decodeToken(t *testing.T, body []byte) string {
 		t.Fatalf("bad token response: %v %s", err, string(body))
 	}
 	return out.Token
+}
+
+type mcpCollectionResponse struct {
+	Name   string `json:"name"`
+	Fields []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	} `json:"fields"`
+}
+
+type recordListResponse struct {
+	Items      []map[string]any `json:"items"`
+	Page       int              `json:"page"`
+	PerPage    int              `json:"perPage"`
+	TotalItems int              `json:"totalItems"`
+}
+
+func mcpToolJSON[T any](t *testing.T, body []byte) T {
+	t.Helper()
+	var out T
+	text := mcpToolText(t, body)
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		t.Fatalf("bad mcp tool JSON: %v text=%s", err, text)
+	}
+	return out
 }
 
 func mcpToolText(t *testing.T, body []byte) string {
