@@ -2571,6 +2571,10 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
             <input type="checkbox" checked={Boolean(field.options?.cascadeDelete)} onChange={(event) => onChange(setFieldOption(field, "cascadeDelete", event.target.checked))} />
             Cascade delete
           </label>
+          <label className="pb-checkline">
+            <input type="checkbox" checked={Boolean(field.options?.unique)} onChange={(event) => onChange(setFieldOption(field, "unique", event.target.checked))} />
+            Unique relation
+          </label>
         </div>
         <label className="pb-field">
           <span>Reverse field name</span>
@@ -5198,6 +5202,7 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
       ...withNumber("minSelect"),
       ...withNumber("maxSelect"),
       ...withBool("cascadeDelete"),
+      ...withBool("unique"),
     };
   }
   if (type === "file") {

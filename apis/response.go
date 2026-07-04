@@ -53,6 +53,8 @@ func writeCoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "project_not_found", "project not found")
 	case errors.Is(err, core.ErrProvisioningConflict):
 		writeError(w, http.StatusConflict, "provisioning_conflict", "project database objects already exist")
+	case errors.Is(err, core.ErrRecordConflict):
+		writeError(w, http.StatusConflict, "record_conflict", err.Error())
 	case errors.Is(err, core.ErrCollectionExists):
 		writeError(w, http.StatusConflict, "collection_exists", "collection already exists")
 	case errors.Is(err, core.ErrCollectionNotFound):

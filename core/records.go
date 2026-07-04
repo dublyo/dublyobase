@@ -1119,6 +1119,8 @@ func mapRecordDBError(err error) error {
 	switch pgErrCode(err) {
 	case "42501":
 		return ErrRLSDenied
+	case "23505":
+		return fmt.Errorf("%w: duplicate unique field value", ErrRecordConflict)
 	default:
 		return err
 	}

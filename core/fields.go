@@ -161,8 +161,16 @@ func validateFieldOptions(field Field) error {
 		if err := ValidateDataIdentifier("relation collection", collection); err != nil {
 			return err
 		}
+		if _, ok := field.Options["unique"]; ok {
+			if _, ok := field.Options["unique"].(bool); !ok {
+				return fmt.Errorf("%w: relation field %q options.unique must be a boolean", ErrValidation, field.Name)
+			}
+		}
 		if err := validateMinMaxSelectOptions(field, 0); err != nil {
 			return err
+		}
+		if boolOption(field.Options, "unique") && fieldIsMultiple(field) {
+			return fmt.Errorf("%w: relation field %q options.unique requires a single relation", ErrValidation, field.Name)
 		}
 	case "file":
 		if _, ok := field.Options["multiple"]; ok {

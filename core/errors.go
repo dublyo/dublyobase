@@ -11,6 +11,7 @@ var (
 	ErrProjectExists          = errors.New("project exists")
 	ErrProjectNotFound        = errors.New("project not found")
 	ErrProvisioningConflict   = errors.New("provisioning conflict")
+	ErrRecordConflict         = errors.New("record conflict")
 	ErrRecordNotFound         = errors.New("record not found")
 	ErrInvalidFilter          = errors.New("invalid filter")
 	ErrInvalidRule            = errors.New("invalid rule")

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -139,6 +140,9 @@ func CreateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 		}
 		return nil, err
 	}
+	if err := syncRelationUniqueIndexes(ctx, tx, project.SchemaName, "", collection.Name, nil, collection.Fields); err != nil {
+		return nil, err
+	}
 	if err := syncCollectionPolicies(ctx, tx, project, collection); err != nil {
 		return nil, err
 	}
@@ -177,6 +181,56 @@ func createCollectionTable(ctx context.Context, tx pgx.Tx, schemaName string, ta
 		return err
 	}
 	return enableDefaultDenyRLS(ctx, tx, schemaName, tableName)
+}
+
+func syncRelationUniqueIndexes(ctx context.Context, tx pgx.Tx, schemaName string, currentTableName string, nextTableName string, currentFields []Field, nextFields []Field) error {
+	stale := map[string]struct{}{}
+	if currentTableName != "" {
+		for _, field := range currentFields {
+			if relationNeedsUniqueIndex(field) {
+				stale[relationUniqueIndexName(currentTableName, field.Name)] = struct{}{}
+			}
+		}
+	}
+	desired := map[string]Field{}
+	for _, field := range nextFields {
+		if relationNeedsUniqueIndex(field) {
+			desired[relationUniqueIndexName(nextTableName, field.Name)] = field
+		}
+	}
+	for name := range stale {
+		if _, keep := desired[name]; keep {
+			continue
+		}
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`drop index if exists %s`, quoteIdent(schemaName, name))); err != nil {
+			return mapSchemaSyncError(err)
+		}
+	}
+	table := quoteIdent(schemaName, nextTableName)
+	for name, field := range desired {
+		column := quoteIdent(field.Name)
+		if _, err := tx.Exec(ctx, fmt.Sprintf(`create unique index if not exists %s on %s (%s) where %s is not null`, quoteIdent(name), table, column, column)); err != nil {
+			return mapSchemaSyncError(err)
+		}
+	}
+	return nil
+}
+
+func relationNeedsUniqueIndex(field Field) bool {
+	return field.Type == "relation" && boolOption(field.Options, "unique") && !fieldIsMultiple(field)
+}
+
+func relationUniqueIndexName(tableName string, fieldName string) string {
+	raw := "dbo_reluniq_" + tableName + "_" + fieldName
+	if len(raw) <= 55 {
+		return raw
+	}
+	sum := sha1.Sum([]byte(raw))
+	prefix := raw
+	if len(prefix) > 42 {
+		prefix = prefix[:42]
+	}
+	return fmt.Sprintf("%s_%x", prefix, sum[:6])
 }
 
 func ListCollections(ctx context.Context, pool *pgxpool.Pool, projectSlug string) ([]Collection, error) {
@@ -325,6 +379,22 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 			case "42P07":
 				return nil, ErrCollectionExists
 			}
+			return nil, err
+		}
+	}
+	if input.FieldsSet {
+		currentSchemaName, currentTableName, err := collectionPhysicalTable(project, current)
+		if err != nil {
+			return nil, err
+		}
+		nextSchemaName, nextTableName, err := collectionPhysicalTable(project, &next)
+		if err != nil {
+			return nil, err
+		}
+		if currentSchemaName != nextSchemaName {
+			return nil, fmt.Errorf("%w: relation unique indexes cannot move schemas", ErrValidation)
+		}
+		if err := syncRelationUniqueIndexes(ctx, tx, nextSchemaName, currentTableName, nextTableName, current.Fields, next.Fields); err != nil {
 			return nil, err
 		}
 	}

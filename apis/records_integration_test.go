@@ -127,6 +127,66 @@ func TestRecordsAPIAndRLS(t *testing.T) {
 	}
 }
 
+func TestRelationUniqueOptionEnforcesOneToOne(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	adminToken := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, adminToken)
+	schema, _ := core.ProjectNames(slug)
+	serviceKey := createAPIKeyForRecords(t, srv.Handler, adminToken, slug, "service")
+	user1 := signupAppUserForTest(t, srv.Handler, slug, "profile-owner-1@example.com")
+	user2 := signupAppUserForTest(t, srv.Handler, slug, "profile-owner-2@example.com")
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), adminToken, `{
+		"name":"profiles",
+		"type":"base",
+		"fields":[
+			{"name":"customer","type":"relation","required":true,"options":{"collection":"users","maxSelect":1,"unique":true}},
+			{"name":"display_name","type":"text","required":true}
+		]
+	}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create profiles collection: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var indexCount int
+	if err := app.Pool.QueryRow(context.Background(), `
+		select count(*)
+		from pg_indexes
+		where schemaname = $1
+			and tablename = 'profiles'
+			and indexname like 'dbo_reluniq_profiles_customer%'`, schema).Scan(&indexCount); err != nil {
+		t.Fatal(err)
+	}
+	if indexCount != 1 {
+		t.Fatalf("unique relation index count = %d, want 1", indexCount)
+	}
+
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/profiles/records", slug), serviceKey, fmt.Sprintf(`{"customer":%q,"display_name":"Primary"}`, user1.User.ID))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create first profile: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/profiles/records", slug), serviceKey, fmt.Sprintf(`{"customer":%q,"display_name":"Duplicate"}`, user1.User.ID))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate profile: want 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/profiles/records", slug), serviceKey, fmt.Sprintf(`{"customer":%q,"display_name":"Other"}`, user2.User.ID))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create second user profile: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), adminToken, `{
+		"name":"bad_profiles",
+		"type":"base",
+		"fields":[
+			{"name":"customers","type":"relation","options":{"collection":"users","maxSelect":2,"unique":true}}
+		]
+	}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unique multi relation: want 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestPocketBaseStyleFieldOptionsAPI(t *testing.T) {
 	app, _ := newIntegrationApp(t)
 	srv := NewServer(app)
