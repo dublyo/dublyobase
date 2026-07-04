@@ -29,6 +29,7 @@ import (
 
 const fileTokenTTL = 5 * time.Minute
 const maxThumbnailSourcePixels = 40_000_000
+const maxThumbnailOutputPixels = 4_000_000
 
 type FileMeta struct {
 	ID      string            `json:"id"`
@@ -256,7 +257,7 @@ func MintFileToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, auth *R
 			IssuedAt:  jwt.NewNumericDate(now.UTC()),
 		},
 	}
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(cfg.JWTSecret))
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(derivedSecretKey(cfg.JWTSecret, "file-token"))
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -275,7 +276,7 @@ func ParseFileToken(secret string, token string, now time.Time) (*FileTokenClaim
 			if t.Method != jwt.SigningMethodHS256 {
 				return nil, fmt.Errorf("unexpected signing method")
 			}
-			return []byte(secret), nil
+			return derivedSecretKey(secret, "file-token"), nil
 		},
 		jwt.WithTimeFunc(func() time.Time { return now.UTC() }),
 		jwt.WithExpirationRequired(),
@@ -436,7 +437,7 @@ func ParseThumbSize(raw string) (int, int, string, error) {
 	}
 	w, errW := strconv.Atoi(parts[0])
 	h, errH := strconv.Atoi(parts[1])
-	if errW != nil || errH != nil || w < 1 || h < 1 || w > 2000 || h > 2000 {
+	if errW != nil || errH != nil || w < 1 || h < 1 || w > 2000 || h > 2000 || w*h > maxThumbnailOutputPixels {
 		return 0, 0, "", fmt.Errorf("%w: thumb dimensions must be between 1 and 2000", ErrValidation)
 	}
 	return w, h, fmt.Sprintf("%dx%d", w, h), nil

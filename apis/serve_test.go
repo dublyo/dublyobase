@@ -67,6 +67,19 @@ func TestReadyEndpoint(t *testing.T) {
 	}
 }
 
+func TestServerHasDefensiveTimeouts(t *testing.T) {
+	app := newTestApp(t, deadPool(t))
+	srv := NewServer(app)
+
+	if srv.ReadHeaderTimeout == 0 || srv.ReadTimeout == 0 || srv.WriteTimeout == 0 || srv.IdleTimeout == 0 {
+		t.Fatalf("server timeouts must be set: readHeader=%s read=%s write=%s idle=%s",
+			srv.ReadHeaderTimeout, srv.ReadTimeout, srv.WriteTimeout, srv.IdleTimeout)
+	}
+	if srv.MaxHeaderBytes == 0 {
+		t.Fatal("MaxHeaderBytes must be set")
+	}
+}
+
 func TestHealthDegradedShapeAndSpeed(t *testing.T) {
 	app := newTestApp(t, deadPool(t))
 	srv := NewServer(app)

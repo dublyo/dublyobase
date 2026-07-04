@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/dublyo/dublyobase/core"
@@ -122,6 +123,26 @@ func TestCORS(t *testing.T) {
 			t.Fatal("preflight should be cacheable (Max-Age)")
 		}
 	})
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	s := testServer([]string{"*"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/x", nil)
+	s.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})).ServeHTTP(rec, req)
+
+	for key, want := range map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "no-referrer",
+	} {
+		if got := rec.Header().Get(key); got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") {
+		t.Fatalf("CSP missing frame-ancestors: %q", got)
+	}
 }
 
 func TestClientIP(t *testing.T) {

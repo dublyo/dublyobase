@@ -17,19 +17,23 @@ import (
 )
 
 type server struct {
-	app          *core.App
-	setupLimiter *rateLimiter
-	loginLimiter *rateLimiter
-	authLimiter  *rateLimiter
+	app                   *core.App
+	setupLimiter          *rateLimiter
+	loginLimiter          *rateLimiter
+	changePasswordLimiter *rateLimiter
+	authLimiter           *rateLimiter
+	mcpLimiter            *rateLimiter
 }
 
 // NewServer builds the HTTP server for an App.
 func NewServer(app *core.App) *http.Server {
 	s := &server{
-		app:          app,
-		setupLimiter: newRateLimiter(5, time.Minute),
-		loginLimiter: newRateLimiter(10, time.Minute),
-		authLimiter:  newRateLimiter(30, time.Minute),
+		app:                   app,
+		setupLimiter:          newRateLimiter(5, time.Minute),
+		loginLimiter:          newRateLimiter(10, time.Minute),
+		changePasswordLimiter: newRateLimiter(5, time.Minute),
+		authLimiter:           newRateLimiter(30, time.Minute),
+		mcpLimiter:            newRateLimiter(120, time.Minute),
 	}
 
 	mux := http.NewServeMux()
@@ -38,7 +42,7 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("POST /setup", s.limitByIP("setup", s.setupLimiter, http.HandlerFunc(s.setup)))
 	mux.Handle("POST /admin/api/auth/login", s.limitByIP("login", s.loginLimiter, http.HandlerFunc(s.adminLogin)))
 	mux.Handle("POST /admin/api/auth/logout", s.requireAdmin(http.HandlerFunc(s.adminLogout)))
-	mux.Handle("POST /admin/api/auth/change-password", s.requireAdmin(http.HandlerFunc(s.adminChangePassword)))
+	mux.Handle("POST /admin/api/auth/change-password", s.limitByIP("admin-change-password", s.changePasswordLimiter, s.requireAdmin(http.HandlerFunc(s.adminChangePassword))))
 	mux.Handle("GET /admin/api/me", s.requireAdmin(http.HandlerFunc(s.adminMe)))
 	mux.Handle("GET /admin/api/projects", s.requireAdminReady(http.HandlerFunc(s.adminListProjects)))
 	mux.Handle("POST /admin/api/projects", s.requireAdminReady(http.HandlerFunc(s.adminCreateProject)))
@@ -66,7 +70,7 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("GET /admin/api/mcp/tokens", s.requireAdminReady(http.HandlerFunc(s.adminListMCPTokens)))
 	mux.Handle("POST /admin/api/mcp/tokens", s.requireAdminReady(http.HandlerFunc(s.adminCreateMCPToken)))
 	mux.Handle("DELETE /admin/api/mcp/tokens/{id}", s.requireAdminReady(http.HandlerFunc(s.adminRevokeMCPToken)))
-	mux.HandleFunc("POST /mcp", s.mcp)
+	mux.Handle("POST /mcp", s.limitByIP("mcp", s.mcpLimiter, http.HandlerFunc(s.mcp)))
 	mux.Handle("POST /api/projects/{slug}/auth/signup", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appSignup)))
 	mux.Handle("POST /api/projects/{slug}/auth/login", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogin)))
 	mux.Handle("POST /api/projects/{slug}/auth/refresh", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRefresh)))
@@ -100,6 +104,10 @@ func NewServer(app *core.App) *http.Server {
 		Addr:              app.Config.Addr(),
 		Handler:           s.withMiddleware(mux),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 }
 

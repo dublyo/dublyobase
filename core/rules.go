@@ -32,6 +32,12 @@ type ruleToken struct {
 	text string
 }
 
+const (
+	maxRuleExpressionBytes = 4096
+	maxRuleTokens          = 512
+	maxRuleDepth           = 64
+)
+
 type ruleLexer struct {
 	input string
 	pos   int
@@ -217,6 +223,9 @@ type ruleParser struct {
 }
 
 func parseRuleExpression(input string) (ruleNode, error) {
+	if len(input) > maxRuleExpressionBytes {
+		return nil, fmt.Errorf("%w: expression is too long", ErrInvalidRule)
+	}
 	lexer := &ruleLexer{input: input}
 	var tokens []ruleToken
 	for {
@@ -224,13 +233,16 @@ func parseRuleExpression(input string) (ruleNode, error) {
 		if err != nil {
 			return nil, err
 		}
+		if tok.kind != tokEOF && len(tokens) >= maxRuleTokens {
+			return nil, fmt.Errorf("%w: expression has too many tokens", ErrInvalidRule)
+		}
 		tokens = append(tokens, tok)
 		if tok.kind == tokEOF {
 			break
 		}
 	}
 	parser := &ruleParser{tokens: tokens}
-	node, err := parser.parseOr()
+	node, err := parser.parseOr(0)
 	if err != nil {
 		return nil, err
 	}
@@ -240,14 +252,17 @@ func parseRuleExpression(input string) (ruleNode, error) {
 	return node, nil
 }
 
-func (p *ruleParser) parseOr() (ruleNode, error) {
-	left, err := p.parseAnd()
+func (p *ruleParser) parseOr(depth int) (ruleNode, error) {
+	if depth > maxRuleDepth {
+		return nil, fmt.Errorf("%w: expression nesting is too deep", ErrInvalidRule)
+	}
+	left, err := p.parseAnd(depth)
 	if err != nil {
 		return nil, err
 	}
 	for p.peek().kind == tokOr {
 		p.next()
-		right, err := p.parseAnd()
+		right, err := p.parseAnd(depth)
 		if err != nil {
 			return nil, err
 		}
@@ -256,14 +271,14 @@ func (p *ruleParser) parseOr() (ruleNode, error) {
 	return left, nil
 }
 
-func (p *ruleParser) parseAnd() (ruleNode, error) {
-	left, err := p.parseCompare()
+func (p *ruleParser) parseAnd(depth int) (ruleNode, error) {
+	left, err := p.parseCompare(depth)
 	if err != nil {
 		return nil, err
 	}
 	for p.peek().kind == tokAnd {
 		p.next()
-		right, err := p.parseCompare()
+		right, err := p.parseCompare(depth)
 		if err != nil {
 			return nil, err
 		}
@@ -272,8 +287,8 @@ func (p *ruleParser) parseAnd() (ruleNode, error) {
 	return left, nil
 }
 
-func (p *ruleParser) parseCompare() (ruleNode, error) {
-	left, err := p.parsePrimary()
+func (p *ruleParser) parseCompare(depth int) (ruleNode, error) {
+	left, err := p.parsePrimary(depth)
 	if err != nil {
 		return nil, err
 	}
@@ -281,14 +296,17 @@ func (p *ruleParser) parseCompare() (ruleNode, error) {
 		return left, nil
 	}
 	op := p.next().text
-	right, err := p.parsePrimary()
+	right, err := p.parsePrimary(depth)
 	if err != nil {
 		return nil, err
 	}
 	return compareNode{op: op, left: left, right: right}, nil
 }
 
-func (p *ruleParser) parsePrimary() (ruleNode, error) {
+func (p *ruleParser) parsePrimary(depth int) (ruleNode, error) {
+	if depth > maxRuleDepth {
+		return nil, fmt.Errorf("%w: expression nesting is too deep", ErrInvalidRule)
+	}
 	tok := p.next()
 	switch tok.kind {
 	case tokIdent:
@@ -305,7 +323,7 @@ func (p *ruleParser) parsePrimary() (ruleNode, error) {
 	case tokNull:
 		return literalNode{kind: tokNull, text: tok.text, value: nil}, nil
 	case tokLParen:
-		node, err := p.parseOr()
+		node, err := p.parseOr(depth + 1)
 		if err != nil {
 			return nil, err
 		}

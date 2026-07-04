@@ -127,7 +127,7 @@ func LoadConfig() (*Config, error) {
 		S3ForcePathStyle: boolVar("S3_FORCE_PATH_STYLE", true),
 
 		MigrateOnStart:    boolVar("MIGRATE_ON_START", true),
-		TrustProxyHeaders: boolVar("TRUST_PROXY_HEADERS", true),
+		TrustProxyHeaders: boolVar("TRUST_PROXY_HEADERS", false),
 		TrustedProxyCIDRs: splitCSV(env("TRUSTED_PROXY_CIDRS", strings.Join(defaultTrustedProxyCIDRs, ","))),
 		CORSOrigins:       splitCSV(env("CORS_ORIGINS", "*")),
 
@@ -169,6 +169,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.JWTSecret) < 32 {
 		return fmt.Errorf("JWT_SECRET must be at least 32 characters (got %d)", len(c.JWTSecret))
+	}
+	if isPlaceholderSecret(c.JWTSecret) {
+		return fmt.Errorf("JWT_SECRET must be replaced with a random secret")
 	}
 	if c.StorageType != StorageLocal && c.StorageType != StorageS3 {
 		return fmt.Errorf("STORAGE_TYPE must be 'local' or 's3' (got %q)", c.StorageType)
@@ -235,6 +238,16 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func isPlaceholderSecret(secret string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(secret))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	return normalized == "change_me_to_a_32_plus_char_random_secret_value" ||
+		strings.HasPrefix(normalized, "change_me") ||
+		strings.HasPrefix(normalized, "changeme") ||
+		strings.Contains(normalized, "replace_me") ||
+		strings.Contains(normalized, "placeholder")
 }
 
 // envBool parses a boolean env var strictly: unset → default, unparsable →

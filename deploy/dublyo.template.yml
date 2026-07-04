@@ -2,7 +2,7 @@
 # Two services, no nginx, no Redis. Traefik terminates TLS; the app listens on 8080.
 slug: dublyobase
 name: Dublyobase
-description: Postgres-backed BaaS. Auth, realtime, storage, admin UI — one binary.
+description: Postgres-backed BaaS. Auth, storage, admin UI — one binary.
 featured: true
 
 resources:
@@ -48,7 +48,7 @@ compose: |
         retries: 10
 
     app:
-      image: ghcr.io/dublyo/dublyobase:v0.10.3
+      image: ghcr.io/dublyo/dublyobase:v0.10.4
       restart: unless-stopped
       environment:
         - DATABASE_URL=postgres://dublyobase:${DB_PASSWORD}@db:5432/dublyobase?sslmode=disable

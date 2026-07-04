@@ -209,7 +209,13 @@ func newS3ObjectStore(cfg *Config) (*s3ObjectStore, error) {
 		prefix:         strings.Trim(strings.TrimSpace(cfg.S3Prefix), "/"),
 		useSSL:         useSSL,
 		forcePathStyle: cfg.S3ForcePathStyle,
-		client:         &http.Client{Timeout: 2 * smtpNetworkTimeout},
+		client: &http.Client{
+			Timeout: 2 * smtpNetworkTimeout,
+			Transport: &http.Transport{
+				Proxy:       http.ProxyFromEnvironment,
+				DialContext: publicTCPDialer(2 * smtpNetworkTimeout),
+			},
+		},
 	}, nil
 }
 

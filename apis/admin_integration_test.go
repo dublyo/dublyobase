@@ -190,6 +190,23 @@ func TestSetupLoginMeAndLogout(t *testing.T) {
 	}
 }
 
+func TestSetupUnavailableUntilAppReady(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	app.SetReady(false)
+	srv := NewServer(app)
+
+	rec := postJSON(srv.Handler, "/setup", "", `{"email":"race@example.com","password":"password-123"}`)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "setup_starting") {
+		t.Fatalf("setup during boot: want 503 setup_starting, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	app.SetReady(true)
+	rec = postJSON(srv.Handler, "/setup", "", `{"email":"race@example.com","password":"password-123"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup after ready: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestBootstrapAdminRequiresPasswordChange(t *testing.T) {
 	app, _ := newIntegrationApp(t)
 	if err := core.SeedAdmin(context.Background(), app.Pool, app.Config, testLogger()); err != nil {

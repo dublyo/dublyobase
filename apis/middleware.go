@@ -45,6 +45,7 @@ func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // proxy-aware client-IP extraction.
 func (s *server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		applySecurityHeaders(w)
 		s.applyCORS(w, r)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -63,6 +64,25 @@ func (s *server) withMiddleware(next http.Handler) http.Handler {
 			"ip", s.clientIP(r),
 		)
 	})
+}
+
+func applySecurityHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Cross-Origin-Opener-Policy", "same-origin")
+	h.Set("Content-Security-Policy", strings.Join([]string{
+		"default-src 'self'",
+		"base-uri 'self'",
+		"frame-ancestors 'none'",
+		"form-action 'self'",
+		"img-src 'self' data: blob:",
+		"font-src 'self' data:",
+		"script-src 'self' 'unsafe-inline'",
+		"style-src 'self' 'unsafe-inline'",
+		"connect-src 'self'",
+	}, "; "))
 }
 
 // applyCORS honors CORS_ORIGINS (a comma-separated list, or "*").

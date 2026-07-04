@@ -72,8 +72,7 @@ func (m *SMTPMailer) Send(ctx context.Context, msg MailMessage) error {
 		fromAddr = parsed.Address
 	}
 	addr := net.JoinHostPort(m.host, m.port)
-	dialer := net.Dialer{Timeout: smtpNetworkTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	conn, err := publicTCPDialer(smtpNetworkTimeout)(ctx, "tcp", addr)
 	if err != nil {
 		return err
 	}
@@ -235,6 +234,10 @@ func validateSMTPConfig(c *Config) error {
 	port, err := strconv.Atoi(strings.TrimSpace(c.SMTPPort))
 	if err != nil || port < 1 || port > 65535 {
 		return fmt.Errorf("SMTP_PORT must be between 1 and 65535 (got %q)", c.SMTPPort)
+	}
+	host := strings.TrimSpace(c.SMTPHost)
+	if err := validatePublicOutboundHost(host); err != nil {
+		return fmt.Errorf("SMTP_HOST %w", err)
 	}
 	if strings.TrimSpace(c.SMTPFrom) == "" {
 		return fmt.Errorf("SMTP_FROM is required when SMTP_HOST is set")

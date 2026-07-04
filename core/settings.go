@@ -519,10 +519,16 @@ func normalizeS3Endpoint(raw string, defaultUseSSL bool) (string, bool, error) {
 		if host == "" || port == "" {
 			return "", false, fmt.Errorf("%w: S3 endpoint is invalid", ErrValidation)
 		}
+		if err := validatePublicOutboundHost(host); err != nil {
+			return "", false, fmt.Errorf("S3_ENDPOINT %w", err)
+		}
 		return raw, useSSL, nil
 	}
 	if strings.Contains(raw, "/") || strings.ContainsAny(raw, " \t\r\n") {
 		return "", false, fmt.Errorf("%w: S3 endpoint is invalid", ErrValidation)
+	}
+	if err := validatePublicOutboundHost(raw); err != nil {
+		return "", false, fmt.Errorf("S3_ENDPOINT %w", err)
 	}
 	return raw, useSSL, nil
 }

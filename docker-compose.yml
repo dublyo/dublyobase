@@ -23,13 +23,13 @@ services:
       retries: 10
 
   app:
-    image: ghcr.io/dublyo/dublyobase:latest
+    image: ghcr.io/dublyo/dublyobase:v0.10.4
     # build: .   # uncomment to build locally instead of pulling the image
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://dublyobase:change_me_in_prod@db:5432/dublyobase?sslmode=disable
       APP_URL: http://localhost:8080
-      JWT_SECRET: change_me_to_a_32_plus_char_random_secret_value
+      JWT_SECRET: change_me
       BCRYPT_COST: "10"
       AUTH_DEV_TOKENS: "false"
       SMTP_HOST: ""
@@ -40,9 +40,9 @@ services:
       STORAGE_TYPE: local
       MAX_UPLOAD_MB: "64"
       MIGRATE_ON_START: "true"
-      TRUST_PROXY_HEADERS: "true"
+      TRUST_PROXY_HEADERS: "false"
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - storage:/data/storage
     depends_on:

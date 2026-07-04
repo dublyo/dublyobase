@@ -70,6 +70,23 @@ func TestRuleValidationRejectsUnsafeExpressions(t *testing.T) {
 	}
 }
 
+func TestRuleParserRejectsDeepAndHugeExpressions(t *testing.T) {
+	c := testRuleCollection()
+	deep := strings.Repeat("(", maxRuleDepth+2) + `title = "x"` + strings.Repeat(")", maxRuleDepth+2)
+	if _, err := CompileFilter(deep, c); !errors.Is(err, ErrInvalidFilter) {
+		t.Fatalf("deep filter error = %v, want ErrInvalidFilter", err)
+	}
+	c.ListRule = &deep
+	if err := ValidateCollectionRules(c); !errors.Is(err, ErrInvalidRule) {
+		t.Fatalf("deep rule error = %v, want ErrInvalidRule", err)
+	}
+
+	huge := strings.Repeat(`title = "x" || `, maxRuleTokens) + `title = "x"`
+	if _, err := CompileFilter(huge, c); !errors.Is(err, ErrInvalidFilter) {
+		t.Fatalf("huge filter error = %v, want ErrInvalidFilter", err)
+	}
+}
+
 func TestAPIKeyGeneration(t *testing.T) {
 	key, prefix, err := GenerateAPIKey(APIKeyService)
 	if err != nil {

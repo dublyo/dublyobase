@@ -21,6 +21,10 @@ type changePasswordRequest struct {
 }
 
 func (s *server) setup(w http.ResponseWriter, r *http.Request) {
+	if !s.app.Ready() {
+		writeError(w, http.StatusServiceUnavailable, "setup_starting", "setup is unavailable while Dublyobase is starting")
+		return
+	}
 	var req credentialsRequest
 	if !decodeJSON(w, r, &req) {
 		return

@@ -14,7 +14,7 @@ The runtime is intentionally small:
 - GHCR image: `ghcr.io/dublyo/dublyobase`
 - No Redis, no nginx sidecar, no separate admin service
 
-Current public release: `v0.10.3`. Realtime subscriptions are not included in
+Current public release: `v0.10.4`. Realtime subscriptions are not included in
 this release.
 
 ## Features
@@ -108,6 +108,23 @@ For a local or self-hosted install:
 ```bash
 git clone https://github.com/dublyo/dublyobase.git
 cd dublyobase
+```
+
+Before starting the stack, edit `docker-compose.yml` and replace:
+
+- `POSTGRES_PASSWORD`
+- `DATABASE_URL`
+- `JWT_SECRET`
+- `APP_URL`
+
+The sample `JWT_SECRET` is intentionally invalid so unchanged public installs
+fail closed. The compose file also binds the app to `127.0.0.1:8080` and keeps
+`TRUST_PROXY_HEADERS=false` by default; put Dublyobase behind a trusted proxy
+before exposing it publicly.
+
+Then start it:
+
+```bash
 docker compose up -d
 ```
 
@@ -117,17 +134,10 @@ Open [http://localhost:8080](http://localhost:8080). Health should return `200`:
 curl http://localhost:8080/health
 ```
 
-Before using Compose in production, edit `docker-compose.yml` and replace:
-
-- `POSTGRES_PASSWORD`
-- `DATABASE_URL`
-- `JWT_SECRET`
-- `APP_URL`
-
 Use a pinned image tag in production:
 
 ```yaml
-image: ghcr.io/dublyo/dublyobase:v0.10.3
+image: ghcr.io/dublyo/dublyobase:v0.10.4
 ```
 
 ### Existing Postgres
@@ -140,7 +150,7 @@ docker run --rm -p 8080:8080 \
   -e APP_URL="https://dublyobase.example.com" \
   -e JWT_SECRET="$(openssl rand -base64 32)" \
   -v dublyobase-storage:/data/storage \
-  ghcr.io/dublyo/dublyobase:v0.10.3
+  ghcr.io/dublyo/dublyobase:v0.10.4
 ```
 
 `DATABASE_URL`, `APP_URL`, and `JWT_SECRET` are required. On an empty install,
@@ -184,7 +194,7 @@ can also be managed from the admin panel after setup.
 | `SMTP_PASSWORD` | No |  | SMTP password. |
 | `SMTP_FROM` | No |  | Sender address. |
 | `MIGRATE_ON_START` | No | `true` | Run migrations at startup. |
-| `TRUST_PROXY_HEADERS` | No | `true` | Respect proxy headers from trusted proxies. |
+| `TRUST_PROXY_HEADERS` | No | `false` | Respect proxy headers from trusted proxies. Enable only behind a trusted proxy. |
 | `TRUSTED_PROXY_CIDRS` | No | private ranges | Comma-separated trusted proxy CIDRs. |
 | `CORS_ORIGINS` | No | `*` | Comma-separated allowed origins. |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error`. |

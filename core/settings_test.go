@@ -43,6 +43,9 @@ func TestNormalizeS3Endpoint(t *testing.T) {
 	if _, _, err := normalizeS3Endpoint("https://example.com/path", true); err == nil {
 		t.Fatal("endpoint path must be rejected")
 	}
+	if _, _, err := normalizeS3Endpoint("https://127.0.0.1:9000", true); err == nil {
+		t.Fatal("private/local S3 endpoint must be rejected")
+	}
 }
 
 func TestNormalizeSettingsEmptySecretPreservesCurrent(t *testing.T) {

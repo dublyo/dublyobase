@@ -38,7 +38,7 @@ ENV HOST=0.0.0.0 \
     STORAGE_TYPE=local \
     STORAGE_LOCAL_PATH=/data/storage \
     MIGRATE_ON_START=true \
-    TRUST_PROXY_HEADERS=true \
+    TRUST_PROXY_HEADERS=false \
     LOG_FORMAT=json
 
 # Use 127.0.0.1 (not localhost): busybox wget prefers IPv6 ::1, which fails

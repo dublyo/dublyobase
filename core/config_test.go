@@ -48,6 +48,15 @@ func TestLoadConfigJWTSecretLength(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsPlaceholderJWTSecret(t *testing.T) {
+	setRequired(t)
+
+	t.Setenv("JWT_SECRET", "change_me_to_a_32_plus_char_random_secret_value")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "JWT_SECRET") {
+		t.Fatalf("placeholder JWT_SECRET must be rejected, got: %v", err)
+	}
+}
+
 func TestLoadConfigDefaults(t *testing.T) {
 	setRequired(t)
 	cfg, err := LoadConfig()
@@ -57,7 +66,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.Host != "0.0.0.0" || cfg.Port != "8080" {
 		t.Fatalf("default bind must be 0.0.0.0:8080, got %s", cfg.Addr())
 	}
-	if !cfg.MigrateOnStart || !cfg.TrustProxyHeaders || cfg.EnablePgvector {
+	if !cfg.MigrateOnStart || cfg.TrustProxyHeaders || cfg.EnablePgvector {
 		t.Fatalf("bool defaults wrong: %+v", cfg)
 	}
 	if len(cfg.CORSOrigins) != 1 || cfg.CORSOrigins[0] != "*" {
@@ -192,6 +201,14 @@ func TestLoadConfigInvalidValuesFailLoud(t *testing.T) {
 				"SMTP_USER": "mailer",
 			},
 			want: "SMTP_USER",
+		},
+		{
+			name: "smtp local host",
+			env: map[string]string{
+				"SMTP_HOST": "127.0.0.1",
+				"SMTP_FROM": "no-reply@example.com",
+			},
+			want: "SMTP_HOST",
 		},
 	}
 	for _, tc := range cases {

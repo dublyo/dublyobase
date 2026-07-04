@@ -2,6 +2,7 @@ package core
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -69,7 +70,7 @@ func GenerateAppAccessToken(secret string, projectSlug string, userID string, to
 			IssuedAt:  jwt.NewNumericDate(now.UTC()),
 		},
 	}
-	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(derivedSecretKey(secret, "app-access-token"))
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -92,7 +93,7 @@ func parseAppJWT(secret string, token string, now time.Time) (*appClaims, error)
 			if t.Method != jwt.SigningMethodHS256 {
 				return nil, fmt.Errorf("unexpected signing method")
 			}
-			return []byte(secret), nil
+			return derivedSecretKey(secret, "app-access-token"), nil
 		},
 		jwt.WithTimeFunc(func() time.Time { return now.UTC() }),
 		jwt.WithExpirationRequired(),
@@ -105,4 +106,9 @@ func parseAppJWT(secret string, token string, now time.Time) (*appClaims, error)
 		return nil, ErrInvalidAuthToken
 	}
 	return claims, nil
+}
+
+func derivedSecretKey(secret string, purpose string) []byte {
+	sum := sha256.Sum256([]byte("dublyobase:" + purpose + ":" + secret))
+	return sum[:]
 }
