@@ -23,6 +23,8 @@ type server struct {
 	changePasswordLimiter *rateLimiter
 	authLimiter           *rateLimiter
 	mcpLimiter            *rateLimiter
+	realtimeLimiter       *rateLimiter
+	realtime              *realtimeHub
 }
 
 // NewServer builds the HTTP server for an App.
@@ -34,6 +36,8 @@ func NewServer(app *core.App) *http.Server {
 		changePasswordLimiter: newRateLimiter(5, time.Minute),
 		authLimiter:           newRateLimiter(30, time.Minute),
 		mcpLimiter:            newRateLimiter(120, time.Minute),
+		realtimeLimiter:       newRateLimiter(60, time.Minute),
+		realtime:              newRealtimeHub(),
 	}
 
 	mux := http.NewServeMux()
@@ -87,6 +91,7 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("POST /api/projects/{slug}/auth/confirm-verification", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appConfirmVerification)))
 	mux.Handle("POST /api/projects/{slug}/auth/request-password-reset", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRequestPasswordReset)))
 	mux.Handle("POST /api/projects/{slug}/auth/confirm-password-reset", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appConfirmPasswordReset)))
+	mux.Handle("GET /api/projects/{slug}/realtime", s.limitByIP("realtime", s.realtimeLimiter, http.HandlerFunc(s.realtimeStream)))
 	mux.Handle("GET /api/projects/{slug}/collections", s.requireAdminReady(http.HandlerFunc(s.listCollections)))
 	mux.Handle("POST /api/projects/{slug}/collections", s.requireAdminReady(http.HandlerFunc(s.createCollection)))
 	mux.Handle("GET /api/projects/{slug}/collections/{name}", s.requireAdminReady(http.HandlerFunc(s.getCollection)))

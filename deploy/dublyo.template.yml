@@ -23,8 +23,9 @@ env_vars:
   - key: JWT_SECRET      # auto-generated (>=32 chars)
   - key: DB_PASSWORD     # auto-generated
 
-# Pin an exact semver in production templates — never track :latest, so a broken
-# upstream release cannot propagate to every deployed user.
+# New Dublyo PaaS installs track the tested main image by default so fresh
+# deployments receive the latest backend and admin panel. Pin a semver tag in a
+# copied template when you need strict rollback control.
 #
 # PGDATA is pinned because postgres:18 moved its volume layout; without it the
 # PG_VERSION=18 choice would store data in an anonymous volume and lose it on
@@ -48,7 +49,7 @@ compose: |
         retries: 10
 
     app:
-      image: ghcr.io/dublyo/dublyobase:v0.10.7
+      image: ghcr.io/dublyo/dublyobase:main
       restart: unless-stopped
       environment:
         - DATABASE_URL=postgres://dublyobase:${DB_PASSWORD}@db:5432/dublyobase?sslmode=disable

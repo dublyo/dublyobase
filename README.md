@@ -2,9 +2,9 @@
 
 Dublyobase is an open-source Supabase Alternative, Postgres-backed backend for building apps with a
 PocketBase-style developer experience. It provides a control panel, projects,
-collections, REST APIs, email/password auth, file storage, SMTP settings, cron
-jobs, backups, and scoped remote MCP access from one Go backend and one embedded
-admin UI.
+collections, REST APIs, realtime record events, email/password auth, file
+storage, SMTP settings, cron jobs, backups, and scoped remote MCP access from
+one Go backend and one embedded admin UI.
 
 The runtime is intentionally small:
 
@@ -14,8 +14,9 @@ The runtime is intentionally small:
 - GHCR image: `ghcr.io/dublyo/dublyobase`
 - No Redis, no nginx sidecar, no separate admin service
 
-Current public release: `v0.10.7`. Realtime subscriptions are not included in
-this release.
+Current default deploy image: `ghcr.io/dublyo/dublyobase:main`. Semver tags are
+published for fixed releases, but the templates default to `:main` so new
+installs get the latest tested main build.
 
 ## Features
 
@@ -38,6 +39,19 @@ this release.
   access.
 - Query support for list filters, Directus-style JSON filters, selected-field
   search, sorting, field projection, and pagination.
+
+### Realtime
+
+- Server-Sent Events endpoint for record `create`, `update`, and `delete`.
+- Project-scoped and collection-filtered subscriptions.
+- Bearer auth, API keys, app-user JWTs, and anonymous access use the same record
+  auth path as REST APIs.
+- Create/update payloads are checked through collection view rules before they
+  are sent to a subscriber.
+- Delete events are service-subscriber only in this release to avoid leaking
+  private tombstones before a durable visibility cache exists.
+- Current fanout is in-process for single app replicas; database-backed fanout
+  for multi-node deployments remains a future hardening step.
 
 ### App Auth
 
@@ -144,8 +158,8 @@ redeploy pulls the latest tested main build:
 image: ghcr.io/dublyo/dublyobase:main
 ```
 
-For conservative production rollouts, pin a semver tag such as
-`ghcr.io/dublyo/dublyobase:v0.10.7` and upgrade intentionally.
+For conservative production rollouts, pin a semver tag after selecting the
+release you want and upgrade intentionally.
 
 ### Existing Postgres
 
@@ -249,6 +263,7 @@ can also be managed from the admin panel after setup.
 | `GET /api/projects/{slug}/collections/{name}/records/{id}` | Get a record. |
 | `PATCH /api/projects/{slug}/collections/{name}/records/{id}` | Update a record. |
 | `DELETE /api/projects/{slug}/collections/{name}/records/{id}` | Delete a record. |
+| `GET /api/projects/{slug}/realtime` | SSE stream for record create/update/delete events. |
 | `GET /admin/api/projects/{slug}/collections/export` | Export collection schema JSON. |
 | `POST /admin/api/projects/{slug}/collections/import` | Preview or apply collection schema imports. |
 
@@ -264,6 +279,17 @@ GET /api/projects/app/collections/posts/records?filter[title][_icontains]=hello
 
 The `search` parameter only scans fields marked `searchable` in the collection
 editor.
+
+Realtime accepts `collection`, `collections`, `event`, and `events` query
+parameters. Values can be repeated or comma-separated:
+
+```text
+GET /api/projects/app/realtime?collection=posts&events=create,update
+```
+
+Use `Authorization: Bearer ...` for API clients. Browser `EventSource` clients
+that cannot set headers may pass `token` or `access_token` in the query string;
+avoid logging those URLs.
 
 ### App Auth
 
@@ -327,6 +353,8 @@ editor.
 - Prefer project-scoped backups for app tenants and full backups for instance
   administrators.
 - S3 and SMTP secrets are masked in API responses and audit logs.
+- Keep one Dublyobase app replica for realtime-sensitive projects until
+  database-backed realtime fanout lands.
 
 ## Local Development
 

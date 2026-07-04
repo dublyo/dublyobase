@@ -114,6 +114,7 @@ func (s *server) createRecord(w http.ResponseWriter, r *http.Request) {
 		writeCoreError(w, err)
 		return
 	}
+	s.publishRealtimeRecord(r.Context(), auth.Project.Slug, r.PathValue("name"), realtimeActionCreate, "", record)
 	writeJSON(w, http.StatusCreated, record)
 }
 
@@ -144,6 +145,7 @@ func (s *server) updateRecord(w http.ResponseWriter, r *http.Request) {
 		writeCoreError(w, err)
 		return
 	}
+	s.publishRealtimeRecord(r.Context(), auth.Project.Slug, r.PathValue("name"), realtimeActionUpdate, r.PathValue("id"), record)
 	writeJSON(w, http.StatusOK, record)
 }
 
@@ -157,6 +159,7 @@ func (s *server) deleteRecord(w http.ResponseWriter, r *http.Request) {
 		writeCoreError(w, err)
 		return
 	}
+	s.publishRealtimeRecord(r.Context(), auth.Project.Slug, r.PathValue("name"), realtimeActionDelete, r.PathValue("id"), deleted)
 	if id, _ := deleted["id"].(string); id != "" {
 		storageCfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
 		if err != nil {

@@ -122,6 +122,13 @@ func collectionPrimaryKeyField(collection *Collection) string {
 	return defaultRecordPrimaryKey
 }
 
+// RecordPrimaryKeyField exposes the API-facing primary key field name for
+// code outside core. Imported tables may use names such as customer_id or sku,
+// while managed Dublyobase collections use id.
+func RecordPrimaryKeyField(collection *Collection) string {
+	return collectionPrimaryKeyField(collection)
+}
+
 func collectionPrimaryKeyType(collection *Collection) string {
 	opts := parseCollectionRuntimeOptions(collection.Options)
 	if opts.PrimaryKeyType != "" {
