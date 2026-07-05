@@ -99,7 +99,26 @@ func TestAppAuthLifecycle(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("old password after reset: want 401, got %d: %s", rec.Code, rec.Body.String())
 	}
-	_ = loginAppUserForTest(t, srv.Handler, slug, "user@example.com", "new-password-123")
+	login = loginAppUserForTest(t, srv.Handler, slug, "user@example.com", "new-password-123")
+
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-email-change", slug), login.Token, `{"newEmail":"new-user@example.com"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("request email change: want 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var emailChange struct {
+		Accepted bool   `json:"accepted"`
+		DevToken string `json:"devToken"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &emailChange); err != nil {
+		t.Fatal(err)
+	}
+	if !emailChange.Accepted || emailChange.DevToken == "" {
+		t.Fatalf("missing email change dev token: %s", rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/confirm-email-change", slug), "", fmt.Sprintf(`{"token":%q}`, emailChange.DevToken))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"email":"new-user@example.com"`) {
+		t.Fatalf("confirm email change: want 200 with new email, got %d: %s", rec.Code, rec.Body.String())
+	}
 
 	var storedHash string
 	if err := app.Pool.QueryRow(context.Background(), `select token_hash from _dbo.sessions limit 1`).Scan(&storedHash); err != nil {
