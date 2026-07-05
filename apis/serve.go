@@ -23,6 +23,7 @@ type server struct {
 	changePasswordLimiter *rateLimiter
 	authLimiter           *rateLimiter
 	mcpLimiter            *rateLimiter
+	quotaLimiter          *rateLimiter
 	realtimeLimiter       *rateLimiter
 	realtime              *realtimeHub
 	realtimeSourceID      string
@@ -37,6 +38,7 @@ func NewServer(app *core.App) *http.Server {
 		changePasswordLimiter: newRateLimiter(5, time.Minute),
 		authLimiter:           newRateLimiter(30, time.Minute),
 		mcpLimiter:            newRateLimiter(120, time.Minute),
+		quotaLimiter:          newRateLimiter(0, time.Minute),
 		realtimeLimiter:       newRateLimiter(60, time.Minute),
 		realtime:              newRealtimeHub(),
 		realtimeSourceID:      newRealtimeSourceID(),
@@ -59,6 +61,9 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("PUT /admin/api/projects/{slug}/cors", s.requireAdminReady(http.HandlerFunc(s.adminUpdateProjectCORS)))
 	mux.Handle("GET /admin/api/projects/{slug}/auth-settings", s.requireAdminReady(http.HandlerFunc(s.adminGetProjectAuthSettings)))
 	mux.Handle("PUT /admin/api/projects/{slug}/auth-settings", s.requireAdminReady(http.HandlerFunc(s.adminUpdateProjectAuthSettings)))
+	mux.Handle("GET /admin/api/projects/{slug}/quotas", s.requireAdminReady(http.HandlerFunc(s.adminGetProjectQuotas)))
+	mux.Handle("PUT /admin/api/projects/{slug}/quotas", s.requireAdminReady(http.HandlerFunc(s.adminUpdateProjectQuotas)))
+	mux.Handle("GET /admin/api/projects/{slug}/metrics", s.requireAdminReady(http.HandlerFunc(s.adminGetProjectMetrics)))
 	mux.Handle("GET /admin/api/projects/{slug}/webhooks", s.requireAdminReady(http.HandlerFunc(s.adminListWebhooks)))
 	mux.Handle("POST /admin/api/projects/{slug}/webhooks", s.requireAdminReady(http.HandlerFunc(s.adminCreateWebhook)))
 	mux.Handle("DELETE /admin/api/projects/{slug}/webhooks/{id}", s.requireAdminReady(http.HandlerFunc(s.adminDeleteWebhook)))
@@ -102,9 +107,13 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("POST /auth/email-change", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.authEmailChangeSubmit)))
 	mux.Handle("POST /api/projects/{slug}/auth/signup", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appSignup)))
 	mux.Handle("POST /api/projects/{slug}/auth/login", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogin)))
+	mux.Handle("POST /api/projects/{slug}/auth/request-otp", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRequestOTP)))
+	mux.Handle("POST /api/projects/{slug}/auth/login-otp", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLoginOTP)))
 	mux.Handle("POST /api/projects/{slug}/auth/refresh", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRefresh)))
 	mux.Handle("POST /api/projects/{slug}/auth/logout", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogout)))
 	mux.Handle("POST /api/projects/{slug}/auth/logout-all", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appLogoutAll)))
+	mux.Handle("GET /api/projects/{slug}/auth/sessions", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appListSessions)))
+	mux.Handle("DELETE /api/projects/{slug}/auth/sessions/{sessionId}", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRevokeSession)))
 	mux.Handle("GET /api/projects/{slug}/auth/me", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appMe)))
 	mux.Handle("POST /api/projects/{slug}/auth/request-email-change", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRequestEmailChange)))
 	mux.Handle("POST /api/projects/{slug}/auth/confirm-email-change", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appConfirmEmailChange)))
@@ -112,6 +121,11 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("POST /api/projects/{slug}/auth/confirm-verification", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appConfirmVerification)))
 	mux.Handle("POST /api/projects/{slug}/auth/request-password-reset", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appRequestPasswordReset)))
 	mux.Handle("POST /api/projects/{slug}/auth/confirm-password-reset", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appConfirmPasswordReset)))
+	mux.Handle("GET /api/projects/{slug}/orgs", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appListOrganizations)))
+	mux.Handle("POST /api/projects/{slug}/orgs", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appCreateOrganization)))
+	mux.Handle("GET /api/projects/{slug}/orgs/{orgId}/members", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appListOrganizationMembers)))
+	mux.Handle("POST /api/projects/{slug}/orgs/{orgId}/invitations", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appCreateOrganizationInvitation)))
+	mux.Handle("POST /api/projects/{slug}/org-invitations/accept", s.limitByIP("app-auth", s.authLimiter, http.HandlerFunc(s.appAcceptOrganizationInvitation)))
 	mux.Handle("GET /api/projects/{slug}/realtime", s.limitByIP("realtime", s.realtimeLimiter, http.HandlerFunc(s.realtimeStream)))
 	mux.HandleFunc("POST /api/projects/{slug}/batch", s.batchRecords)
 	mux.Handle("GET /api/projects/{slug}/collections", s.requireAdminReady(http.HandlerFunc(s.listCollections)))

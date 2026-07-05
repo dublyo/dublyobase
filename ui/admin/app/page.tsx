@@ -86,6 +86,8 @@ import {
   discoverSchema,
   exportCollections,
   getProjectAuthSettings,
+  getProjectMetrics,
+  getProjectQuotas,
   health,
   getSettings,
   importCollections,
@@ -120,13 +122,14 @@ import {
   updateLogSettings,
   updateProjectAuthSettings,
   updateProjectCORSSettings,
+  updateProjectQuotas,
   updateRecord,
   updateSMTPSettings,
   updateStorageSettings,
   uploadFile,
   backupDownloadURL,
 } from "../src/lib/api";
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InstanceSettings, MCPToken, Project, ProjectAuthSettings, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "../src/lib/types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InstanceSettings, MCPToken, Project, ProjectAuthSettings, ProjectMetrics, ProjectQuotas, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "../src/lib/types";
 
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
@@ -191,6 +194,7 @@ const settingsItems = [
   { id: "mail", label: "Mail settings", group: "System" },
   { id: "storage", label: "Files storage", group: "System" },
   { id: "cors", label: "CORS origins", group: "System" },
+  { id: "quotas", label: "Quotas and metrics", group: "System" },
   { id: "admins", label: "Admin users", group: "System" },
   { id: "backups", label: "Backups", group: "System" },
   { id: "crons", label: "Crons", group: "System" },
@@ -335,6 +339,14 @@ const emptyLogDraft = {
   retentionCount: "100000",
 };
 
+const emptyQuotaDraft = {
+  enabled: false,
+  requestsPerMinute: "0",
+  authRequestsPerMinute: "0",
+  maxAppUsers: "0",
+  maxStorageMb: "0",
+};
+
 const emptyWebhookDraft = {
   name: "",
   url: "",
@@ -378,6 +390,9 @@ export default function AdminApp() {
   const [logDraft, setLogDraft] = useState(emptyLogDraft);
   const [settings, setSettingsState] = useState<InstanceSettings | null>(null);
   const [authSettings, setAuthSettings] = useState<ProjectAuthSettings | null>(null);
+  const [projectQuotas, setProjectQuotas] = useState<ProjectQuotas | null>(null);
+  const [quotaDraft, setQuotaDraft] = useState(emptyQuotaDraft);
+  const [projectMetrics, setProjectMetrics] = useState<ProjectMetrics | null>(null);
   const [adminUsers, setAdminUsers] = useState<Admin[]>([]);
   const [adminDraft, setAdminDraft] = useState(emptyAdminDraft);
   const [oneTimeAdmin, setOneTimeAdmin] = useState<{ email: string; password: string } | null>(null);
@@ -484,12 +499,14 @@ export default function AdminApp() {
   const loadProjectData = useCallback(
     async (authToken: string, projectSlug: string, preferredCollection?: string) => {
       if (!projectSlug) return;
-      const [collectionResponse, keysResponse, auditResponse, requestResponse, authResponse, webhookResponse] = await Promise.all([
+      const [collectionResponse, keysResponse, auditResponse, requestResponse, authResponse, quotaResponse, metricsResponse, webhookResponse] = await Promise.all([
         listCollections(authToken, projectSlug),
         listAPIKeys(authToken, projectSlug),
         listAudit(authToken, { project: projectSlug, page: 1, perPage: auditPerPage, ...auditFilters }),
         listRequestLogs(authToken, { project: projectSlug, page: 1, perPage: requestPerPage, ...requestFilters, status: Number(requestFilters.status) || undefined }),
         getProjectAuthSettings(authToken, projectSlug),
+        getProjectQuotas(authToken, projectSlug),
+        getProjectMetrics(authToken, projectSlug, 24),
         listWebhooks(authToken, projectSlug),
       ]);
       setCollections(collectionResponse.items);
@@ -498,6 +515,9 @@ export default function AdminApp() {
       setAudit(auditResponse);
       setRequestLogs(requestResponse);
       setAuthSettings(authResponse);
+      setProjectQuotas(quotaResponse);
+      setQuotaDraft(quotasToDraft(quotaResponse));
+      setProjectMetrics(metricsResponse);
       setWebhooks(webhookResponse.items);
       const targetCollection = preferredCollection ?? selectedCollection;
       const currentExists = collectionResponse.items.some((collection) => collection.name === targetCollection);
@@ -558,6 +578,9 @@ export default function AdminApp() {
           setAudit({ items: [], page: 1, perPage: auditPerPage, totalItems: 0 });
           setRequestLogs({ items: [], page: 1, perPage: requestPerPage, totalItems: 0 });
           setAuthSettings(null);
+          setProjectQuotas(null);
+          setQuotaDraft(emptyQuotaDraft);
+          setProjectMetrics(null);
           setWebhooks([]);
         }
       } catch (error) {
@@ -718,6 +741,9 @@ export default function AdminApp() {
     setRequestLogs({ items: [], page: 1, perPage: requestPerPage, totalItems: 0 });
     setRequestFilters(emptyRequestFilters);
     setAuthSettings(null);
+    setProjectQuotas(null);
+    setQuotaDraft(emptyQuotaDraft);
+    setProjectMetrics(null);
     setLogDraft(emptyLogDraft);
     setCORSDraft(emptyCORSDraft);
     setCronJobs([]);
@@ -816,6 +842,44 @@ export default function AdminApp() {
       const response = await updateProjectAuthSettings(token, selectedProject, next);
       setAuthSettings(response);
       showNotice("success", "Auth settings saved");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveQuotaSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || !selectedProject) return;
+    setBusy(true);
+    try {
+      const response = await updateProjectQuotas(token, selectedProject, {
+        enabled: quotaDraft.enabled,
+        requestsPerMinute: Number.parseInt(quotaDraft.requestsPerMinute, 10) || 0,
+        authRequestsPerMinute: Number.parseInt(quotaDraft.authRequestsPerMinute, 10) || 0,
+        maxAppUsers: Number.parseInt(quotaDraft.maxAppUsers, 10) || 0,
+        maxStorageMb: Number.parseInt(quotaDraft.maxStorageMb, 10) || 0,
+      });
+      setProjectQuotas(response);
+      setQuotaDraft(quotasToDraft(response));
+      const metrics = await getProjectMetrics(token, selectedProject, 24);
+      setProjectMetrics(metrics);
+      showNotice("success", "Project quotas saved");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshProjectMetrics() {
+    if (!token || !selectedProject) return;
+    setBusy(true);
+    try {
+      const response = await getProjectMetrics(token, selectedProject, 24);
+      setProjectMetrics(response);
+      showNotice("success", "Metrics refreshed");
     } catch (error) {
       handleError(error);
     } finally {
@@ -1611,9 +1675,12 @@ export default function AdminApp() {
             setCollectionsProject("");
             setApiKeys([]);
             setAudit({ items: [], page: 1, perPage: auditPerPage, totalItems: 0 });
-            setRequestLogs({ items: [], page: 1, perPage: requestPerPage, totalItems: 0 });
-            setAuthSettings(null);
-            setWebhooks([]);
+          setRequestLogs({ items: [], page: 1, perPage: requestPerPage, totalItems: 0 });
+          setAuthSettings(null);
+          setProjectQuotas(null);
+          setQuotaDraft(emptyQuotaDraft);
+          setProjectMetrics(null);
+          setWebhooks([]);
             setWebhookDeliveries({});
             setCORSDraft(settingsToCORSDraft(settings, projects.find((project) => project.slug === slug) ?? null));
             setSelectedCollection("");
@@ -1739,6 +1806,12 @@ export default function AdminApp() {
           authSettings={authSettings}
           setAuthSettings={setAuthSettings}
           onSaveAuthSettings={saveAuthSettings}
+          projectQuotas={projectQuotas}
+          quotaDraft={quotaDraft}
+          setQuotaDraft={setQuotaDraft}
+          projectMetrics={projectMetrics}
+          onSaveQuotas={saveQuotaSettings}
+          onRefreshMetrics={refreshProjectMetrics}
           onOpenAuth={() => changeSettings("auth")}
           onOpenMail={() => changeSettings("mail")}
           onOpenFiles={() => changeSettings("files")}
@@ -3562,14 +3635,14 @@ function APIPreviewModal({ project, collection, onClose, onCopy }: { project: st
       code: `curl -X POST "${`/api/projects/${encodeURIComponent(project)}/batch`}" \\
   -H "Authorization: Bearer $DUBLYO_TOKEN" \\
   -H "Content-Type: application/json" \\
-  --data '{
-    "operations": [
+	  --data '{
+	    "requests": [
       { "method": "POST", "collection": "${collection.name}", "body": ${JSON.stringify(sampleBody)} },
       { "method": "PATCH", "collection": "${collection.name}", "id": "{id}", "body": ${JSON.stringify(updateBody)} },
       { "method": "GET", "collection": "${collection.name}", "id": "{id}" }
     ]
   }'`,
-      params: ["operations", "method", "collection", "id", "body"],
+	      params: ["requests", "method", "collection", "id", "body"],
     },
     realtime: {
       title: "Realtime records",
@@ -3597,14 +3670,23 @@ curl -X POST "${`/api/projects/${encodeURIComponent(project)}/files/${encodeURIC
       code: `POST ${authBase}/signup
 {"email":"user@example.com","password":"password-123"}
 
-POST ${authBase}/login
-{"email":"user@example.com","password":"password-123"}
+	POST ${authBase}/login
+	{"email":"user@example.com","password":"password-123"}
 
-POST ${authBase}/refresh
-{"refreshToken":"..."}
+	POST ${authBase}/request-otp
+	{"email":"user@example.com"}
 
-GET ${authBase}/me
-Authorization: Bearer $ACCESS_TOKEN
+		POST ${authBase}/login-otp
+		{"email":"user@example.com","token":"dbo_otp_..."}
+
+		POST ${authBase}/refresh
+		{"refreshToken":"..."}
+
+		GET ${authBase}/sessions
+		Authorization: Bearer $ACCESS_TOKEN
+
+		GET ${authBase}/me
+		Authorization: Bearer $ACCESS_TOKEN
 
 POST ${authBase}/request-verification
 {"email":"user@example.com"}
@@ -3612,13 +3694,21 @@ POST ${authBase}/request-verification
 POST ${authBase}/request-password-reset
 {"email":"user@example.com"}
 
-POST ${authBase}/request-email-change
-Authorization: Bearer $ACCESS_TOKEN
-{"newEmail":"new@example.com"}
+		POST ${authBase}/request-email-change
+		Authorization: Bearer $ACCESS_TOKEN
+		{"newEmail":"new@example.com","password":"current-password"}
 
-POST ${authBase}/confirm-email-change
-{"token":"email_change_..."}`,
-    },
+		POST ${authBase}/confirm-email-change
+		{"token":"dbo_email_change_..."}
+
+	POST /api/projects/${encodeURIComponent(project)}/orgs
+	Authorization: Bearer $ACCESS_TOKEN
+	{"name":"Acme Inc","slug":"acme"}
+
+	POST /api/projects/${encodeURIComponent(project)}/orgs/{orgId}/invitations
+	Authorization: Bearer $ACCESS_TOKEN
+	{"email":"member@example.com","role":"admin"}`,
+	    },
     sdk: {
       title: "JavaScript fetch",
       detail: "Drop-in browser/server example with list, view, create, update, delete, realtime, and batch helpers. Use service keys only on trusted servers.",
@@ -4196,6 +4286,12 @@ function SettingsWorkspace(props: {
   authSettings: ProjectAuthSettings | null;
   setAuthSettings: React.Dispatch<React.SetStateAction<ProjectAuthSettings | null>>;
   onSaveAuthSettings: (settings: ProjectAuthSettings) => void;
+  projectQuotas: ProjectQuotas | null;
+  quotaDraft: typeof emptyQuotaDraft;
+  setQuotaDraft: React.Dispatch<React.SetStateAction<typeof emptyQuotaDraft>>;
+  projectMetrics: ProjectMetrics | null;
+  onSaveQuotas: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRefreshMetrics: () => void;
   onOpenAuth: () => void;
   onOpenMail: () => void;
   onOpenFiles: () => void;
@@ -4334,6 +4430,7 @@ function SettingsWorkspace(props: {
           {props.section === "mail" ? <MailSettings {...props} /> : null}
           {props.section === "storage" ? <StorageSettingsPanel {...props} /> : null}
           {props.section === "cors" ? <CORSSettingsPanel {...props} /> : null}
+          {props.section === "quotas" ? <QuotasSettingsPanel {...props} /> : null}
           {props.section === "admins" ? <AdminUsersPanel {...props} /> : null}
           {props.section === "backups" ? <BackupsView {...props} onOpenExport={() => props.onChangeSection("exportCollections")} /> : null}
           {props.section === "crons" ? <CronsView {...props} /> : null}
@@ -4381,6 +4478,7 @@ function SettingsIcon({ id }: { id: SettingsSection }) {
   if (id === "mail") return <Mail className="h-4 w-4" />;
   if (id === "storage") return <HardDrive className="h-4 w-4" />;
   if (id === "cors") return <Globe className="h-4 w-4" />;
+  if (id === "quotas") return <Activity className="h-4 w-4" />;
   if (id === "admins") return <Users className="h-4 w-4" />;
   if (id === "backups") return <Archive className="h-4 w-4" />;
   if (id === "crons") return <Activity className="h-4 w-4" />;
@@ -4552,7 +4650,10 @@ function AuthSettingsPanel({
   const routes = [
     ["POST", `${base}/auth/signup`, "Create an app user"],
     ["POST", `${base}/auth/login`, "Email/password login"],
+    ["POST", `${base}/auth/request-otp`, "Send one-time login code"],
+    ["POST", `${base}/auth/login-otp`, "Login with one-time code"],
     ["POST", `${base}/auth/refresh`, "Rotate refresh token"],
+    ["GET", `${base}/auth/sessions`, "List app user sessions"],
     ["GET", `${base}/auth/me`, "Current app user"],
     ["POST", `${base}/auth/request-verification`, "Send verification email"],
     ["POST", `${base}/auth/confirm-verification`, "Confirm verification token"],
@@ -4560,6 +4661,10 @@ function AuthSettingsPanel({
     ["POST", `${base}/auth/confirm-password-reset`, "Set a new password"],
     ["POST", `${base}/auth/request-email-change`, "Send email change confirmation"],
     ["POST", `${base}/auth/confirm-email-change`, "Confirm email change"],
+    ["GET", `${base}/orgs`, "List current user's organizations"],
+    ["POST", `${base}/orgs`, "Create organization"],
+    ["POST", `${base}/orgs/{orgId}/invitations`, "Invite organization member"],
+    ["POST", `${base}/org-invitations/accept`, "Accept organization invitation"],
   ];
   return (
     <div className="pb-settings-stack">
@@ -4617,8 +4722,18 @@ function AuthSettingsPanel({
 }`}</pre>
           <pre className="pb-code-box">{`POST ${base}/auth/login
 {
+	  "email": "user@example.com",
+	  "password": "password-123"
+	}`}</pre>
+          <pre className="pb-code-box">{`POST ${base}/auth/request-otp
+{
+  "email": "user@example.com"
+}
+
+POST ${base}/auth/login-otp
+{
   "email": "user@example.com",
-  "password": "password-123"
+  "token": "dbo_otp_..."
 }`}</pre>
         </div>
       </section>
@@ -4629,10 +4744,19 @@ function AuthSettingsPanel({
           <LabeledInput label="Refresh days" value={String(draft.refreshTokenDays)} onChange={(value) => updateDraft({ refreshTokenDays: Number.parseInt(value, 10) || 7 })} />
           <LabeledInput label="Verify hours" value={String(draft.verifyTokenHours)} onChange={(value) => updateDraft({ verifyTokenHours: Number.parseInt(value, 10) || 24 })} />
           <LabeledInput label="Reset hours" value={String(draft.resetTokenHours)} onChange={(value) => updateDraft({ resetTokenHours: Number.parseInt(value, 10) || 1 })} />
+          <LabeledInput label="OTP minutes" value={String(draft.otpTokenMinutes)} onChange={(value) => updateDraft({ otpTokenMinutes: Number.parseInt(value, 10) || 10 })} />
         </div>
+        <label className="pb-checkline switchline">
+          <input type="checkbox" checked={draft.otpEnabled} onChange={(event) => updateDraft({ otpEnabled: event.target.checked })} />
+          Enable email one-time password login
+        </label>
         <label className="pb-checkline switchline">
           <input type="checkbox" checked={draft.emailChangeEnabled} onChange={(event) => updateDraft({ emailChangeEnabled: event.target.checked })} />
           Allow app users to change email after confirmation
+        </label>
+        <label className="pb-checkline switchline">
+          <input type="checkbox" checked={draft.emailChangeRequiresPassword} onChange={(event) => updateDraft({ emailChangeRequiresPassword: event.target.checked })} />
+          Require current password before requesting email change
         </label>
       </section>
       <section className="pb-settings-block">
@@ -4661,6 +4785,17 @@ function AuthSettingsPanel({
             </label>
           </details>
           <details>
+            <summary>One-time password</summary>
+            <label className="pb-field">
+              <span>Subject</span>
+              <input value={draft.templates.otpSubject ?? ""} onChange={(event) => updateTemplate("otpSubject", event.target.value)} />
+            </label>
+            <label className="pb-field">
+              <span>Body</span>
+              <textarea value={draft.templates.otpBody ?? ""} onChange={(event) => updateTemplate("otpBody", event.target.value)} rows={6} />
+            </label>
+          </details>
+          <details>
             <summary>Email change</summary>
             <label className="pb-field">
               <span>Subject</span>
@@ -4669,6 +4804,17 @@ function AuthSettingsPanel({
             <label className="pb-field">
               <span>Body</span>
               <textarea value={draft.templates.emailChangeBody ?? ""} onChange={(event) => updateTemplate("emailChangeBody", event.target.value)} rows={6} />
+            </label>
+          </details>
+          <details>
+            <summary>Organization invitation</summary>
+            <label className="pb-field">
+              <span>Subject</span>
+              <input value={draft.templates.invitationSubject ?? ""} onChange={(event) => updateTemplate("invitationSubject", event.target.value)} />
+            </label>
+            <label className="pb-field">
+              <span>Body</span>
+              <textarea value={draft.templates.invitationBody ?? ""} onChange={(event) => updateTemplate("invitationBody", event.target.value)} rows={6} />
             </label>
           </details>
         </div>
@@ -4711,7 +4857,7 @@ function AuthSettingsPanel({
             );
           })}
           {[
-            ["One-time password", "Planned after OAuth so email delivery and rate limits share one path."],
+            ["One-time password", draft.otpEnabled ? "Enabled for email-code login." : "Disabled for this project."],
             ["Multi-factor auth", "Planned after OTP and recovery-code policy are designed."],
             ["Email change", draft.emailChangeEnabled ? "Enabled for app users." : "Disabled for app users."],
           ].map(([label, note]) => (
@@ -4723,6 +4869,76 @@ function AuthSettingsPanel({
               </span>
             </div>
           ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function QuotasSettingsPanel({
+  project,
+  projectQuotas,
+  quotaDraft,
+  setQuotaDraft,
+  projectMetrics,
+  onSaveQuotas,
+  onRefreshMetrics,
+}: {
+  project: Project | null;
+  projectQuotas: ProjectQuotas | null;
+  quotaDraft: typeof emptyQuotaDraft;
+  setQuotaDraft: React.Dispatch<React.SetStateAction<typeof emptyQuotaDraft>>;
+  projectMetrics: ProjectMetrics | null;
+  onSaveQuotas: (event: React.FormEvent<HTMLFormElement>) => void;
+  onRefreshMetrics: () => void;
+}) {
+  const quotaEnabled = projectQuotas?.enabled ?? quotaDraft.enabled;
+  return (
+    <div className="pb-settings-stack">
+      <section className="pb-settings-block">
+        <h2>Project quotas</h2>
+        <div className="pb-inline-alert info">Quotas apply to public project APIs. Set any limit to 0 to leave it unlimited.</div>
+        <form className="pb-settings-stack" onSubmit={onSaveQuotas}>
+          <label className="pb-checkline switchline">
+            <input type="checkbox" checked={quotaDraft.enabled} onChange={(event) => setQuotaDraft((draft) => ({ ...draft, enabled: event.target.checked }))} />
+            Enforce quotas for {project?.slug ?? "selected project"}
+          </label>
+          <div className="pb-grid-form four">
+            <LabeledInput label="API requests / minute" value={quotaDraft.requestsPerMinute} onChange={(value) => setQuotaDraft((draft) => ({ ...draft, requestsPerMinute: value }))} />
+            <LabeledInput label="Auth requests / minute" value={quotaDraft.authRequestsPerMinute} onChange={(value) => setQuotaDraft((draft) => ({ ...draft, authRequestsPerMinute: value }))} />
+            <LabeledInput label="Max app users" value={quotaDraft.maxAppUsers} onChange={(value) => setQuotaDraft((draft) => ({ ...draft, maxAppUsers: value }))} />
+            <LabeledInput label="Max storage MB" value={quotaDraft.maxStorageMb} onChange={(value) => setQuotaDraft((draft) => ({ ...draft, maxStorageMb: value }))} />
+          </div>
+          <div className="pb-row-actions">
+            <button type="submit" className="pb-btn primary" disabled={!project}>
+              <Save className="h-4 w-4" />
+              Save quotas
+            </button>
+          </div>
+        </form>
+      </section>
+      <section className="pb-settings-block">
+        <div className="pb-section-title-row">
+          <div>
+            <h2>Metrics</h2>
+            <p className="pb-muted-copy">Last {projectMetrics?.windowHours ?? 24} hours for the selected project.</p>
+          </div>
+          <button type="button" className="pb-btn secondary" onClick={onRefreshMetrics} disabled={!project}>
+            <RefreshCw className="h-4 w-4" />
+            Refresh
+          </button>
+        </div>
+        <div className="pb-info-grid compact">
+          <Info label="Project" value={project?.slug ?? ""} />
+          <Info label="Quotas" value={quotaEnabled ? "enabled" : "disabled"} />
+          <Info label="App users" value={formatCount(projectMetrics?.appUsers ?? 0)} />
+          <Info label="Active sessions" value={formatCount(projectMetrics?.activeSessions ?? 0)} />
+          <Info label="Organizations" value={formatCount(projectMetrics?.organizations ?? 0)} />
+          <Info label="Storage" value={formatBytes(projectMetrics?.storageBytes ?? 0)} />
+          <Info label="Requests" value={formatCount(projectMetrics?.requests.total ?? 0)} />
+          <Info label="Errors" value={formatCount(projectMetrics?.requests.errors ?? 0)} />
+          <Info label="Avg duration" value={`${Math.round(projectMetrics?.requests.avgDurationMs ?? 0)} ms`} />
+          <Info label="P95 duration" value={`${Math.round(projectMetrics?.requests.p95DurationMs ?? 0)} ms`} />
         </div>
       </section>
     </div>
@@ -6929,14 +7145,21 @@ function defaultAuthSettingsForProject(project: Project | null): ProjectAuthSett
     refreshTokenDays: 7,
     verifyTokenHours: 24,
     resetTokenHours: 1,
+    otpEnabled: true,
+    otpTokenMinutes: 10,
     emailChangeEnabled: true,
+    emailChangeRequiresPassword: true,
     templates: {
       verifySubject: "Verify your email for {APP_NAME}",
       verifyBody: "Verify your email for {APP_NAME}.\n\nOpen this link:\n{LINK}\n\nToken:\n{TOKEN}\n",
       resetSubject: "Reset your {APP_NAME} password",
       resetBody: "Reset your password for {APP_NAME}.\n\nOpen this link:\n{LINK}\n\nToken:\n{TOKEN}\n",
+      otpSubject: "Your {APP_NAME} login code",
+      otpBody: "Use this one-time login code for {APP_NAME}:\n\n{TOKEN}\n\nThis code expires soon.\n",
       emailChangeSubject: "Confirm your new email for {APP_NAME}",
       emailChangeBody: "Confirm the new email address for {APP_NAME}.\n\nNew email: {NEW_EMAIL}\n\nOpen this link:\n{LINK}\n\nToken:\n{TOKEN}\n",
+      invitationSubject: "You are invited to {APP_NAME}",
+      invitationBody: "You were invited to {APP_NAME}.\n\nOpen this link:\n{LINK}\n\nInvitation token:\n{TOKEN}\n",
     },
     providers: {},
   };
@@ -6961,6 +7184,17 @@ function settingsToLogDraft(settings: InstanceSettings): typeof emptyLogDraft {
   return {
     retentionDays: String(settings.logs.retentionDays || 30),
     retentionCount: String(settings.logs.retentionCount || 100000),
+  };
+}
+
+function quotasToDraft(quotas: ProjectQuotas | null): typeof emptyQuotaDraft {
+  if (!quotas) return emptyQuotaDraft;
+  return {
+    enabled: quotas.enabled,
+    requestsPerMinute: String(quotas.requestsPerMinute || 0),
+    authRequestsPerMinute: String(quotas.authRequestsPerMinute || 0),
+    maxAppUsers: String(quotas.maxAppUsers || 0),
+    maxStorageMb: String(quotas.maxStorageMb || 0),
   };
 }
 

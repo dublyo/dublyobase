@@ -2310,6 +2310,10 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) minmax(240px, 0.8fr);
 }
 
+.pb-grid-form.four {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .smtp-grid {
   grid-template-columns: minmax(240px, 1.4fr) 110px minmax(160px, 1fr) minmax(160px, 1fr) 150px;
   margin-top: 15px;

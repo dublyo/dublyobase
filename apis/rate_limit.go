@@ -32,6 +32,16 @@ func (l *rateLimiter) allow(key string) bool {
 	if l == nil {
 		return true
 	}
+	return l.allowLimit(key, l.limit)
+}
+
+func (l *rateLimiter) allowLimit(key string, limit int) bool {
+	if l == nil {
+		return true
+	}
+	if limit <= 0 {
+		return true
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -54,7 +64,7 @@ func (l *rateLimiter) allow(key string) bool {
 			keep = append(keep, hit)
 		}
 	}
-	if len(keep) >= l.limit {
+	if len(keep) >= limit {
 		l.hits[key] = keep
 		return false
 	}

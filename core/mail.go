@@ -186,6 +186,28 @@ func BuildAuthTokenEmailWithSettings(cfg *Config, settings *ProjectAuthSettings,
 			Subject: renderAuthTemplate(templates.EmailChangeSubject, projectSlug, projectLabel, email, newEmail, token, link),
 			Text:    renderAuthTemplate(templates.EmailChangeBody, projectSlug, projectLabel, email, newEmail, token, link),
 		}, nil
+	case "login_otp":
+		link, err := authActionLink(cfg.AppURL, "/auth/otp", projectSlug, email, token)
+		if err != nil {
+			return MailMessage{}, err
+		}
+		return MailMessage{
+			From:    cfg.SMTPFrom,
+			To:      email,
+			Subject: renderAuthTemplate(templates.OTPSubject, projectSlug, projectLabel, email, newEmail, token, link),
+			Text:    renderAuthTemplate(templates.OTPBody, projectSlug, projectLabel, email, newEmail, token, link),
+		}, nil
+	case "org_invitation":
+		link, err := authActionLink(cfg.AppURL, "/auth/invitation", projectSlug, email, token)
+		if err != nil {
+			return MailMessage{}, err
+		}
+		return MailMessage{
+			From:    cfg.SMTPFrom,
+			To:      email,
+			Subject: renderAuthTemplate(templates.InvitationSubject, projectSlug, projectLabel, email, newEmail, token, link),
+			Text:    renderAuthTemplate(templates.InvitationBody, projectSlug, projectLabel, email, newEmail, token, link),
+		}, nil
 	default:
 		return MailMessage{}, fmt.Errorf("%w: unsupported auth email type", ErrValidation)
 	}

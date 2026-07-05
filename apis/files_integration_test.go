@@ -178,6 +178,53 @@ func TestFileUploadLimit(t *testing.T) {
 	}
 }
 
+func TestFileUploadProjectStorageQuota(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	app.Config.MaxUploadMB = 4
+	srv := NewServer(app)
+	adminToken := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, adminToken)
+	serviceKey := createAPIKeyForRecords(t, srv.Handler, adminToken, slug, "service")
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), adminToken, `{
+		"name":"assets",
+		"type":"base",
+		"fields":[
+			{"name":"title","type":"text","required":true},
+			{"name":"blob","type":"file"}
+		]
+	}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create collection: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = putJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/quotas", slug), adminToken, `{
+		"enabled":true,
+		"requestsPerMinute":0,
+		"authRequestsPerMinute":0,
+		"maxAppUsers":0,
+		"maxStorageMb":1
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable quotas: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	record := createRecordInCollectionForTest(t, srv.Handler, slug, "assets", serviceKey, `{"title":"Quota"}`)
+	recordID := record["id"].(string)
+
+	rec = postMultipartFiles(srv.Handler, fmt.Sprintf("/api/projects/%s/files/assets/%s/blob", slug, recordID), serviceKey, []multipartTestFile{
+		{Name: "too-large.bin", Body: bytes.Repeat([]byte("x"), 1024*1024+1)},
+	})
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("quota upload: want 429, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"quota_exceeded"`) {
+		t.Fatalf("quota upload should return quota_exceeded: %s", rec.Body.String())
+	}
+	recordDir := filepath.Join(app.Config.StorageLocalPath, slug, "assets", recordID)
+	if _, err := os.Stat(recordDir); !os.IsNotExist(err) {
+		t.Fatalf("quota failure should not leave record storage, stat err=%v", err)
+	}
+}
+
 func TestResumableFileUploadCompleteAndCleanup(t *testing.T) {
 	app, _ := newIntegrationApp(t)
 	srv := NewServer(app)

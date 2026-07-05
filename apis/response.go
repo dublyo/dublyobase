@@ -66,6 +66,8 @@ func coreErrorResponse(err error) (int, string, string, map[string]any) {
 		return http.StatusNotFound, "project_not_found", "project not found", nil
 	case errors.Is(err, core.ErrProvisioningConflict):
 		return http.StatusConflict, "provisioning_conflict", "project database objects already exist", nil
+	case errors.Is(err, core.ErrQuotaExceeded):
+		return http.StatusTooManyRequests, "quota_exceeded", err.Error(), nil
 	case errors.Is(err, core.ErrRecordConflict):
 		return http.StatusConflict, "record_conflict", err.Error(), nil
 	case errors.Is(err, core.ErrCollectionExists):

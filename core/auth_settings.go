@@ -12,17 +12,20 @@ import (
 )
 
 type ProjectAuthSettings struct {
-	ProjectID          string         `json:"projectId"`
-	ProjectSlug        string         `json:"projectSlug"`
-	AccessTokenMinutes int            `json:"accessTokenMinutes"`
-	RefreshTokenDays   int            `json:"refreshTokenDays"`
-	VerifyTokenHours   int            `json:"verifyTokenHours"`
-	ResetTokenHours    int            `json:"resetTokenHours"`
-	EmailChangeEnabled bool           `json:"emailChangeEnabled"`
-	Templates          AuthTemplates  `json:"templates"`
-	Providers          map[string]any `json:"providers"`
-	CreatedAt          time.Time      `json:"createdAt,omitempty"`
-	UpdatedAt          time.Time      `json:"updatedAt,omitempty"`
+	ProjectID                   string         `json:"projectId"`
+	ProjectSlug                 string         `json:"projectSlug"`
+	AccessTokenMinutes          int            `json:"accessTokenMinutes"`
+	RefreshTokenDays            int            `json:"refreshTokenDays"`
+	VerifyTokenHours            int            `json:"verifyTokenHours"`
+	ResetTokenHours             int            `json:"resetTokenHours"`
+	OTPEnabled                  bool           `json:"otpEnabled"`
+	OTPTokenMinutes             int            `json:"otpTokenMinutes"`
+	EmailChangeEnabled          bool           `json:"emailChangeEnabled"`
+	EmailChangeRequiresPassword bool           `json:"emailChangeRequiresPassword"`
+	Templates                   AuthTemplates  `json:"templates"`
+	Providers                   map[string]any `json:"providers"`
+	CreatedAt                   time.Time      `json:"createdAt,omitempty"`
+	UpdatedAt                   time.Time      `json:"updatedAt,omitempty"`
 }
 
 type AuthTemplates struct {
@@ -30,29 +33,39 @@ type AuthTemplates struct {
 	VerifyBody         string `json:"verifyBody,omitempty"`
 	ResetSubject       string `json:"resetSubject,omitempty"`
 	ResetBody          string `json:"resetBody,omitempty"`
+	OTPSubject         string `json:"otpSubject,omitempty"`
+	OTPBody            string `json:"otpBody,omitempty"`
 	EmailChangeSubject string `json:"emailChangeSubject,omitempty"`
 	EmailChangeBody    string `json:"emailChangeBody,omitempty"`
+	InvitationSubject  string `json:"invitationSubject,omitempty"`
+	InvitationBody     string `json:"invitationBody,omitempty"`
 }
 
 type ProjectAuthSettingsInput struct {
-	AccessTokenMinutes int            `json:"accessTokenMinutes"`
-	RefreshTokenDays   int            `json:"refreshTokenDays"`
-	VerifyTokenHours   int            `json:"verifyTokenHours"`
-	ResetTokenHours    int            `json:"resetTokenHours"`
-	EmailChangeEnabled *bool          `json:"emailChangeEnabled,omitempty"`
-	Templates          AuthTemplates  `json:"templates"`
-	Providers          map[string]any `json:"providers"`
+	AccessTokenMinutes          int            `json:"accessTokenMinutes"`
+	RefreshTokenDays            int            `json:"refreshTokenDays"`
+	VerifyTokenHours            int            `json:"verifyTokenHours"`
+	ResetTokenHours             int            `json:"resetTokenHours"`
+	OTPEnabled                  *bool          `json:"otpEnabled,omitempty"`
+	OTPTokenMinutes             int            `json:"otpTokenMinutes"`
+	EmailChangeEnabled          *bool          `json:"emailChangeEnabled,omitempty"`
+	EmailChangeRequiresPassword *bool          `json:"emailChangeRequiresPassword,omitempty"`
+	Templates                   AuthTemplates  `json:"templates"`
+	Providers                   map[string]any `json:"providers"`
 }
 
 func DefaultProjectAuthSettings(project *Project) *ProjectAuthSettings {
 	settings := &ProjectAuthSettings{
-		AccessTokenMinutes: appAccessTokenMinutesDefault,
-		RefreshTokenDays:   appRefreshTokenDaysDefault,
-		VerifyTokenHours:   emailVerifyTokenHoursDefault,
-		ResetTokenHours:    passwordResetHoursDefault,
-		EmailChangeEnabled: true,
-		Templates:          defaultAuthTemplates(),
-		Providers:          map[string]any{},
+		AccessTokenMinutes:          appAccessTokenMinutesDefault,
+		RefreshTokenDays:            appRefreshTokenDaysDefault,
+		VerifyTokenHours:            emailVerifyTokenHoursDefault,
+		ResetTokenHours:             passwordResetHoursDefault,
+		OTPEnabled:                  true,
+		OTPTokenMinutes:             10,
+		EmailChangeEnabled:          true,
+		EmailChangeRequiresPassword: true,
+		Templates:                   defaultAuthTemplates(),
+		Providers:                   map[string]any{},
 	}
 	if project != nil {
 		settings.ProjectID = project.ID
@@ -95,8 +108,17 @@ func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID 
 	if input.ResetTokenHours != 0 {
 		next.ResetTokenHours = input.ResetTokenHours
 	}
+	if input.OTPEnabled != nil {
+		next.OTPEnabled = *input.OTPEnabled
+	}
+	if input.OTPTokenMinutes != 0 {
+		next.OTPTokenMinutes = input.OTPTokenMinutes
+	}
 	if input.EmailChangeEnabled != nil {
 		next.EmailChangeEnabled = *input.EmailChangeEnabled
+	}
+	if input.EmailChangeRequiresPassword != nil {
+		next.EmailChangeRequiresPassword = *input.EmailChangeRequiresPassword
 	}
 	next.Templates = mergeAuthTemplates(defaultAuthTemplates(), input.Templates)
 	if input.Providers != nil {
@@ -120,14 +142,17 @@ func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID 
 	defer tx.Rollback(ctx)
 	if err := tx.QueryRow(ctx, `
 		insert into _dbo.project_auth_settings
-			(project_id, access_token_minutes, refresh_token_days, verify_token_hours, reset_token_hours, email_change_enabled, templates, providers)
-		values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
+			(project_id, access_token_minutes, refresh_token_days, verify_token_hours, reset_token_hours, otp_enabled, otp_token_minutes, email_change_enabled, email_change_requires_password, templates, providers)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb)
 		on conflict (project_id) do update
 		set access_token_minutes = excluded.access_token_minutes,
 			refresh_token_days = excluded.refresh_token_days,
 			verify_token_hours = excluded.verify_token_hours,
 			reset_token_hours = excluded.reset_token_hours,
+			otp_enabled = excluded.otp_enabled,
+			otp_token_minutes = excluded.otp_token_minutes,
 			email_change_enabled = excluded.email_change_enabled,
+			email_change_requires_password = excluded.email_change_requires_password,
 			templates = excluded.templates,
 			providers = excluded.providers,
 			updated_at = now()
@@ -137,7 +162,10 @@ func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID 
 		next.RefreshTokenDays,
 		next.VerifyTokenHours,
 		next.ResetTokenHours,
+		next.OTPEnabled,
+		next.OTPTokenMinutes,
 		next.EmailChangeEnabled,
+		next.EmailChangeRequiresPassword,
 		templates,
 		providers,
 	).Scan(&next.CreatedAt, &next.UpdatedAt); err != nil {
@@ -151,13 +179,16 @@ func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID 
 		IP:         ip,
 		UserAgent:  userAgent,
 		Data: map[string]any{
-			"project":            project.Slug,
-			"accessTokenMinutes": next.AccessTokenMinutes,
-			"refreshTokenDays":   next.RefreshTokenDays,
-			"verifyTokenHours":   next.VerifyTokenHours,
-			"resetTokenHours":    next.ResetTokenHours,
-			"emailChangeEnabled": next.EmailChangeEnabled,
-			"oauthProviderCount": len(next.Providers),
+			"project":                     project.Slug,
+			"accessTokenMinutes":          next.AccessTokenMinutes,
+			"refreshTokenDays":            next.RefreshTokenDays,
+			"verifyTokenHours":            next.VerifyTokenHours,
+			"resetTokenHours":             next.ResetTokenHours,
+			"otpEnabled":                  next.OTPEnabled,
+			"otpTokenMinutes":             next.OTPTokenMinutes,
+			"emailChangeEnabled":          next.EmailChangeEnabled,
+			"emailChangeRequiresPassword": next.EmailChangeRequiresPassword,
+			"oauthProviderCount":          len(next.Providers),
 		},
 	}); err != nil {
 		return nil, err
@@ -172,11 +203,26 @@ func getProjectAuthSettingsByProject(ctx context.Context, q interface {
 	var rawTemplates []byte
 	var rawProviders []byte
 	err := q.QueryRow(ctx, `
-		select access_token_minutes, refresh_token_days, verify_token_hours, reset_token_hours, email_change_enabled, templates, providers, created_at, updated_at
+		select access_token_minutes, refresh_token_days, verify_token_hours, reset_token_hours,
+		       otp_enabled, otp_token_minutes, email_change_enabled, email_change_requires_password,
+		       templates, providers, created_at, updated_at
 		from _dbo.project_auth_settings
 		where project_id = $1`,
 		project.ID,
-	).Scan(&settings.AccessTokenMinutes, &settings.RefreshTokenDays, &settings.VerifyTokenHours, &settings.ResetTokenHours, &settings.EmailChangeEnabled, &rawTemplates, &rawProviders, &settings.CreatedAt, &settings.UpdatedAt)
+	).Scan(
+		&settings.AccessTokenMinutes,
+		&settings.RefreshTokenDays,
+		&settings.VerifyTokenHours,
+		&settings.ResetTokenHours,
+		&settings.OTPEnabled,
+		&settings.OTPTokenMinutes,
+		&settings.EmailChangeEnabled,
+		&settings.EmailChangeRequiresPassword,
+		&rawTemplates,
+		&rawProviders,
+		&settings.CreatedAt,
+		&settings.UpdatedAt,
+	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return settings, nil
@@ -213,6 +259,9 @@ func validateProjectAuthSettings(settings *ProjectAuthSettings) error {
 	if settings.ResetTokenHours < 1 || settings.ResetTokenHours > 72 {
 		return fmt.Errorf("%w: resetTokenHours must be between 1 and 72", ErrValidation)
 	}
+	if settings.OTPTokenMinutes < 1 || settings.OTPTokenMinutes > 60 {
+		return fmt.Errorf("%w: otpTokenMinutes must be between 1 and 60", ErrValidation)
+	}
 	if err := validateAuthTemplate(settings.Templates.VerifySubject, 200, "verify subject"); err != nil {
 		return err
 	}
@@ -225,10 +274,22 @@ func validateProjectAuthSettings(settings *ProjectAuthSettings) error {
 	if err := validateAuthTemplate(settings.Templates.ResetBody, 8000, "reset body"); err != nil {
 		return err
 	}
+	if err := validateAuthTemplate(settings.Templates.OTPSubject, 200, "otp subject"); err != nil {
+		return err
+	}
+	if err := validateAuthTemplate(settings.Templates.OTPBody, 8000, "otp body"); err != nil {
+		return err
+	}
 	if err := validateAuthTemplate(settings.Templates.EmailChangeSubject, 200, "email change subject"); err != nil {
 		return err
 	}
-	return validateAuthTemplate(settings.Templates.EmailChangeBody, 8000, "email change body")
+	if err := validateAuthTemplate(settings.Templates.EmailChangeBody, 8000, "email change body"); err != nil {
+		return err
+	}
+	if err := validateAuthTemplate(settings.Templates.InvitationSubject, 200, "invitation subject"); err != nil {
+		return err
+	}
+	return validateAuthTemplate(settings.Templates.InvitationBody, 8000, "invitation body")
 }
 
 func validateAuthTemplate(value string, max int, label string) error {
@@ -255,11 +316,23 @@ func mergeAuthTemplates(base AuthTemplates, next AuthTemplates) AuthTemplates {
 	if strings.TrimSpace(next.ResetBody) != "" {
 		base.ResetBody = strings.TrimSpace(next.ResetBody)
 	}
+	if strings.TrimSpace(next.OTPSubject) != "" {
+		base.OTPSubject = strings.TrimSpace(next.OTPSubject)
+	}
+	if strings.TrimSpace(next.OTPBody) != "" {
+		base.OTPBody = strings.TrimSpace(next.OTPBody)
+	}
 	if strings.TrimSpace(next.EmailChangeSubject) != "" {
 		base.EmailChangeSubject = strings.TrimSpace(next.EmailChangeSubject)
 	}
 	if strings.TrimSpace(next.EmailChangeBody) != "" {
 		base.EmailChangeBody = strings.TrimSpace(next.EmailChangeBody)
+	}
+	if strings.TrimSpace(next.InvitationSubject) != "" {
+		base.InvitationSubject = strings.TrimSpace(next.InvitationSubject)
+	}
+	if strings.TrimSpace(next.InvitationBody) != "" {
+		base.InvitationBody = strings.TrimSpace(next.InvitationBody)
 	}
 	return base
 }
@@ -270,8 +343,12 @@ func defaultAuthTemplates() AuthTemplates {
 		VerifyBody:         "Verify your email for {APP_NAME}.\n\nOpen this link:\n{LINK}\n\nToken:\n{TOKEN}\n",
 		ResetSubject:       "Reset your {APP_NAME} password",
 		ResetBody:          "Reset your password for {APP_NAME}.\n\nOpen this link:\n{LINK}\n\nToken:\n{TOKEN}\n",
+		OTPSubject:         "Your {APP_NAME} login code",
+		OTPBody:            "Use this one-time login code for {APP_NAME}:\n\n{TOKEN}\n\nThis code expires soon.\n",
 		EmailChangeSubject: "Confirm your new email for {APP_NAME}",
 		EmailChangeBody:    "Confirm the new email address for {APP_NAME}.\n\nNew email: {NEW_EMAIL}\n\nOpen this link:\n{LINK}\n\nToken:\n{TOKEN}\n",
+		InvitationSubject:  "You are invited to {APP_NAME}",
+		InvitationBody:     "You were invited to {APP_NAME}.\n\nOpen this link:\n{LINK}\n\nInvitation token:\n{TOKEN}\n",
 	}
 }
 
@@ -330,4 +407,8 @@ func (s ProjectAuthSettings) VerifyTokenTTL() time.Duration {
 
 func (s ProjectAuthSettings) ResetTokenTTL() time.Duration {
 	return time.Duration(s.ResetTokenHours) * time.Hour
+}
+
+func (s ProjectAuthSettings) OTPTokenTTL() time.Duration {
+	return time.Duration(s.OTPTokenMinutes) * time.Minute
 }

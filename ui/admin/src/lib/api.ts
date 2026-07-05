@@ -1,4 +1,4 @@
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Health, InstanceSettings, MCPToken, Project, ProjectAuthSettings, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaDiscoveryResult, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "./types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Health, InstanceSettings, MCPToken, Project, ProjectAuthSettings, ProjectMetrics, ProjectQuotas, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaDiscoveryResult, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "./types";
 
 type RequestOptions = RequestInit & {
   token?: string | null;
@@ -530,6 +530,22 @@ export function updateProjectAuthSettings(token: string, project: string, input:
     token,
     body: JSON.stringify(input),
   });
+}
+
+export function getProjectQuotas(token: string, project: string) {
+  return request<ProjectQuotas>(`/admin/api/projects/${encodeURIComponent(project)}/quotas`, { token });
+}
+
+export function updateProjectQuotas(token: string, project: string, input: Partial<ProjectQuotas>) {
+  return request<ProjectQuotas>(`/admin/api/projects/${encodeURIComponent(project)}/quotas`, {
+    method: "PUT",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function getProjectMetrics(token: string, project: string, hours = 24) {
+  return request<ProjectMetrics>(`/admin/api/projects/${encodeURIComponent(project)}/metrics?hours=${encodeURIComponent(String(hours))}`, { token });
 }
 
 export function listWebhooks(token: string, project: string) {

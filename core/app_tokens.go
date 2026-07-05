@@ -24,6 +24,8 @@ const (
 	appRefreshTokenPrefix  = "dbo_refresh_"
 	emailVerifyTokenPrefix = "dbo_verify_"
 	emailChangeTokenPrefix = "dbo_email_change_"
+	loginOTPPrefix         = "dbo_otp_"
+	orgInvitationPrefix    = "dbo_invite_"
 	passwordResetPrefix    = "dbo_reset_"
 )
 
@@ -61,6 +63,14 @@ func GeneratePasswordResetToken() (string, error) {
 
 func GenerateEmailChangeToken() (string, error) {
 	return generateOpaqueToken(emailChangeTokenPrefix)
+}
+
+func GenerateLoginOTPToken() (string, error) {
+	return generateOpaqueToken(loginOTPPrefix)
+}
+
+func GenerateOrganizationInvitationToken() (string, error) {
+	return generateOpaqueToken(orgInvitationPrefix)
 }
 
 func GenerateAppAccessToken(secret string, projectSlug string, userID string, tokenKey string, now time.Time) (string, time.Time, error) {

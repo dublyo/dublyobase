@@ -21,6 +21,7 @@ type emailRequest struct {
 
 type emailChangeRequest struct {
 	NewEmail string `json:"newEmail"`
+	Password string `json:"password"`
 }
 
 type confirmVerificationRequest struct {
@@ -34,7 +35,15 @@ type confirmPasswordResetRequest struct {
 	Password string `json:"password"`
 }
 
+type otpLoginRequest struct {
+	Email string `json:"email"`
+	Token string `json:"token"`
+}
+
 func (s *server) appSignup(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	var req credentialsRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -59,6 +68,9 @@ func (s *server) appSignup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) appLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	var req credentialsRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -81,7 +93,62 @@ func (s *server) appLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *server) appRequestOTP(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
+	var req emailRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := core.RequestLoginOTP(
+		r.Context(),
+		s.app.Pool,
+		s.app.Config,
+		r.PathValue("slug"),
+		req.Email,
+		s.clientIP(r),
+		r.UserAgent(),
+		time.Now(),
+	)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	s.deliverAuthTokenEmail(r.Context(), r.PathValue("slug"), result)
+	writeJSON(w, http.StatusAccepted, result)
+}
+
+func (s *server) appLoginOTP(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
+	var req otpLoginRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	result, err := core.LoginAppUserWithOTP(
+		r.Context(),
+		s.app.Pool,
+		s.app.Config,
+		r.PathValue("slug"),
+		req.Email,
+		req.Token,
+		s.clientIP(r),
+		r.UserAgent(),
+		time.Now(),
+	)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *server) appRefresh(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	var req refreshTokenRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -104,6 +171,9 @@ func (s *server) appRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) appLogout(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	var req refreshTokenRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -124,6 +194,9 @@ func (s *server) appLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) appLogoutAll(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	project, user, err := core.ResolveAppAccessToken(r.Context(), s.app.Pool, s.app.Config, r.PathValue("slug"), bearerToken(r), time.Now())
 	if err != nil {
 		writeCoreError(w, err)
@@ -144,7 +217,43 @@ func (s *server) appLogoutAll(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *server) appListSessions(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
+	sessions, err := core.ListAppSessions(r.Context(), s.app.Pool, s.app.Config, r.PathValue("slug"), bearerToken(r), time.Now())
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": sessions})
+}
+
+func (s *server) appRevokeSession(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
+	if err := core.RevokeAppSession(
+		r.Context(),
+		s.app.Pool,
+		s.app.Config,
+		r.PathValue("slug"),
+		bearerToken(r),
+		r.PathValue("sessionId"),
+		s.clientIP(r),
+		r.UserAgent(),
+		time.Now(),
+	); err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *server) appMe(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	_, user, err := core.ResolveAppAccessToken(r.Context(), s.app.Pool, s.app.Config, r.PathValue("slug"), bearerToken(r), time.Now())
 	if err != nil {
 		writeCoreError(w, err)
@@ -154,6 +263,9 @@ func (s *server) appMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) appRequestEmailChange(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	project, user, err := core.ResolveAppAccessToken(r.Context(), s.app.Pool, s.app.Config, r.PathValue("slug"), bearerToken(r), time.Now())
 	if err != nil {
 		writeCoreError(w, err)
@@ -169,6 +281,7 @@ func (s *server) appRequestEmailChange(w http.ResponseWriter, r *http.Request) {
 		s.app.Config,
 		project.Slug,
 		user.ID,
+		req.Password,
 		req.NewEmail,
 		s.clientIP(r),
 		r.UserAgent(),
@@ -183,6 +296,9 @@ func (s *server) appRequestEmailChange(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) appConfirmEmailChange(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	var req struct {
 		Token string `json:"token"`
 	}
@@ -206,6 +322,9 @@ func (s *server) appConfirmEmailChange(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) appRequestVerification(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	var req emailRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -229,6 +348,9 @@ func (s *server) appRequestVerification(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *server) appConfirmVerification(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	var req confirmVerificationRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -251,6 +373,9 @@ func (s *server) appConfirmVerification(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *server) appRequestPasswordReset(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	var req emailRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -324,6 +449,9 @@ func (s *server) deliverAuthTokenEmail(ctx context.Context, projectSlug string, 
 }
 
 func (s *server) appConfirmPasswordReset(w http.ResponseWriter, r *http.Request) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), true) {
+		return
+	}
 	var req confirmPasswordResetRequest
 	if !decodeJSON(w, r, &req) {
 		return

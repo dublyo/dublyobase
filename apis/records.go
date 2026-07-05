@@ -177,6 +177,9 @@ func (s *server) deleteRecord(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) resolveRecordAuth(w http.ResponseWriter, r *http.Request) (*core.RecordAuth, bool) {
+	if !s.checkProjectQuota(w, r, r.PathValue("slug"), false) {
+		return nil, false
+	}
 	auth, err := core.ResolveRecordAuth(r.Context(), s.app.Pool, s.app.Config, r.PathValue("slug"), bearerToken(r), time.Now())
 	if err != nil {
 		writeCoreError(w, err)

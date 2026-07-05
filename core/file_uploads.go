@@ -117,6 +117,9 @@ func CreateFileUploadSession(ctx context.Context, pool *pgxpool.Pool, cfg *Confi
 	if err := ensureRecordCanUploadFile(ctx, pool, auth, collection, input.RecordID); err != nil {
 		return nil, err
 	}
+	if err := EnsureProjectStorageQuota(ctx, pool, &auth.Project, input.TotalSize); err != nil {
+		return nil, err
+	}
 	filename := sanitizeFilename(input.Filename)
 	expiresAt := now.UTC().Add(FileUploadSessionTTL)
 

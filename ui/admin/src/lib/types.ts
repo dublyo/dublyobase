@@ -268,16 +268,54 @@ export type ProjectAuthSettings = {
   refreshTokenDays: number;
   verifyTokenHours: number;
   resetTokenHours: number;
+  otpEnabled: boolean;
+  otpTokenMinutes: number;
   emailChangeEnabled: boolean;
+  emailChangeRequiresPassword: boolean;
   templates: {
     verifySubject?: string;
     verifyBody?: string;
     resetSubject?: string;
     resetBody?: string;
+    otpSubject?: string;
+    otpBody?: string;
     emailChangeSubject?: string;
     emailChangeBody?: string;
+    invitationSubject?: string;
+    invitationBody?: string;
   };
   providers: Record<string, unknown>;
+};
+
+export type ProjectQuotas = {
+  projectId: string;
+  projectSlug: string;
+  enabled: boolean;
+  requestsPerMinute: number;
+  authRequestsPerMinute: number;
+  maxAppUsers: number;
+  maxStorageMb: number;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type ProjectMetrics = {
+  projectId: string;
+  projectSlug: string;
+  windowHours: number;
+  appUsers: number;
+  activeSessions: number;
+  organizations: number;
+  storageBytes: number;
+  requests: {
+    total: number;
+    errors: number;
+    avgDurationMs: number;
+    p95DurationMs: number;
+  };
+  quota: ProjectQuotas;
+  windowStartedAt: string;
+  windowFinishedAt: string;
 };
 
 export type Webhook = {

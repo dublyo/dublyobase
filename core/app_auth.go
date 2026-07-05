@@ -38,6 +38,20 @@ type appRefreshSession struct {
 	ExpiresAt time.Time
 }
 
+type AppSession struct {
+	ID         string     `json:"id"`
+	FamilyID   string     `json:"familyId"`
+	DeviceName string     `json:"deviceName"`
+	IP         string     `json:"ip"`
+	UserAgent  string     `json:"userAgent"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	LastSeenAt time.Time  `json:"lastSeenAt"`
+	ExpiresAt  time.Time  `json:"expiresAt"`
+	RotatedAt  *time.Time `json:"rotatedAt,omitempty"`
+	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
+	Active     bool       `json:"active"`
+}
+
 type appSessionCredential struct {
 	SessionID string
 	UserID    string
@@ -79,6 +93,9 @@ func SignupAppUser(ctx context.Context, pool *pgxpool.Pool, cfg *Config, project
 	}
 	defer tx.Rollback(ctx)
 	if _, err := ensureAuthUsersCollectionTx(ctx, tx, project); err != nil {
+		return nil, err
+	}
+	if err := enforceMaxAppUsersQuotaTx(ctx, tx, project); err != nil {
 		return nil, err
 	}
 
@@ -380,6 +397,99 @@ func LogoutAllAppSessions(ctx context.Context, pool *pgxpool.Pool, project *Proj
 	return tx.Commit(ctx)
 }
 
+func ListAppSessions(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, accessToken string, now time.Time) ([]AppSession, error) {
+	project, user, err := ResolveAppAccessToken(ctx, pool, cfg, projectSlug, accessToken, now)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := pool.Query(ctx, `
+		select id, family_id, device_name, ip, user_agent, created_at, last_seen_at, expires_at, rotated_at, revoked_at
+		from _dbo.sessions
+		where project_id = $1 and collection = 'users' and user_id = $2
+		order by last_seen_at desc, created_at desc
+		limit 100`,
+		project.ID,
+		user.ID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sessions := []AppSession{}
+	for rows.Next() {
+		var session AppSession
+		var rotatedAt sql.NullTime
+		var revokedAt sql.NullTime
+		if err := rows.Scan(
+			&session.ID,
+			&session.FamilyID,
+			&session.DeviceName,
+			&session.IP,
+			&session.UserAgent,
+			&session.CreatedAt,
+			&session.LastSeenAt,
+			&session.ExpiresAt,
+			&rotatedAt,
+			&revokedAt,
+		); err != nil {
+			return nil, err
+		}
+		if session.DeviceName == "" {
+			session.DeviceName = deviceNameFromUserAgent(session.UserAgent)
+		}
+		if rotatedAt.Valid {
+			session.RotatedAt = &rotatedAt.Time
+		}
+		if revokedAt.Valid {
+			session.RevokedAt = &revokedAt.Time
+		}
+		session.Active = !rotatedAt.Valid && !revokedAt.Valid && session.ExpiresAt.After(now.UTC())
+		sessions = append(sessions, session)
+	}
+	return sessions, rows.Err()
+}
+
+func RevokeAppSession(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, accessToken string, sessionID string, ip string, userAgent string, now time.Time) error {
+	if err := ValidateUUID(sessionID); err != nil {
+		return err
+	}
+	project, user, err := ResolveAppAccessToken(ctx, pool, cfg, projectSlug, accessToken, now)
+	if err != nil {
+		return err
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
+		update _dbo.sessions
+		set revoked_at = coalesce(revoked_at, $1), last_seen_at = $1
+		where id = $2 and project_id = $3 and collection = 'users' and user_id = $4`,
+		now.UTC(),
+		sessionID,
+		project.ID,
+		user.ID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrUnauthorized
+	}
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		Action:     "app_user.session_revoke",
+		TargetType: "app_session",
+		TargetID:   sessionID,
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data:       map[string]any{"project": project.Slug, "userId": user.ID},
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func ResolveAppAccessToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, token string, now time.Time) (*Project, *AppUser, error) {
 	project, err := GetProject(ctx, pool, projectSlug)
 	if err != nil {
@@ -413,7 +523,99 @@ func RequestPasswordReset(ctx context.Context, pool *pgxpool.Pool, cfg *Config, 
 	return requestAuthToken(ctx, pool, cfg, projectSlug, email, "password_reset", 0, nil, GeneratePasswordResetToken, ip, userAgent, now)
 }
 
-func RequestEmailChange(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, currentUserID string, newEmail string, ip string, userAgent string, now time.Time) (*AuthTokenRequestResult, error) {
+func RequestLoginOTP(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, email string, ip string, userAgent string, now time.Time) (*AuthTokenRequestResult, error) {
+	project, err := GetProject(ctx, pool, projectSlug)
+	if err != nil {
+		return nil, err
+	}
+	settings, err := getProjectAuthSettingsByProject(ctx, pool, project)
+	if err != nil {
+		return nil, err
+	}
+	if !settings.OTPEnabled {
+		return nil, fmt.Errorf("%w: OTP login is disabled", ErrValidation)
+	}
+	return requestAuthToken(ctx, pool, cfg, projectSlug, email, "login_otp", settings.OTPTokenTTL(), nil, GenerateLoginOTPToken, ip, userAgent, now)
+}
+
+func LoginAppUserWithOTP(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, email string, token string, ip string, userAgent string, now time.Time) (*AppAuthResult, error) {
+	email, err := normalizeAppEmail(email)
+	if err != nil {
+		return nil, ErrInvalidAuthToken
+	}
+	if !strings.HasPrefix(strings.TrimSpace(token), loginOTPPrefix) {
+		return nil, ErrInvalidAuthToken
+	}
+	project, err := GetProject(ctx, pool, projectSlug)
+	if err != nil {
+		return nil, err
+	}
+	settings, err := getProjectAuthSettingsByProject(ctx, pool, project)
+	if err != nil {
+		return nil, err
+	}
+	if !settings.OTPEnabled {
+		return nil, fmt.Errorf("%w: OTP login is disabled", ErrValidation)
+	}
+	if _, err := EnsureAuthUsersCollection(ctx, pool, project.Slug); err != nil {
+		return nil, err
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	authToken, user, err := getAuthTokenForUpdate(ctx, tx, project, "login_otp", token)
+	if err != nil {
+		return nil, err
+	}
+	if user.Email != email {
+		return nil, ErrInvalidAuthToken
+	}
+	if err := validateAuthTokenUse(authToken, user, now); err != nil {
+		return nil, err
+	}
+	table := quoteIdent(project.SchemaName, authUsersCollection)
+	tag, err := tx.Exec(ctx, fmt.Sprintf(`
+		update %s
+		set last_login_at = $1, updated = now()
+		where id = $2 and disabled_at is null`,
+		table,
+	), now.UTC(), user.ID)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, ErrUserDisabled
+	}
+	refreshToken, session, err := createAppSessionTx(ctx, tx, project.ID, user.ID, "", ip, userAgent, now, settings.RefreshTokenTTL())
+	if err != nil {
+		return nil, err
+	}
+	result, err := buildAppAuthResult(cfg, project, user.AppUser, user.TokenKey, refreshToken, session.ExpiresAt, now, settings.AccessTokenTTL())
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `update _dbo.auth_tokens set used_at = $1 where id = $2`, now.UTC(), authToken.ID); err != nil {
+		return nil, err
+	}
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		Action:     "app_user.login_otp",
+		TargetType: "app_user",
+		TargetID:   user.ID,
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data:       map[string]any{"project": project.Slug, "collection": authUsersCollection},
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func RequestEmailChange(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, currentUserID string, currentPassword string, newEmail string, ip string, userAgent string, now time.Time) (*AuthTokenRequestResult, error) {
 	newEmail, err := normalizeAppEmail(newEmail)
 	if err != nil {
 		return nil, err
@@ -435,6 +637,11 @@ func RequestEmailChange(ctx context.Context, pool *pgxpool.Pool, cfg *Config, pr
 	cred, err := getAppUserByID(ctx, pool, project, currentUserID)
 	if err != nil {
 		return nil, err
+	}
+	if settings.EmailChangeRequiresPassword {
+		if err := bcrypt.CompareHashAndPassword([]byte(cred.PasswordHash), []byte(currentPassword)); err != nil {
+			return nil, ErrInvalidCredentials
+		}
 	}
 	if _, err := getAppUserByEmail(ctx, pool, project, newEmail); err == nil {
 		return nil, ErrUserExists
@@ -685,6 +892,8 @@ func requestAuthToken(ctx context.Context, pool *pgxpool.Pool, cfg *Config, proj
 			ttl = settings.ResetTokenTTL()
 		case "email_change":
 			ttl = settings.VerifyTokenTTL()
+		case "login_otp":
+			ttl = settings.OTPTokenTTL()
 		default:
 			return nil, fmt.Errorf("%w: unsupported auth token type", ErrValidation)
 		}
@@ -764,20 +973,65 @@ func createAppSessionTx(ctx context.Context, tx pgx.Tx, projectID string, userID
 	expiresAt := now.UTC().Add(ttl)
 	var session appRefreshSession
 	if err := tx.QueryRow(ctx, `
-		insert into _dbo.sessions (project_id, collection, user_id, token_hash, family_id, ip, user_agent, expires_at)
-		values ($1, 'users', $2, $3, coalesce(nullif($4, '')::uuid, gen_random_uuid()), $5, $6, $7)
-		returning id, family_id, expires_at`,
+			insert into _dbo.sessions (project_id, collection, user_id, token_hash, family_id, ip, user_agent, device_name, expires_at)
+			values ($1, 'users', $2, $3, coalesce(nullif($4, '')::uuid, gen_random_uuid()), $5, $6, $7, $8)
+			returning id, family_id, expires_at`,
 		projectID,
 		userID,
 		HashToken(token),
 		familyID,
 		ip,
 		userAgent,
+		deviceNameFromUserAgent(userAgent),
 		expiresAt,
 	).Scan(&session.ID, &session.FamilyID, &session.ExpiresAt); err != nil {
 		return "", appRefreshSession{}, err
 	}
 	return token, session, nil
+}
+
+func deviceNameFromUserAgent(userAgent string) string {
+	userAgent = strings.TrimSpace(userAgent)
+	switch {
+	case userAgent == "":
+		return "Unknown device"
+	case strings.Contains(userAgent, "iPhone"):
+		return "iPhone"
+	case strings.Contains(userAgent, "iPad"):
+		return "iPad"
+	case strings.Contains(userAgent, "Android"):
+		return "Android"
+	case strings.Contains(userAgent, "Macintosh"):
+		return "Mac"
+	case strings.Contains(userAgent, "Windows"):
+		return "Windows"
+	case strings.Contains(userAgent, "Linux"):
+		return "Linux"
+	default:
+		if len(userAgent) > 80 {
+			return userAgent[:80]
+		}
+		return userAgent
+	}
+}
+
+func enforceMaxAppUsersQuotaTx(ctx context.Context, tx pgx.Tx, project *Project) error {
+	quotas, err := getProjectQuotasByProject(ctx, tx, project)
+	if err != nil {
+		return err
+	}
+	if !quotas.Enabled || quotas.MaxAppUsers <= 0 {
+		return nil
+	}
+	table := quoteIdent(project.SchemaName, authUsersCollection)
+	var users int
+	if err := tx.QueryRow(ctx, fmt.Sprintf(`select count(*) from %s`, table)).Scan(&users); err != nil {
+		return err
+	}
+	if users >= quotas.MaxAppUsers {
+		return fmt.Errorf("%w: max app users reached", ErrQuotaExceeded)
+	}
+	return nil
 }
 
 func getRefreshSessionForUpdate(ctx context.Context, tx pgx.Tx, project *Project, refreshToken string) (*appSessionCredential, error) {

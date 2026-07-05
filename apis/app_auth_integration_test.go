@@ -101,7 +101,7 @@ func TestAppAuthLifecycle(t *testing.T) {
 	}
 	login = loginAppUserForTest(t, srv.Handler, slug, "user@example.com", "new-password-123")
 
-	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-email-change", slug), login.Token, `{"newEmail":"new-user@example.com"}`)
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-email-change", slug), login.Token, `{"newEmail":"new-user@example.com","password":"new-password-123"}`)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("request email change: want 202, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -126,6 +126,137 @@ func TestAppAuthLifecycle(t *testing.T) {
 	}
 	if strings.HasPrefix(storedHash, "dbo_refresh_") {
 		t.Fatal("refresh token plaintext must not be stored")
+	}
+}
+
+func TestAppAuthOTPAndSessionManagement(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	adminToken := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, adminToken)
+
+	_ = signupAppUserForTest(t, srv.Handler, slug, "otp@example.com")
+	otpToken := requestDevTokenForTest(t, srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-otp", slug), "otp@example.com")
+	if !strings.HasPrefix(otpToken, "dbo_otp_") {
+		t.Fatalf("OTP token prefix mismatch: %s", otpToken)
+	}
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/login-otp", slug), "", fmt.Sprintf(`{"email":"otp@example.com","token":%q}`, otpToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("login otp: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	login := decodeAppAuthResult(t, rec)
+
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/sessions", slug), login.Token)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"deviceName"`) {
+		t.Fatalf("sessions list: want device metadata, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var sessions struct {
+		Items []core.AppSession `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions.Items) == 0 || sessions.Items[0].ID == "" {
+		t.Fatalf("sessions response missing items: %s", rec.Body.String())
+	}
+
+	rec = deleteJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/sessions/%s", slug, sessions.Items[0].ID), login.Token, "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("revoke session: want 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAppOrganizationsInvitationsAndMembers(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	adminToken := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, adminToken)
+
+	owner := signupAppUserForTest(t, srv.Handler, slug, "owner@example.com")
+	invited := signupAppUserForTest(t, srv.Handler, slug, "member@example.com")
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/orgs", slug), owner.Token, `{"name":"Acme Inc","slug":"acme","metadata":{"plan":"pro"}}`)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"role":"owner"`) {
+		t.Fatalf("create org: want owner org, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var org core.Organization
+	if err := json.Unmarshal(rec.Body.Bytes(), &org); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/orgs", slug), owner.Token)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"slug":"acme"`) {
+		t.Fatalf("list orgs: want acme, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/orgs/%s/invitations", slug, org.ID), owner.Token, `{"email":"member@example.com","role":"admin"}`)
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"devToken":"dbo_invite_`) {
+		t.Fatalf("create invitation: want dev token, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var invite struct {
+		DevToken string `json:"devToken"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &invite); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/org-invitations/accept", slug), invited.Token, fmt.Sprintf(`{"token":%q}`, invite.DevToken))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"role":"admin"`) {
+		t.Fatalf("accept invitation: want admin membership, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/orgs/%s/members", slug, org.ID), invited.Token)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"email":"member@example.com"`) {
+		t.Fatalf("list members as invited admin: got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProjectQuotasAndMetrics(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	adminToken := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, adminToken)
+
+	rec := putJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/quotas", slug), adminToken, `{
+		"enabled": true,
+		"requestsPerMinute": 0,
+		"authRequestsPerMinute": 0,
+		"maxAppUsers": 1,
+		"maxStorageMb": 100
+	}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"maxAppUsers":1`) {
+		t.Fatalf("update quotas: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	_ = signupAppUserForTest(t, srv.Handler, slug, "quota-one@example.com")
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/signup", slug), "", `{"email":"quota-two@example.com","password":"password-123"}`)
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), "quota_exceeded") {
+		t.Fatalf("max app users quota: want 429, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = putJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/quotas", slug), adminToken, `{
+		"enabled": true,
+		"requestsPerMinute": 0,
+		"authRequestsPerMinute": 1,
+		"maxAppUsers": 0,
+		"maxStorageMb": 100
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update auth quota: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-verification", slug), "", `{"email":"quota-one@example.com"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("first auth quota request: want 202, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/auth/request-verification", slug), "", `{"email":"quota-one@example.com"}`)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second auth quota request: want 429, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = getJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/metrics?hours=24", slug), adminToken)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"appUsers":1`) || !strings.Contains(rec.Body.String(), `"requests"`) {
+		t.Fatalf("metrics: want app user and request metrics, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

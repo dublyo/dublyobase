@@ -176,6 +176,11 @@ func UpdateRecordFileField(ctx context.Context, pool *pgxpool.Pool, auth *Record
 		if err := validateFileFieldSelection(field, next); err != nil {
 			return err
 		}
+		if delta := fileSizeTotal(next) - fileSizeTotal(oldFiles); delta > 0 {
+			if err := EnsureProjectStorageQuota(ctx, pool, &auth.Project, delta); err != nil {
+				return err
+			}
+		}
 		value, err := fileMetasJSON(next, multiple)
 		if err != nil {
 			return err
@@ -614,6 +619,16 @@ func findFileMeta(files []FileMeta, fileID string) (FileMeta, bool) {
 		}
 	}
 	return FileMeta{}, false
+}
+
+func fileSizeTotal(files []FileMeta) int64 {
+	var total int64
+	for _, file := range files {
+		if file.Size > 0 {
+			total += file.Size
+		}
+	}
+	return total
 }
 
 func localStoragePath(cfg *Config, parts ...string) (string, error) {
