@@ -530,7 +530,7 @@ func fieldsForDiscoveredColumns(columns []discoveredColumnInternal, names map[st
 			continue
 		}
 		fieldType, options, supported, reason := postgresFieldType(col)
-		if fk, ok := fkByColumn[col.Name]; ok && col.UDTName == "uuid" {
+		if fk, ok := fkByColumn[col.Name]; ok && relationSourceTypeSupported(col.UDTName) {
 			fieldType = "relation"
 			supported = true
 			reason = ""
@@ -560,6 +560,15 @@ func fieldsForDiscoveredColumns(columns []discoveredColumnInternal, names map[st
 		fields = append(fields, field)
 	}
 	return fields, outColumns
+}
+
+func relationSourceTypeSupported(udtName string) bool {
+	switch strings.ToLower(strings.TrimSpace(udtName)) {
+	case "uuid", "text", "varchar", "bpchar", "citext":
+		return true
+	default:
+		return false
+	}
 }
 
 func postgresFieldType(col discoveredColumnInternal) (string, map[string]any, bool, string) {

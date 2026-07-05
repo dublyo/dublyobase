@@ -855,14 +855,14 @@ func normalizeRelationValue(field Field, raw json.RawMessage) (any, error) {
 	if fieldIsMultiple(field) {
 		var values []string
 		if err := json.Unmarshal(raw, &values); err != nil {
-			return nil, fmt.Errorf("%w: field %q must be a UUID array", ErrValidation, field.Name)
+			return nil, fmt.Errorf("%w: field %q must be a string array", ErrValidation, field.Name)
 		}
 		if err := validateSelectedCount(field, len(values)); err != nil {
 			return nil, err
 		}
 		for _, value := range values {
-			if err := ValidateUUID(value); err != nil {
-				return nil, fmt.Errorf("%w: field %q must contain UUIDs", ErrValidation, field.Name)
+			if err := validateRelationIdentifier(field, value); err != nil {
+				return nil, err
 			}
 		}
 		return values, nil
@@ -874,10 +874,31 @@ func normalizeRelationValue(field Field, raw json.RawMessage) (any, error) {
 	if field.Required && value == "" {
 		return nil, fmt.Errorf("%w: field %q is required", ErrValidation, field.Name)
 	}
-	if err := ValidateUUID(value); err != nil {
-		return nil, fmt.Errorf("%w: field %q must be a UUID", ErrValidation, field.Name)
+	if value == "" {
+		return value, nil
+	}
+	if err := validateRelationIdentifier(field, value); err != nil {
+		return nil, err
 	}
 	return value, nil
+}
+
+func validateRelationIdentifier(field Field, value string) error {
+	switch fieldSourceType(field) {
+	case "", "uuid":
+		if err := ValidateUUID(value); err != nil {
+			return fmt.Errorf("%w: field %q must be a UUID", ErrValidation, field.Name)
+		}
+	case "text", "varchar", "bpchar", "citext":
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%w: field %q must be a non-empty id", ErrValidation, field.Name)
+		}
+	default:
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%w: field %q must be a non-empty id", ErrValidation, field.Name)
+		}
+	}
+	return nil
 }
 
 func validateSelectedCount(field Field, count int) error {
