@@ -173,7 +173,10 @@ func (s localObjectStore) DeletePrefix(_ context.Context, prefix string) error {
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(p)
+	if err := os.RemoveAll(p); err != nil {
+		return err
+	}
+	return removeDirAndEmptyParents(s.cfg, filepath.Dir(p))
 }
 
 type s3ObjectStore struct {
