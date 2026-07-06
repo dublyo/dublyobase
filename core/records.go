@@ -142,7 +142,7 @@ func CreateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 			query = fmt.Sprintf(`insert into %s (%s) values (%s) returning %s`,
 				table,
 				recordColumnList(collection, payload.Columns),
-				valuePlaceholders(payload.Columns, fieldByName(collection.Fields), 1),
+				valuePlaceholders(collection, payload.Columns, fieldByName(collection.Fields), 1),
 				recordSelectList(collection, columns),
 			)
 		}
@@ -539,13 +539,19 @@ func allowedRecordColumns(collection *Collection) map[string]struct{} {
 }
 
 func normalizeCreatePayload(collection *Collection, raw map[string]json.RawMessage) (*normalizedPayload, error) {
-	payload, err := normalizeRecordPayload(collection, raw)
+	payload, err := normalizeRecordPayload(collection, raw, collectionIsImported(collection))
 	if err != nil {
 		return nil, err
 	}
 	provided := map[string]struct{}{}
 	for _, column := range payload.Columns {
 		provided[column] = struct{}{}
+	}
+	pkField := collectionPrimaryKeyField(collection)
+	if collectionIsImported(collection) && !collectionStandardSystemColumns(collection) && !collectionPrimaryKeyHasDefault(collection) {
+		if _, ok := provided[pkField]; !ok {
+			return nil, fmt.Errorf("%w: field %q is required", ErrValidation, pkField)
+		}
 	}
 	for _, field := range collection.Fields {
 		if _, ok := provided[field.Name]; ok {
@@ -562,13 +568,13 @@ func normalizePatchPayload(collection *Collection, raw map[string]json.RawMessag
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("%w: patch body is empty", ErrValidation)
 	}
-	return normalizeRecordPayload(collection, raw)
+	return normalizeRecordPayload(collection, raw, false)
 }
 
-func normalizeRecordPayload(collection *Collection, raw map[string]json.RawMessage) (*normalizedPayload, error) {
+func normalizeRecordPayload(collection *Collection, raw map[string]json.RawMessage, allowPrimaryKey bool) (*normalizedPayload, error) {
 	fields := fieldByName(collection.Fields)
 	columns := make([]string, 0, len(raw))
-	valuesByColumn := map[string]json.RawMessage{}
+	valuesByColumn := map[string]any{}
 	pkField := collectionPrimaryKeyField(collection)
 	hasStandardColumns := collectionStandardSystemColumns(collection)
 	for name, body := range raw {
@@ -576,7 +582,19 @@ func normalizeRecordPayload(collection *Collection, raw map[string]json.RawMessa
 		if _, exists := valuesByColumn[name]; exists {
 			return nil, fmt.Errorf("%w: duplicate field %q", ErrValidation, name)
 		}
-		if name == pkField || (hasStandardColumns && (name == "created" || name == "updated")) {
+		if name == pkField {
+			if !allowPrimaryKey {
+				return nil, fmt.Errorf("%w: system field %q cannot be written", ErrValidation, name)
+			}
+			value, err := normalizePrimaryKeyCreateValue(collection, body)
+			if err != nil {
+				return nil, err
+			}
+			valuesByColumn[name] = value
+			columns = append(columns, name)
+			continue
+		}
+		if hasStandardColumns && (name == "created" || name == "updated") {
 			return nil, fmt.Errorf("%w: system field %q cannot be written", ErrValidation, name)
 		}
 		if isAuthUsersHiddenField(collection, name) {
@@ -589,22 +607,54 @@ func normalizeRecordPayload(collection *Collection, raw map[string]json.RawMessa
 		if field.Type == "autodate" {
 			return nil, fmt.Errorf("%w: autodate field %q is managed by the server", ErrValidation, field.Name)
 		}
-		if _, err := normalizeRecordValue(field, body); err != nil {
+		value, err := normalizeRecordValue(field, body)
+		if err != nil {
 			return nil, err
 		}
-		valuesByColumn[name] = body
+		valuesByColumn[name] = value
 		columns = append(columns, name)
 	}
 	sort.SliceStable(columns, func(i, j int) bool { return columns[i] < columns[j] })
 	sortedValues := make([]any, 0, len(columns))
 	for _, column := range columns {
-		value, err := normalizeRecordValue(fields[column], valuesByColumn[column])
-		if err != nil {
-			return nil, err
-		}
-		sortedValues = append(sortedValues, value)
+		sortedValues = append(sortedValues, valuesByColumn[column])
 	}
 	return &normalizedPayload{Columns: columns, Values: sortedValues}, nil
+}
+
+func normalizePrimaryKeyCreateValue(collection *Collection, raw json.RawMessage) (any, error) {
+	if string(raw) == "null" {
+		return nil, fmt.Errorf("%w: record id is required", ErrValidation)
+	}
+	switch collectionPrimaryKeyType(collection) {
+	case "int2", "int4", "int8":
+		var number json.Number
+		if err := json.Unmarshal(raw, &number); err == nil {
+			value, err := number.Int64()
+			if err != nil {
+				return nil, fmt.Errorf("%w: invalid record id", ErrValidation)
+			}
+			return value, nil
+		}
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return nil, fmt.Errorf("%w: invalid record id", ErrValidation)
+		}
+		value, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid record id", ErrValidation)
+		}
+		return value, nil
+	default:
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return nil, fmt.Errorf("%w: record id must be a string", ErrValidation)
+		}
+		if err := validateRecordKey(collection, text); err != nil {
+			return nil, err
+		}
+		return text, nil
+	}
 }
 
 func isAuthUsersHiddenField(collection *Collection, name string) bool {
@@ -1031,9 +1081,13 @@ func fieldSourceType(field Field) string {
 	return ""
 }
 
-func valuePlaceholders(columns []string, fields map[string]Field, start int) string {
+func valuePlaceholders(collection *Collection, columns []string, fields map[string]Field, start int) string {
 	parts := make([]string, len(columns))
 	for i, column := range columns {
+		if column == collectionPrimaryKeyField(collection) {
+			parts[i] = recordKeyPlaceholder(collection, start+i)
+			continue
+		}
 		parts[i] = valuePlaceholder(fields[column], start+i)
 	}
 	return strings.Join(parts, ", ")

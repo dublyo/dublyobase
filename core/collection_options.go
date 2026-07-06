@@ -23,6 +23,7 @@ type collectionRuntimeOptions struct {
 	PrimaryKey            string `json:"primaryKey,omitempty"`
 	PrimaryKeyField       string `json:"primaryKeyField,omitempty"`
 	PrimaryKeyType        string `json:"primaryKeyType,omitempty"`
+	PrimaryKeyHasDefault  bool   `json:"primaryKeyHasDefault,omitempty"`
 	StandardSystemColumns bool   `json:"standardSystemColumns,omitempty"`
 }
 
@@ -137,6 +138,11 @@ func collectionPrimaryKeyType(collection *Collection) string {
 	return defaultRecordPrimaryKeyType
 }
 
+func collectionPrimaryKeyHasDefault(collection *Collection) bool {
+	opts := parseCollectionRuntimeOptions(collection.Options)
+	return opts.PrimaryKeyHasDefault
+}
+
 func collectionOptionsWithRuntime(base json.RawMessage, runtime collectionRuntimeOptions) (json.RawMessage, error) {
 	body := map[string]any{}
 	if len(base) > 0 && string(base) != "null" {
@@ -151,6 +157,7 @@ func collectionOptionsWithRuntime(base json.RawMessage, runtime collectionRuntim
 	body["primaryKey"] = runtime.PrimaryKey
 	body["primaryKeyField"] = runtime.PrimaryKeyField
 	body["primaryKeyType"] = runtime.PrimaryKeyType
+	body["primaryKeyHasDefault"] = runtime.PrimaryKeyHasDefault
 	body["standardSystemColumns"] = runtime.StandardSystemColumns
 	return json.Marshal(body)
 }

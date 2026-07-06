@@ -36,9 +36,10 @@ type DiscoveredTable struct {
 }
 
 type DiscoveredPrimaryKey struct {
-	Column string `json:"column"`
-	Field  string `json:"field"`
-	Type   string `json:"type"`
+	Column     string `json:"column"`
+	Field      string `json:"field"`
+	Type       string `json:"type"`
+	HasDefault bool   `json:"hasDefault"`
 }
 
 type DiscoveredColumn struct {
@@ -341,6 +342,13 @@ func discoverOneTable(ctx context.Context, pool *pgxpool.Pool, project *Project,
 		columnNames["created"] = "created"
 		columnNames["updated"] = "updated"
 	}
+	if len(pkCols) == 1 {
+		// Imported tables still need the same REST surface as native
+		// collections. Keep the physical source column in collection options,
+		// but expose the single record key as "id" for projections, filters,
+		// record URLs, and client SDKs.
+		columnNames[pkCols[0]] = defaultRecordPrimaryKey
+	}
 	fields, discoveredColumns := fieldsForDiscoveredColumns(columns, columnNames, fks, existingByTable, existingNames, standard)
 
 	table := DiscoveredTable{
@@ -366,7 +374,7 @@ func discoverOneTable(ctx context.Context, pool *pgxpool.Pool, project *Project,
 	}
 	pkColumn := columnsByName(columns)[pkCols[0]]
 	pkField := columnNames[pkColumn.Name]
-	table.PrimaryKey = &DiscoveredPrimaryKey{Column: pkColumn.Name, Field: pkField, Type: pkColumn.UDTName}
+	table.PrimaryKey = &DiscoveredPrimaryKey{Column: pkColumn.Name, Field: pkField, Type: pkColumn.UDTName, HasDefault: pkColumn.HasDefault}
 	if !primaryKeyTypeUsable(pkColumn.UDTName) {
 		table.CanImport = false
 		table.Reason = "primary key type is not supported for REST record routes"
@@ -489,6 +497,7 @@ func insertImportedCollection(ctx context.Context, tx pgx.Tx, project *Project, 
 		PrimaryKey:            table.PrimaryKey.Column,
 		PrimaryKeyField:       table.PrimaryKey.Field,
 		PrimaryKeyType:        table.PrimaryKey.Type,
+		PrimaryKeyHasDefault:  table.PrimaryKey.HasDefault,
 		StandardSystemColumns: table.StandardSystemColumns,
 	})
 	if err != nil {

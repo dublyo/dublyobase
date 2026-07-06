@@ -126,11 +126,19 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 			views int not null default 0
 		);
 		create table %s (
+			id text primary key,
+			name text not null,
+			rank int not null default 0
+		);
+		insert into %s (id, name, rank) values ('cuid_text_1', 'Text primary key row', 7);
+		create table %s (
 			title text not null
 		);`,
 		pgx.Identifier{legacySchema, "authors"}.Sanitize(),
 		pgx.Identifier{legacySchema, "articles"}.Sanitize(),
 		pgx.Identifier{legacySchema, "authors"}.Sanitize(),
+		pgx.Identifier{legacySchema, "text_ids"}.Sanitize(),
+		pgx.Identifier{legacySchema, "text_ids"}.Sanitize(),
 		pgx.Identifier{legacySchema, "without_pk"}.Sanitize(),
 	)); err != nil {
 		t.Fatal(err)
@@ -148,8 +156,14 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	for _, table := range discovery.Items {
 		found[table.Table] = table
 	}
-	if !found["authors"].CanImport || !found["articles"].CanImport {
+	if !found["authors"].CanImport || !found["articles"].CanImport || !found["text_ids"].CanImport {
 		t.Fatalf("authors/articles should be importable: %+v", found)
+	}
+	if found["text_ids"].PrimaryKey == nil || found["text_ids"].PrimaryKey.Field != "id" {
+		t.Fatalf("text primary key should be exposed as id: %+v", found["text_ids"].PrimaryKey)
+	}
+	if found["text_ids"].PrimaryKey.HasDefault {
+		t.Fatalf("text primary key should not report a database default: %+v", found["text_ids"].PrimaryKey)
 	}
 	if found["without_pk"].CanImport || !strings.Contains(found["without_pk"].Reason, "primary key") {
 		t.Fatalf("without_pk should be read-only: %+v", found["without_pk"])
@@ -163,9 +177,10 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 		"items": [
 			{"schema":%q,"table":"authors","name":"legacy_authors"},
 			{"schema":%q,"table":"articles","name":"legacy_articles"},
+			{"schema":%q,"table":"text_ids","name":"legacy_text_ids"},
 			{"schema":%q,"table":"without_pk","name":"legacy_without_pk"}
 		]
-	}`, legacySchema, legacySchema, legacySchema)
+	}`, legacySchema, legacySchema, legacySchema, legacySchema)
 	rec = postJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/schema/import", slug), token, importBody)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("preview schema import: want 200, got %d: %s", rec.Code, rec.Body.String())
@@ -174,7 +189,7 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
 		t.Fatal(err)
 	}
-	if !preview.DryRun || preview.Created != 2 || preview.Skipped != 1 {
+	if !preview.DryRun || preview.Created != 3 || preview.Skipped != 1 {
 		t.Fatalf("unexpected import preview: %+v", preview)
 	}
 
@@ -187,7 +202,7 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &applied); err != nil {
 		t.Fatal(err)
 	}
-	if applied.Created != 2 || applied.Skipped != 1 {
+	if applied.Created != 3 || applied.Skipped != 1 {
 		t.Fatalf("unexpected import result: %+v", applied)
 	}
 
@@ -205,6 +220,41 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 		t.Fatalf("list imported records: want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	assertRecordListCount(t, rec.Body.Bytes(), 1)
+
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_text_ids/records?fields=id,name,rank&filter[id][_eq]=cuid_text_1&perPage=10", slug), token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list imported text-id records: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var textIDList core.RecordListResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &textIDList); err != nil {
+		t.Fatal(err)
+	}
+	if len(textIDList.Items) != 1 || textIDList.Items[0]["id"] != "cuid_text_1" || textIDList.Items[0]["name"] != "Text primary key row" {
+		t.Fatalf("unexpected text-id list result: %+v", textIDList.Items)
+	}
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_text_ids/records/cuid_text_1", slug), token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get imported text-id record: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_text_ids/records", slug), token, `{"name":"Missing id","rank":8}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("create imported text-id record without id: want 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_text_ids/records", slug), token, `{"id":"cuid_text_2","name":"Created through API","rank":8}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create imported text-id record: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var createdTextID core.Record
+	if err := json.Unmarshal(rec.Body.Bytes(), &createdTextID); err != nil {
+		t.Fatal(err)
+	}
+	if createdTextID["id"] != "cuid_text_2" || createdTextID["name"] != "Created through API" {
+		t.Fatalf("unexpected imported text-id create result: %+v", createdTextID)
+	}
+	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_text_ids/records/cuid_text_2", slug), token, `{"id":"cuid_text_3"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("patch imported primary key: want 422, got %d: %s", rec.Code, rec.Body.String())
+	}
 
 	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_articles", slug), token, `{"fields":[{"name":"title","type":"text"},{"name":"summary","type":"text"}]}`)
 	if rec.Code != http.StatusConflict {
