@@ -239,7 +239,7 @@ func PruneAuditLog(ctx context.Context, pool *pgxpool.Pool, retentionDays int, r
 
 	ageTag, err := conn.Exec(ctx, `
 		delete from _dbo.audit_log
-		where created_at < now() - ($1::text || ' days')::interval`,
+		where created_at < now() - ($1::integer * interval '1 day')`,
 		retentionDays,
 	)
 	if err != nil {

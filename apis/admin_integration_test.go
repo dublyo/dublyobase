@@ -594,6 +594,16 @@ func TestAdminSettingsEndpoints(t *testing.T) {
 	}
 }
 
+func TestLogRetentionPruneUsesIntegerInterval(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	if _, err := core.PruneAuditLog(context.Background(), app.Pool, 30, 100); err != nil {
+		t.Fatalf("prune audit log: %v", err)
+	}
+	if _, err := core.PruneRequestLogs(context.Background(), app.Pool, 30, 100); err != nil {
+		t.Fatalf("prune request logs: %v", err)
+	}
+}
+
 func TestDisabledAdminCannotUseSession(t *testing.T) {
 	app, _ := newIntegrationApp(t)
 	srv := NewServer(app)

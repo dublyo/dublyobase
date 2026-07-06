@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/dublyo/dublyobase/core"
 )
 
 type testSSEEvent struct {
@@ -72,6 +74,25 @@ func TestRealtimeRecordEvents(t *testing.T) {
 	deleted := readRealtimePayload(t, reader, "record.delete")
 	if deleted.ID != record["id"] || deleted.Record["title"] != "Published" {
 		t.Fatalf("bad delete payload: %+v", deleted)
+	}
+}
+
+func TestRealtimeServicePayloadSkipsVisibilityLookup(t *testing.T) {
+	srv := &server{app: &core.App{}}
+	auth := &core.RecordAuth{Role: core.RecordRoleService}
+	payload, ok := srv.realtimePayload(context.Background(), auth, realtimeEvent{
+		Project:    "demo",
+		Collection: "posts",
+		Action:     realtimeActionCreate,
+		ID:         "record-1",
+		Record:     core.Record{"id": "record-1", "title": "Draft"},
+		At:         time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC),
+	})
+	if !ok {
+		t.Fatal("service realtime payload should be visible without a database re-check")
+	}
+	if payload.Record["title"] != "Draft" {
+		t.Fatalf("payload record = %+v", payload.Record)
 	}
 }
 

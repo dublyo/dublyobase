@@ -503,12 +503,13 @@ func (s *server) realtimePayload(ctx context.Context, auth *core.RecordAuth, ev 
 		return payload, false
 	}
 
-	if ev.ID == "" {
-		if auth.Role != core.RecordRoleService {
-			return payload, false
-		}
+	if auth.Role == core.RecordRoleService {
 		payload.Record = ev.Record
 		return payload, true
+	}
+
+	if ev.ID == "" {
+		return payload, false
 	}
 
 	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)

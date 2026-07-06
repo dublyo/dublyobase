@@ -234,7 +234,7 @@ func PruneRequestLogs(ctx context.Context, pool *pgxpool.Pool, retentionDays int
 	defer conn.Exec(context.Background(), `select pg_advisory_unlock($1)`, requestLogRetentionAdvisoryLockID)
 	ageTag, err := conn.Exec(ctx, `
 		delete from _dbo.request_logs
-		where created_at < now() - ($1::text || ' days')::interval`,
+		where created_at < now() - ($1::integer * interval '1 day')`,
 		retentionDays,
 	)
 	if err != nil {
