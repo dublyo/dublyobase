@@ -3020,7 +3020,7 @@ function CollectionOptionsPanel({
 function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field: Field; collections: Collection[]; onChange: (field: Field) => void; readOnly?: boolean }) {
   const searchSupported = canSearchField(field);
   const relationTarget = field.type === "relation" ? collections.find((collection) => collection.name === field.options?.collection) : undefined;
-  const relationDisplayFields = relationDisplayFieldOptions(relationTarget);
+  const relationDisplayFields = relationDisplayFieldOptions(relationTarget, field.options?.displayField);
   const commonOptions = (
     <div className="pb-field-options common">
       <label className="pb-field">
@@ -6866,8 +6866,22 @@ function isReservedDataFieldName(name: string): boolean {
   return reservedDataFieldNames.has(normalized) || normalized.startsWith("_dbo") || normalized.startsWith("pg_");
 }
 
-function relationDisplayFieldOptions(collection?: Collection): Field[] {
-  return (collection?.fields ?? []).filter((field) => field.type !== "password" && !isReservedDataFieldName(field.name));
+function relationDisplayFieldOptions(collection?: Collection, currentDisplayField?: unknown): Field[] {
+  const fields = (collection?.fields ?? []).filter((field) => field.type !== "password" && !isReservedDataFieldName(field.name));
+  const seen = new Set(fields.map((field) => field.name));
+  const out = [...fields];
+  const addSynthetic = (name: unknown) => {
+    if (typeof name !== "string") return;
+    const normalized = name.trim();
+    if (!normalized || seen.has(normalized) || isReservedDataFieldName(normalized)) return;
+    seen.add(normalized);
+    out.push({ name: normalized, type: "text" });
+  };
+  if (collection?.system && collection.name === "users") {
+    addSynthetic("email");
+  }
+  addSynthetic(currentDisplayField);
+  return out;
 }
 
 function FieldTypeGlyph({ type }: { type: FieldType }) {
