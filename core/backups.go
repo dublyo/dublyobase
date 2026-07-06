@@ -466,7 +466,7 @@ func dumpAndStoreBackup(ctx context.Context, pool *pgxpool.Pool, cfg *Config, jo
 	tmp.Close()
 	defer os.Remove(tmpPath)
 
-	args := []string{"--format=custom", "--no-owner", "--no-privileges", "--file", tmpPath}
+	args := pgDumpBaseArgs(cfg.DatabaseURL, tmpPath)
 	if job.Scope == "project" {
 		project, err := GetProject(ctx, pool, job.ProjectSlug)
 		if err != nil {
@@ -475,7 +475,7 @@ func dumpAndStoreBackup(ctx context.Context, pool *pgxpool.Pool, cfg *Config, jo
 		args = append(args, "--schema", project.SchemaName)
 	}
 	cmd := exec.CommandContext(ctx, "pg_dump", args...)
-	cmd.Env = append(os.Environ(), "PGDATABASE="+cfg.DatabaseURL, "PGCONNECT_TIMEOUT=15")
+	cmd.Env = append(os.Environ(), "PGCONNECT_TIMEOUT=15")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", 0, fmt.Errorf("pg_dump failed: %s", strings.TrimSpace(string(output)))
@@ -510,6 +510,10 @@ func dumpAndStoreBackup(ctx context.Context, pool *pgxpool.Pool, cfg *Config, jo
 		return "", 0, err
 	}
 	return key, stat.Size(), nil
+}
+
+func pgDumpBaseArgs(databaseURL string, filePath string) []string {
+	return []string{"--format=custom", "--no-owner", "--no-privileges", "--dbname", databaseURL, "--file", filePath}
 }
 
 func createBackupRun(ctx context.Context, pool *pgxpool.Pool, jobID string) (*BackupRun, error) {

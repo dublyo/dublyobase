@@ -699,9 +699,6 @@ func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {
 		if err := json.Unmarshal(raw, &v); err != nil || math.IsInf(v, 0) || math.IsNaN(v) {
 			return nil, fmt.Errorf("%w: field %q must be a number", ErrValidation, field.Name)
 		}
-		if field.Required && v == 0 {
-			return nil, fmt.Errorf("%w: field %q is required", ErrValidation, field.Name)
-		}
 		if boolOption(field.Options, "onlyInt") && v != math.Trunc(v) {
 			return nil, fmt.Errorf("%w: field %q must be an integer", ErrValidation, field.Name)
 		}
@@ -716,9 +713,6 @@ func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {
 		var v bool
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return nil, fmt.Errorf("%w: field %q must be a boolean", ErrValidation, field.Name)
-		}
-		if field.Required && !v {
-			return nil, fmt.Errorf("%w: field %q is required", ErrValidation, field.Name)
 		}
 		return v, nil
 	case "date":

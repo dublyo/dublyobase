@@ -56,6 +56,29 @@ func TestNormalizeCreatePayload(t *testing.T) {
 	}
 }
 
+func TestNormalizeRequiredNumberAndBoolAllowZeroValues(t *testing.T) {
+	collection := &Collection{
+		Name: "metrics",
+		Type: CollectionBase,
+		Fields: []Field{
+			{Name: "name", Type: "text", Required: true},
+			{Name: "count", Type: "number", Required: true, Options: map[string]any{"onlyInt": true, "min": 0}},
+			{Name: "enabled", Type: "bool", Required: true},
+		},
+	}
+	payload, err := normalizeCreatePayload(collection, map[string]json.RawMessage{
+		"name":    json.RawMessage(`"zero"`),
+		"count":   json.RawMessage(`0`),
+		"enabled": json.RawMessage(`false`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Columns) != 3 {
+		t.Fatalf("payload columns = %v", payload.Columns)
+	}
+}
+
 func TestNormalizeRecordPayloadRejectsBadInput(t *testing.T) {
 	cases := map[string]map[string]json.RawMessage{
 		"missing required": {"published": json.RawMessage(`true`)},
