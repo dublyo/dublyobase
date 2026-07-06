@@ -182,6 +182,20 @@ func validateFieldOptions(field Field) error {
 		if normalizedOnDelete == "set_null" && field.Required {
 			return fmt.Errorf("%w: relation field %q cannot use set_null while required", ErrValidation, field.Name)
 		}
+		if relationType, _ := field.Options["relationType"].(string); strings.TrimSpace(relationType) != "" {
+			switch NormalizeRelationTypeOption(relationType) {
+			case "many_to_one", "one_to_one", "one_to_many", "many_to_many":
+			default:
+				return fmt.Errorf("%w: relation field %q options.relationType must be many_to_one, one_to_one, one_to_many or many_to_many", ErrValidation, field.Name)
+			}
+		}
+		if storage, _ := field.Options["storage"].(string); strings.TrimSpace(storage) != "" {
+			switch strings.ToLower(strings.TrimSpace(storage)) {
+			case "foreign_key", "array_ids":
+			default:
+				return fmt.Errorf("%w: relation field %q options.storage must be foreign_key or array_ids", ErrValidation, field.Name)
+			}
+		}
 		if displayField, _ := field.Options["displayField"].(string); strings.TrimSpace(displayField) != "" {
 			if err := ValidateDataIdentifier("relation display field", NormalizeIdentifier(displayField)); err != nil {
 				return err
@@ -191,6 +205,23 @@ func validateFieldOptions(field Field) error {
 			if err := ValidateDataIdentifier("relation reverse field", NormalizeIdentifier(reverseName)); err != nil {
 				return err
 			}
+		}
+		for _, option := range []string{"junctionCollection", "junctionSourceField", "junctionTargetField", "junctionFieldLocation"} {
+			value, _ := field.Options[option].(string)
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			if err := ValidateDataIdentifier("relation "+option, NormalizeIdentifier(value)); err != nil {
+				return err
+			}
+		}
+		if _, ok := field.Options["allowDuplicates"]; ok {
+			if _, ok := field.Options["allowDuplicates"].(bool); !ok {
+				return fmt.Errorf("%w: relation field %q options.allowDuplicates must be a boolean", ErrValidation, field.Name)
+			}
+		}
+		if perPage, ok := int64Option(field.Options, "perPage"); ok && (perPage < 1 || perPage > 500) {
+			return fmt.Errorf("%w: relation field %q options.perPage must be between 1 and 500", ErrValidation, field.Name)
 		}
 	case "file":
 		if _, ok := field.Options["multiple"]; ok {
@@ -225,6 +256,13 @@ func NormalizeRelationOnDeleteOption(value string) string {
 	default:
 		return normalized
 	}
+}
+
+func NormalizeRelationTypeOption(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, "-", "_")
+	normalized = strings.ReplaceAll(normalized, " ", "_")
+	return normalized
 }
 
 func ColumnDDL(field Field) (string, error) {
@@ -289,6 +327,21 @@ func normalizeFields(fields []Field) []Field {
 		if out[i].Type == "relation" {
 			if collection, _ := out[i].Options["collection"].(string); collection != "" {
 				out[i].Options["collection"] = NormalizeIdentifier(collection)
+			}
+			if relationType, _ := out[i].Options["relationType"].(string); strings.TrimSpace(relationType) != "" {
+				out[i].Options["relationType"] = NormalizeRelationTypeOption(relationType)
+			}
+			if storage, _ := out[i].Options["storage"].(string); strings.TrimSpace(storage) != "" {
+				out[i].Options["storage"] = strings.ToLower(strings.TrimSpace(storage))
+			}
+			if onDelete, _ := out[i].Options["onDelete"].(string); strings.TrimSpace(onDelete) != "" {
+				out[i].Options["onDelete"] = NormalizeRelationOnDeleteOption(onDelete)
+			}
+			for _, option := range []string{"displayField", "reverseName", "junctionCollection", "junctionSourceField", "junctionTargetField", "junctionFieldLocation"} {
+				value, _ := out[i].Options[option].(string)
+				if strings.TrimSpace(value) != "" {
+					out[i].Options[option] = NormalizeIdentifier(value)
+				}
 			}
 		}
 	}

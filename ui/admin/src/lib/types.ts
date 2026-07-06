@@ -80,15 +80,10 @@ export type CollectionSchemaItem = {
   options?: CollectionOptions;
 };
 
-export type CollectionIconOption =
-  | {
-      type: "lucide";
-      name: string;
-    }
-  | {
-      type: "emoji";
-      value: string;
-    };
+export type CollectionIconOption = {
+  type: "lucide";
+  name: string;
+};
 
 export type CollectionOptions = {
   icon?: CollectionIconOption | string;

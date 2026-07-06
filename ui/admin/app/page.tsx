@@ -220,11 +220,13 @@ type Notice = { type: "success" | "error"; message: string } | null;
 type CollectionModalMode = "create" | "settings" | null;
 type CollectionsMode = "records" | "overview";
 type OverviewTab = "fields" | "rules";
+type RelationCardinality = "many_to_one" | "one_to_one" | "one_to_many" | "many_to_many";
 type RelationEdge = {
   sourceCollection: string;
   sourceField: string;
   targetCollection: string;
   displayField: string;
+  cardinality: RelationCardinality;
   required: boolean;
   multiple: boolean;
 };
@@ -2540,7 +2542,7 @@ function CollectionOverview({
                   <button key={`${edge.sourceCollection}.${edge.sourceField}`} type="button" onClick={() => edge.targetCollection && onSelect(edge.targetCollection)}>
                     <span>{edge.sourceCollection}.{edge.sourceField}</span>
                     <ChevronRight className="h-4 w-4" />
-                    <strong>{edge.targetCollection || "unconfigured"}</strong>
+                    <strong>{relationCardinalityLabel(edge.cardinality)} · {edge.targetCollection || "unconfigured"}</strong>
                   </button>
                 ))}
               </div>
@@ -2577,7 +2579,7 @@ function CollectionOverviewNode({ collection, active, onSelect }: { collection: 
             <span className="field-type">{field.type}</span>
             {field.hidden ? <span className="pb-mini-badge danger">Hidden</span> : null}
             {field.required ? <span className="pb-mini-badge">Required</span> : null}
-            {field.type === "relation" ? <span className="pb-relation-arrow">to {relationTargetName(field) || "unconfigured"}</span> : null}
+            {field.type === "relation" ? <span className="pb-relation-arrow">{relationCardinalityLabel(relationCardinalityType(field))} to {relationTargetName(field) || "unconfigured"}</span> : null}
             {field.type === "file" && field.options?.multiple ? <span className="pb-mini-badge">multiple</span> : null}
           </div>
         ))}
@@ -2616,7 +2618,7 @@ function RelationTree({ collections, edges, onSelect }: { collections: Collectio
                   <span>
                     <strong>{edge.sourceField}</strong>
                     <em>
-                      {edge.multiple ? "many" : "single"} to {edge.targetCollection || "unconfigured"}
+                      {relationCardinalityLabel(edge.cardinality)} to {edge.targetCollection || "unconfigured"}
                       {edge.displayField ? ` · display ${edge.displayField}` : ""}
                     </em>
                   </span>
@@ -2741,55 +2743,34 @@ function CollectionGroup({
 function CollectionIcon({ collection, icon, type }: { collection?: Collection; icon?: CollectionIconOption; type?: Collection["type"] }) {
   const resolvedType = type ?? collection?.type ?? "base";
   const resolved = icon ?? (collection ? collectionIconFromOptions(collection) : defaultCollectionIcon(resolvedType));
-  if (resolved.type === "emoji") {
-    return (
-      <span className="pb-collection-emoji" aria-hidden="true">
-        {resolved.value || "📁"}
-      </span>
-    );
-  }
   const fallback = defaultCollectionIcon(resolvedType);
-  const Icon = collectionIconMap[resolved.name] ?? (fallback.type === "lucide" ? collectionIconMap[fallback.name] : undefined) ?? Table2;
+  const iconName = resolved.type === "lucide" ? resolved.name : fallback.type === "lucide" ? fallback.name : "table";
+  const Icon = collectionIconMap[iconName] ?? Table2;
   return <Icon className="h-4 w-4" aria-hidden="true" />;
 }
 
 function CollectionIconPicker({ icon, onChange }: { icon: CollectionIconOption; onChange: (icon: CollectionIconOption) => void }) {
   const currentName = icon.type === "lucide" ? icon.name : "table";
-  const currentEmoji = icon.type === "emoji" ? icon.value : "";
   return (
     <fieldset className="pb-icon-picker">
       <legend>Icon</legend>
       <div className="pb-icon-picker-head">
         <div className="pb-icon-preview" aria-hidden="true">
-          <CollectionIcon icon={icon} />
+          <CollectionIcon icon={{ type: "lucide", name: currentName }} />
         </div>
-        <div className="pb-segmented-control" role="radiogroup" aria-label="Collection icon type">
-          <button type="button" role="radio" aria-checked={icon.type === "lucide"} className={icon.type === "lucide" ? "active" : ""} onClick={() => onChange({ type: "lucide", name: currentName })}>
-            Lucide
-          </button>
-          <button type="button" role="radio" aria-checked={icon.type === "emoji"} className={icon.type === "emoji" ? "active" : ""} onClick={() => onChange({ type: "emoji", value: currentEmoji || "◆" })}>
-            Emoji
-          </button>
-        </div>
+        <span>{collectionIconChoices.find((choice) => choice.name === currentName)?.label ?? "Table"}</span>
       </div>
-      {icon.type === "lucide" ? (
-        <div className="pb-icon-grid" role="list" aria-label="Lucide collection icons">
-          {collectionIconChoices.map((choice) => {
-            const Icon = choice.icon;
-            const selected = currentName === choice.name;
-            return (
-              <button key={choice.name} type="button" className={selected ? "active" : ""} aria-pressed={selected} aria-label={`Use ${choice.label} icon`} title={choice.label} onClick={() => onChange({ type: "lucide", name: choice.name })}>
-                <Icon className="h-4 w-4" />
-              </button>
-            );
-          })}
-        </div>
-      ) : (
-        <label className="pb-field emoji-field">
-          <span>Emoji</span>
-          <input value={currentEmoji} maxLength={8} onChange={(event) => onChange({ type: "emoji", value: sanitizeCollectionEmoji(event.target.value) })} placeholder="◆" />
-        </label>
-      )}
+      <div className="pb-icon-grid" role="list" aria-label="Collection icons">
+        {collectionIconChoices.map((choice) => {
+          const Icon = choice.icon;
+          const selected = currentName === choice.name;
+          return (
+            <button key={choice.name} type="button" className={selected ? "active" : ""} aria-pressed={selected} aria-label={`Use ${choice.label} icon`} title={choice.label} onClick={() => onChange({ type: "lucide", name: choice.name })}>
+              <Icon className="h-4 w-4" />
+            </button>
+          );
+        })}
+      </div>
     </fieldset>
   );
 }
@@ -3074,7 +3055,7 @@ function CollectionOptionsPanel({
         <h3>Collection options</h3>
         <div className="pb-info-grid compact">
           <Info label="Type" value={collection?.type ?? "base"} />
-          <Info label="Icon" value={icon.type === "lucide" ? `lucide:${icon.name}` : `emoji:${icon.value}`} />
+          <Info label="Icon" value={icon.type === "lucide" ? `lucide:${icon.name}` : "lucide:table"} />
           <Info label="Imported table" value={imported ? "yes" : "no"} />
           <Info label="Managed schema" value={imported ? (managed ? "enabled" : "staged") : "native"} />
           <Info label="Primary key" value={collection ? collectionPrimaryKeyFieldName(collection) : "id"} />
@@ -3109,7 +3090,7 @@ function CollectionOptionsPanel({
                 <span>
                   <strong>{field.name}</strong>
                   <em>
-                    {relationCardinality(field)} to {relationTargetName(field) || "unconfigured"}
+                    {relationCardinalityLabel(relationCardinalityType(field))} to {relationTargetName(field) || "unconfigured"}
                     {typeof field.options?.reverseName === "string" && field.options.reverseName ? ` · reverse ${field.options.reverseName}` : ""}
                   </em>
                 </span>
@@ -3120,7 +3101,7 @@ function CollectionOptionsPanel({
                 <Share2 className="h-4 w-4" />
                 <span>
                   <strong>{relation.collection}.{relation.field}</strong>
-                  <em>{relation.multiple ? "many" : "single"} records point here</em>
+                  <em>{relationCardinalityLabel(relation.cardinality)} points here</em>
                 </span>
               </div>
             ))}
@@ -3135,6 +3116,13 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
   const searchSupported = canSearchField(field);
   const relationTarget = field.type === "relation" ? collections.find((collection) => collection.name === field.options?.collection) : undefined;
   const relationDisplayFields = relationDisplayFieldOptions(relationTarget, field.options?.displayField);
+  const relationType = field.type === "relation" ? relationCardinalityType(field) : "many_to_one";
+  const relationTypeChoices: Array<{ type: RelationCardinality; title: string; note: string; icon: LucideIcon }> = [
+    { type: "many_to_one", title: "Many to one", note: "Many records here point to one target record.", icon: Link2 },
+    { type: "one_to_one", title: "One to one", note: "One record here points to one unique target record.", icon: Share2 },
+    { type: "one_to_many", title: "One to many", note: "One record here links to many target records.", icon: Layers3 },
+    { type: "many_to_many", title: "Many to many", note: "Many records on both sides share related records.", icon: Table2 },
+  ];
   const commonOptions = (
     <div className="pb-field-options common">
       <label className="pb-field">
@@ -3198,67 +3186,115 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
     );
   } else if (field.type === "relation") {
     typeOptions = (
-      <div className="pb-field-options two">
-        <div className="pb-inline-alert info pb-relation-hint">
-          Relation fields store record ids from another collection. Max select controls cardinality: 1 is many-to-one, 1 with unique is one-to-one, and more than 1 stores multiple related records.
+      <div className="pb-field-options relation-builder">
+        <div className="pb-relation-type-grid" role="radiogroup" aria-label="Relation cardinality">
+          {relationTypeChoices.map((choice) => {
+            const Icon = choice.icon;
+            const selected = relationType === choice.type;
+            return (
+              <button key={choice.type} type="button" role="radio" aria-checked={selected} className={selected ? "active" : ""} onClick={() => onChange(setRelationCardinality(field, choice.type))}>
+                <Icon className="h-4 w-4" />
+                <span>
+                  <strong>{choice.title}</strong>
+                  <em>{choice.note}</em>
+                </span>
+              </button>
+            );
+          })}
         </div>
         <div className="pb-info-grid compact">
-          <Info label="Cardinality" value={relationCardinality(field)} />
+          <Info label="Cardinality" value={relationCardinalityLabel(relationType)} />
+          <Info label="Storage" value={relationStorageLabel(field)} />
           <Info label="Reverse label" value={String(field.options?.reverseName ?? "")} />
+          <Info label="Constraint" value={relationConstraintLabel(field)} />
         </div>
-        <label className="pb-field">
-          <span>Target collection</span>
-          <select value={String(field.options?.collection ?? "")} onChange={(event) => onChange(setRelationTargetOption(field, event.target.value, collections))}>
-            <option value="">Choose collection</option>
-            {collections.map((collection) => (
-              <option key={collection.id} value={collection.name}>
-                {collection.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="pb-field">
-          <span>Display field</span>
-          <select value={String(field.options?.displayField ?? "")} onChange={(event) => onChange(setFieldOption(field, "displayField", event.target.value))} disabled={!relationTarget}>
-            <option value="">Auto</option>
-            {relationDisplayFields.map((item) => (
-              <option key={item.name} value={item.name}>
-                {item.name}
-              </option>
-            ))}
-          </select>
-          {relationTarget && relationDisplayFields.length === 0 ? <small>Reserved and password fields cannot be used as relation labels.</small> : null}
-        </label>
-        <div className="pb-option-grid">
+        {relationType === "one_to_many" || relationType === "many_to_many" ? (
+          <div className="pb-inline-alert info pb-relation-hint">
+            Multi-record relations are saved as ordered record-id arrays in the current release. Junction metadata is stored now so the schema can be migrated to physical junction tables when that backend path is enabled.
+          </div>
+        ) : null}
+        <div className="pb-relation-config-grid">
           <label className="pb-field">
-            <span>Min select</span>
-            <input type="number" min={0} value={numberOptionValue(field.options, "minSelect")} onChange={(event) => onChange(setNumberFieldOption(field, "minSelect", event.target.value))} placeholder="0" />
+            <span>Related collection</span>
+            <select value={String(field.options?.collection ?? "")} onChange={(event) => onChange(setRelationTargetOption(field, event.target.value, collections))}>
+              <option value="">Choose collection</option>
+              {collections.map((collection) => (
+                <option key={collection.id} value={collection.name}>
+                  {collection.name}
+                </option>
+              ))}
+            </select>
           </label>
           <label className="pb-field">
-            <span>Max select</span>
-            <input type="number" min={1} value={numberOptionValue(field.options, "maxSelect")} onChange={(event) => onChange(setNumberFieldOption(field, "maxSelect", event.target.value))} placeholder="1" />
+            <span>Display field</span>
+            <select value={String(field.options?.displayField ?? "")} onChange={(event) => onChange(setFieldOption(field, "displayField", event.target.value))} disabled={!relationTarget}>
+              <option value="">Auto</option>
+              {relationDisplayFields.map((item) => (
+                <option key={item.name} value={item.name}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+            {relationTarget && relationDisplayFields.length === 0 ? <small>Reserved and password fields cannot be used as relation labels.</small> : null}
+          </label>
+          <label className="pb-field">
+            <span>Reverse field name</span>
+            <input value={String(field.options?.reverseName ?? "")} onChange={(event) => onChange(setFieldOption(field, "reverseName", event.target.value))} placeholder={relationReversePlaceholder(field, relationType)} />
+          </label>
+          <label className="pb-field">
+            <span>On target delete</span>
+            <select value={String(field.options?.onDelete ?? "")} onChange={(event) => onChange(setFieldOption(field, "onDelete", event.target.value))}>
+              <option value="">Restrict</option>
+              <option value="set_null">Set null</option>
+              <option value="cascade">Cascade</option>
+            </select>
+          </label>
+        </div>
+        <div className="pb-relation-behavior-grid">
+          <label className="pb-field">
+            <span>Min records</span>
+            <input type="number" min={0} value={numberOptionValue(field.options, "minSelect")} onChange={(event) => onChange(setNumberFieldOption(field, "minSelect", event.target.value))} placeholder={field.required ? "1" : "0"} />
+          </label>
+          <label className="pb-field">
+            <span>Max records</span>
+            <input type="number" min={1} value={numberOptionValue(field.options, "maxSelect")} onChange={(event) => onChange(setNumberFieldOption(field, "maxSelect", event.target.value))} placeholder={relationType === "many_to_one" || relationType === "one_to_one" ? "1" : "unlimited"} disabled={relationType === "many_to_one" || relationType === "one_to_one"} />
           </label>
           <label className="pb-checkline">
             <input type="checkbox" checked={relationOnDeleteValue(field) === "cascade"} onChange={(event) => onChange(setFieldOption(field, "onDelete", event.target.checked ? "cascade" : "restrict"))} />
             Cascade on target delete
           </label>
           <label className="pb-checkline">
-            <input type="checkbox" checked={Boolean(field.options?.unique)} onChange={(event) => onChange(setFieldOption(field, "unique", event.target.checked))} />
+            <input type="checkbox" checked={Boolean(field.options?.unique)} disabled={relationType === "one_to_one" || relationType === "one_to_many" || relationType === "many_to_many"} onChange={(event) => onChange(setFieldOption(field, "unique", event.target.checked))} />
             Unique relation
           </label>
         </div>
-        <label className="pb-field">
-          <span>On target delete</span>
-          <select value={String(field.options?.onDelete ?? "")} onChange={(event) => onChange(setFieldOption(field, "onDelete", event.target.value))}>
-            <option value="">Restrict</option>
-            <option value="set_null">Set null</option>
-            <option value="cascade">Cascade</option>
-          </select>
-        </label>
-        <label className="pb-field">
-          <span>Reverse field name</span>
-          <input value={String(field.options?.reverseName ?? "")} onChange={(event) => onChange(setFieldOption(field, "reverseName", event.target.value))} placeholder={`${field.name || "field"}_records`} />
-        </label>
+        {relationType === "many_to_many" ? (
+          <details className="pb-relation-advanced" open>
+            <summary>Junction metadata</summary>
+            <div className="pb-relation-config-grid">
+              <label className="pb-field">
+                <span>Junction collection</span>
+                <input value={String(field.options?.junctionCollection ?? "")} onChange={(event) => onChange(setFieldOption(field, "junctionCollection", event.target.value))} placeholder={relationJunctionName(field)} />
+              </label>
+              <label className="pb-field">
+                <span>This side field</span>
+                <input value={String(field.options?.junctionSourceField ?? "")} onChange={(event) => onChange(setFieldOption(field, "junctionSourceField", event.target.value))} placeholder={`${field.name || "source"}_id`} />
+              </label>
+              <label className="pb-field">
+                <span>Related side field</span>
+                <input value={String(field.options?.junctionTargetField ?? "")} onChange={(event) => onChange(setFieldOption(field, "junctionTargetField", event.target.value))} placeholder={`${relationTargetName(field) || "target"}_id`} />
+              </label>
+              <label className="pb-field">
+                <span>Per page</span>
+                <input type="number" min={1} value={numberOptionValue(field.options, "perPage")} onChange={(event) => onChange(setNumberFieldOption(field, "perPage", event.target.value))} placeholder="25" />
+              </label>
+              <label className="pb-checkline">
+                <input type="checkbox" checked={Boolean(field.options?.allowDuplicates)} onChange={(event) => onChange(setFieldOption(field, "allowDuplicates", event.target.checked))} />
+                Allow duplicate pairs
+              </label>
+            </div>
+          </details>
+        ) : null}
         {field.options?.targetTable || field.options?.sourceColumn ? (
           <div className="pb-relation-source">
             <Info label="Source column" value={String(field.options?.sourceColumn ?? field.name)} />
@@ -7078,13 +7114,10 @@ function normalizeCollectionOptions(options: unknown): CollectionOptions {
 function normalizeCollectionIcon(raw: unknown, collectionType: Collection["type"]): CollectionIconOption {
   const fallback = defaultCollectionIcon(collectionType);
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    const body = raw as { type?: unknown; name?: unknown; value?: unknown };
+    const body = raw as { type?: unknown; name?: unknown };
     if (body.type === "lucide" && typeof body.name === "string") {
       const name = normalizeLucideIconName(body.name);
       return collectionIconMap[name] ? { type: "lucide", name } : fallback;
-    }
-    if (body.type === "emoji" && typeof body.value === "string") {
-      return { type: "emoji", value: sanitizeCollectionEmoji(body.value) || "◆" };
     }
   }
   if (typeof raw === "string") {
@@ -7093,12 +7126,8 @@ function normalizeCollectionIcon(raw: unknown, collectionType: Collection["type"
       const name = normalizeLucideIconName(value.slice("lucide:".length));
       return collectionIconMap[name] ? { type: "lucide", name } : fallback;
     }
-    if (value.startsWith("emoji:")) {
-      return { type: "emoji", value: sanitizeCollectionEmoji(value.slice("emoji:".length)) || "◆" };
-    }
     const name = normalizeLucideIconName(value);
     if (collectionIconMap[name]) return { type: "lucide", name };
-    if (value) return { type: "emoji", value: sanitizeCollectionEmoji(value) || "◆" };
   }
   return fallback;
 }
@@ -7111,10 +7140,6 @@ function defaultCollectionIcon(type: Collection["type"]): CollectionIconOption {
 
 function normalizeLucideIconName(value: string) {
   return value.trim().replaceAll("_", "-").replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
-}
-
-function sanitizeCollectionEmoji(value: string) {
-  return Array.from(value.trim()).slice(0, 4).join("");
 }
 
 function extractImportItems(raw: string): unknown[] {
@@ -7366,6 +7391,7 @@ function collectionRelationEdges(collections: Collection[]): RelationEdge[] {
         sourceField: field.name,
         targetCollection: relationTargetName(field),
         displayField: typeof field.options?.displayField === "string" ? field.options.displayField : "",
+        cardinality: relationCardinalityType(field),
         required: Boolean(field.required),
         multiple: fieldIsMultiple(field),
       })),
@@ -7379,14 +7405,126 @@ function collectionReverseRelations(collectionName: string, collections: Collect
       .map((field) => ({
         collection: collection.name,
         field: field.name,
+        cardinality: relationCardinalityType(field),
         multiple: fieldIsMultiple(field),
       })),
   );
 }
 
-function relationCardinality(field: Field) {
-  if (Boolean(field.options?.unique) && !fieldIsMultiple(field)) return "one-to-one";
-  return fieldIsMultiple(field) ? "many-to-one/many" : "many-to-one";
+function relationCardinalityType(field: Field): RelationCardinality {
+  const raw = typeof field.options?.relationType === "string" ? field.options.relationType : "";
+  const normalized = raw.trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+  if (normalized === "one_to_one" || normalized === "one_to_many" || normalized === "many_to_many" || normalized === "many_to_one") {
+    return normalized;
+  }
+  if (Boolean(field.options?.unique) && !fieldIsMultiple(field)) return "one_to_one";
+  return fieldIsMultiple(field) ? "many_to_many" : "many_to_one";
+}
+
+function relationOptionType(options: Record<string, unknown>): RelationCardinality {
+  const raw = typeof options.relationType === "string" ? options.relationType : "";
+  const normalized = raw.trim().toLowerCase().replaceAll("-", "_").replaceAll(" ", "_");
+  if (normalized === "one_to_one" || normalized === "one_to_many" || normalized === "many_to_many" || normalized === "many_to_one") {
+    return normalized;
+  }
+  const maxSelect = typeof options.maxSelect === "number" ? options.maxSelect : 0;
+  if (Boolean(options.unique) && !Boolean(options.multiple) && !Boolean(options.multi)) return "one_to_one";
+  return Boolean(options.multiple) || Boolean(options.multi) || maxSelect > 1 ? "many_to_many" : "many_to_one";
+}
+
+function relationCardinalityLabel(type: RelationCardinality) {
+  switch (type) {
+    case "one_to_one":
+      return "one-to-one";
+    case "one_to_many":
+      return "one-to-many";
+    case "many_to_many":
+      return "many-to-many";
+    case "many_to_one":
+    default:
+      return "many-to-one";
+  }
+}
+
+function relationStorageLabel(field: Field) {
+  const type = relationCardinalityType(field);
+  if (type === "many_to_many") return "array ids + junction metadata";
+  if (type === "one_to_many") return "array ids";
+  if (type === "one_to_one") return "uuid foreign key + unique index";
+  return "uuid foreign key";
+}
+
+function relationConstraintLabel(field: Field) {
+  const type = relationCardinalityType(field);
+  if (type === "one_to_one") return "unique";
+  if (type === "many_to_one") return relationOnDeleteValue(field);
+  if (type === "many_to_many" && field.options?.allowDuplicates) return "duplicates allowed";
+  return "multiple";
+}
+
+function setRelationCardinality(field: Field, type: RelationCardinality): Field {
+  const options: Record<string, unknown> = { ...(field.options ?? {}), relationType: type };
+  const clearJunctionOptions = () => {
+    delete options.junctionCollection;
+    delete options.junctionSourceField;
+    delete options.junctionTargetField;
+    delete options.junctionFieldLocation;
+    delete options.allowDuplicates;
+  };
+  if (type === "many_to_one") {
+    delete options.multiple;
+    delete options.multi;
+    delete options.maxSelect;
+    delete options.unique;
+    delete options.perPage;
+    clearJunctionOptions();
+    options.storage = "foreign_key";
+  } else if (type === "one_to_one") {
+    delete options.multiple;
+    delete options.multi;
+    delete options.maxSelect;
+    delete options.perPage;
+    clearJunctionOptions();
+    options.unique = true;
+    options.storage = "foreign_key";
+  } else if (type === "one_to_many") {
+    options.multiple = true;
+    delete options.unique;
+    clearJunctionOptions();
+    options.storage = "array_ids";
+    if (!options.reverseName) options.reverseName = relationReversePlaceholder(field, type);
+  } else {
+    options.multiple = true;
+    delete options.unique;
+    options.storage = "array_ids";
+    if (!options.reverseName) options.reverseName = relationReversePlaceholder(field, type);
+    if (!options.junctionCollection) options.junctionCollection = relationJunctionName(field);
+    if (!options.junctionSourceField) options.junctionSourceField = `${safeIdentifier(field.name || "source")}_id`;
+    if (!options.junctionTargetField) options.junctionTargetField = `${safeIdentifier(String(options.collection || "target"))}_id`;
+    if (!options.perPage) options.perPage = 25;
+  }
+  if (!options.onDelete) options.onDelete = "restrict";
+  return { ...field, options: defaultOptionsForType(field.type, options) };
+}
+
+function relationReversePlaceholder(field: Field, type: RelationCardinality) {
+  const base = safeIdentifier(field.name || "related");
+  if (type === "one_to_one") return `${base}_detail`;
+  if (type === "many_to_one") return `${base}_records`;
+  if (type === "one_to_many") return `${base}_parent`;
+  return `${base}_items`;
+}
+
+function relationJunctionName(field: Field) {
+  const source = safeIdentifier(field.name || "source");
+  const target = safeIdentifier(relationTargetName(field) || "target");
+  return `${source}_${target}_junction`;
+}
+
+function safeIdentifier(value: string) {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "").replace(/_+/g, "_");
+  if (!normalized) return "item";
+  return /^[a-z_]/.test(normalized) ? normalized : `_${normalized}`;
 }
 
 function relationOnDeleteValue(field: Field): string {
@@ -7531,9 +7669,13 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
   if (type === "relation") {
     const rawOnDelete = typeof options.onDelete === "string" ? options.onDelete.trim() : "";
     const onDelete = rawOnDelete || (Boolean(options.cascadeDelete) ? "cascade" : "");
-    return {
+    const relationType = relationOptionType(options);
+    const multipleRelation = relationType === "one_to_many" || relationType === "many_to_many" || Boolean(options.multiple) || Boolean(options.multi);
+    const normalized: Record<string, unknown> = {
       ...sourceOptions,
       collection: typeof options.collection === "string" ? options.collection : "",
+      relationType,
+      storage: relationType === "many_to_one" || relationType === "one_to_one" ? "foreign_key" : "array_ids",
       ...withString("displayField"),
       ...withString("reverseName"),
       ...withString("targetSchema"),
@@ -7541,9 +7683,24 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
       ...withString("targetColumn"),
       ...(onDelete ? { onDelete } : {}),
       ...withNumber("minSelect"),
-      ...withNumber("maxSelect"),
-      ...withBool("unique"),
+      ...(relationType === "many_to_one" || relationType === "one_to_one" ? {} : withNumber("maxSelect")),
+      ...(multipleRelation ? { multiple: true } : {}),
+      ...(relationType === "one_to_one" ? { unique: true } : withBool("unique")),
     };
+    if (relationType === "one_to_many" || relationType === "many_to_many") {
+      Object.assign(normalized, withNumber("perPage"));
+    }
+    if (relationType === "many_to_many") {
+      Object.assign(
+        normalized,
+        withString("junctionCollection"),
+        withString("junctionSourceField"),
+        withString("junctionTargetField"),
+        withString("junctionFieldLocation"),
+        withBool("allowDuplicates"),
+      );
+    }
+    return normalized;
   }
   if (type === "file") {
     return {

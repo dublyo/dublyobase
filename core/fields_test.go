@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -28,6 +29,7 @@ func TestValidateFields(t *testing.T) {
 		{Name: "published", Type: "bool"},
 		{Name: "status", Type: "select", Options: map[string]any{"values": []string{"draft", "live"}, "maxSelect": 1}},
 		{Name: "author", Type: "relation", Options: map[string]any{"collection": "users", "minSelect": 0, "maxSelect": 1}},
+		{Name: "tags", Type: "relation", Options: map[string]any{"collection": "tags", "relationType": "many_to_many", "storage": "array_ids", "multiple": true, "junctionCollection": "posts_tags", "junctionSourceField": "post_id", "junctionTargetField": "tag_id", "junctionFieldLocation": "bottom", "perPage": 25, "allowDuplicates": false}},
 		{Name: "avatar", Type: "file"},
 		{Name: "gallery", Type: "file", Options: map[string]any{"multiple": true, "maxSelect": 4, "maxSize": 1024, "mimeTypes": []string{"image/png", "text/*"}}},
 	}
@@ -48,6 +50,10 @@ func TestValidateFields(t *testing.T) {
 		"bad file mime":    {{Name: "asset", Type: "file", Options: map[string]any{"mimeTypes": []string{"plain"}}}},
 		"relation target":  {{Name: "author", Type: "relation", Options: map[string]any{"collection": "pg_class"}}},
 		"relation display": {{Name: "author", Type: "relation", Options: map[string]any{"collection": "users", "displayField": "id"}}},
+		"relation type":    {{Name: "author", Type: "relation", Options: map[string]any{"collection": "users", "relationType": "belongs_to"}}},
+		"relation storage": {{Name: "author", Type: "relation", Options: map[string]any{"collection": "users", "storage": "junction"}}},
+		"relation page":    {{Name: "author", Type: "relation", Options: map[string]any{"collection": "users", "perPage": 0}}},
+		"relation dupes":   {{Name: "author", Type: "relation", Options: map[string]any{"collection": "users", "allowDuplicates": "yes"}}},
 		"missing relation": {{Name: "author", Type: "relation"}},
 	}
 	for name, fields := range cases {
@@ -55,6 +61,49 @@ func TestValidateFields(t *testing.T) {
 			t.Fatalf("%s: invalid fields accepted", name)
 		}
 	}
+}
+
+func TestEncodeFieldsNormalizesRelationOptions(t *testing.T) {
+	raw, err := encodeFields([]Field{{
+		Name: "author",
+		Type: "relation",
+		Options: map[string]any{
+			"collection":            "Users",
+			"relationType":          "Many To Many",
+			"storage":               "ARRAY_IDS",
+			"onDelete":              "SET NULL",
+			"displayField":          "Email",
+			"reverseName":           "Author_Records",
+			"junctionCollection":    "Authors_Posts",
+			"junctionSourceField":   "Author_ID",
+			"junctionTargetField":   "Post_ID",
+			"junctionFieldLocation": "Bottom",
+		},
+	}})
+	if err != nil {
+		t.Fatalf("encode fields: %v", err)
+	}
+	var fields []Field
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("decode fields: %v", err)
+	}
+	options := fields[0].Options
+	assertOption := func(key string, want string) {
+		t.Helper()
+		if got, _ := options[key].(string); got != want {
+			t.Fatalf("%s = %q, want %q", key, got, want)
+		}
+	}
+	assertOption("collection", "users")
+	assertOption("relationType", "many_to_many")
+	assertOption("storage", "array_ids")
+	assertOption("onDelete", "set_null")
+	assertOption("displayField", "email")
+	assertOption("reverseName", "author_records")
+	assertOption("junctionCollection", "authors_posts")
+	assertOption("junctionSourceField", "author_id")
+	assertOption("junctionTargetField", "post_id")
+	assertOption("junctionFieldLocation", "bottom")
 }
 
 func TestColumnDDL(t *testing.T) {

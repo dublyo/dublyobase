@@ -1751,16 +1751,6 @@ button:disabled {
   font-size: var(--sm-font-size);
 }
 
-.pb-collection-emoji {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  font-size: 16px;
-  line-height: 1;
-}
-
 .pb-icon-picker {
   display: grid;
   gap: 12px;
@@ -1797,39 +1787,6 @@ button:disabled {
   color: var(--surface-txt);
 }
 
-.pb-icon-preview .pb-collection-emoji {
-  width: 22px;
-  height: 22px;
-  font-size: 22px;
-}
-
-.pb-segmented-control {
-  display: inline-grid;
-  grid-template-columns: repeat(2, minmax(86px, 1fr));
-  overflow: hidden;
-  border: 1px solid var(--surface-alt-3);
-  border-radius: var(--radius);
-  background: var(--surface-color);
-}
-
-.pb-segmented-control button {
-  min-height: 36px;
-  border: 0;
-  background: transparent;
-  color: var(--surface-hint);
-  padding: 0 12px;
-  font-weight: 700;
-}
-
-.pb-segmented-control button + button {
-  border-left: 1px solid var(--surface-alt-3);
-}
-
-.pb-segmented-control button.active {
-  background: var(--surface-alt-2);
-  color: var(--surface-txt);
-}
-
 .pb-icon-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(40px, 1fr));
@@ -1857,10 +1814,6 @@ button:disabled {
   border-color: var(--surface-border);
   background: var(--surface-alt-2);
   color: var(--surface-txt);
-}
-
-.pb-field.emoji-field {
-  max-width: 180px;
 }
 
 .pb-tabs {
@@ -2014,6 +1967,88 @@ button:disabled {
 .pb-option-grid {
   display: grid;
   gap: 10px;
+}
+
+.pb-field-options.relation-builder {
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.pb-relation-type-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pb-relation-type-grid button {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 9px;
+  min-height: 92px;
+  border: 1px solid var(--surface-alt-3);
+  border-radius: var(--radius);
+  background: var(--surface-color);
+  color: var(--surface-txt);
+  padding: 11px;
+  text-align: left;
+}
+
+.pb-relation-type-grid button:hover,
+.pb-relation-type-grid button:focus-visible,
+.pb-relation-type-grid button.active {
+  border-color: var(--surface-border);
+  background: var(--surface-alt-2);
+}
+
+.pb-relation-type-grid svg {
+  margin-top: 2px;
+  color: var(--surface-hint);
+}
+
+.pb-relation-type-grid span,
+.pb-relation-type-grid strong,
+.pb-relation-type-grid em {
+  min-width: 0;
+}
+
+.pb-relation-type-grid strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: var(--base-font-size);
+}
+
+.pb-relation-type-grid em {
+  display: block;
+  color: var(--surface-hint);
+  font-size: var(--sm-font-size);
+  font-style: normal;
+  line-height: 1.35;
+}
+
+.pb-relation-config-grid,
+.pb-relation-behavior-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.pb-relation-advanced {
+  border: 1px solid var(--surface-alt-2);
+  border-radius: var(--radius);
+  background: var(--surface-alt-1);
+}
+
+.pb-relation-advanced summary {
+  cursor: pointer;
+  padding: 11px 12px;
+  color: var(--surface-txt);
+  font-weight: 800;
+}
+
+.pb-relation-advanced .pb-relation-config-grid {
+  border-top: 1px solid var(--surface-alt-2);
+  padding: 12px;
 }
 
 .pb-relation-source {
@@ -3318,6 +3353,10 @@ button:disabled {
   .pb-field-options.three,
   .pb-field-options.common,
   .pb-option-grid,
+  .pb-relation-type-grid,
+  .pb-relation-config-grid,
+  .pb-relation-behavior-grid,
+  .pb-relation-advanced .pb-relation-config-grid,
   .pb-record-form,
   .pb-rules-grid {
     grid-template-columns: 1fr;
