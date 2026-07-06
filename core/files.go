@@ -465,8 +465,8 @@ func RemoveStoredFiles(ctx context.Context, cfg *Config, files []FileMeta) error
 }
 
 func RemoveRecordStorage(ctx context.Context, cfg *Config, projectSlug string, collectionName string, recordID string) error {
-	if err := ValidateUUID(recordID); err != nil {
-		return err
+	if !safeStorageSegment(recordID) {
+		return nil
 	}
 	store, err := NewObjectStore(cfg)
 	if err != nil {
