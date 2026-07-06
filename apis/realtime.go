@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/dublyo/dublyobase/core"
+	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -383,9 +384,9 @@ func (s *server) runRealtimeNotifyListener(ctx context.Context, wake chan<- stru
 		if ctx.Err() != nil {
 			return
 		}
-		conn, err := s.app.Pool.Acquire(ctx)
+		conn, err := pgx.ConnectConfig(ctx, s.app.Pool.Config().ConnConfig.Copy())
 		if err != nil {
-			s.app.Log.Warn("realtime notify acquire failed", "err", err)
+			s.app.Log.Warn("realtime notify connect failed", "err", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -394,7 +395,7 @@ func (s *server) runRealtimeNotifyListener(ctx context.Context, wake chan<- stru
 			}
 		}
 		if _, err := conn.Exec(ctx, `listen dbo_realtime`); err != nil {
-			conn.Release()
+			_ = conn.Close(context.Background())
 			s.app.Log.Warn("realtime listen failed", "err", err)
 			select {
 			case <-ctx.Done():
@@ -404,7 +405,7 @@ func (s *server) runRealtimeNotifyListener(ctx context.Context, wake chan<- stru
 			}
 		}
 		if _, err := conn.Exec(ctx, `listen dbo_realtime_broadcast`); err != nil {
-			conn.Release()
+			_ = conn.Close(context.Background())
 			s.app.Log.Warn("realtime broadcast listen failed", "err", err)
 			select {
 			case <-ctx.Done():
@@ -414,7 +415,7 @@ func (s *server) runRealtimeNotifyListener(ctx context.Context, wake chan<- stru
 			}
 		}
 		for ctx.Err() == nil {
-			if _, err := conn.Conn().WaitForNotification(ctx); err != nil {
+			if _, err := conn.WaitForNotification(ctx); err != nil {
 				if ctx.Err() == nil {
 					s.app.Log.Warn("realtime notification wait failed", "err", err)
 				}
@@ -425,7 +426,7 @@ func (s *server) runRealtimeNotifyListener(ctx context.Context, wake chan<- stru
 			default:
 			}
 		}
-		conn.Release()
+		_ = conn.Close(context.Background())
 	}
 }
 
