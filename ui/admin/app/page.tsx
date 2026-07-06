@@ -3113,7 +3113,7 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
               </option>
             ))}
           </select>
-          {relationTarget && relationDisplayFields.length === 0 ? <small>Reserved, hidden, and password fields cannot be used as relation labels.</small> : null}
+          {relationTarget && relationDisplayFields.length === 0 ? <small>Reserved and password fields cannot be used as relation labels.</small> : null}
         </label>
         <div className="pb-option-grid">
           <label className="pb-field">
@@ -6867,7 +6867,7 @@ function isReservedDataFieldName(name: string): boolean {
 }
 
 function relationDisplayFieldOptions(collection?: Collection): Field[] {
-  return (collection?.fields ?? []).filter((field) => !field.hidden && field.type !== "password" && !isReservedDataFieldName(field.name));
+  return (collection?.fields ?? []).filter((field) => field.type !== "password" && !isReservedDataFieldName(field.name));
 }
 
 function FieldTypeGlyph({ type }: { type: FieldType }) {
