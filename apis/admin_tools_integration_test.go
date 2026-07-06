@@ -292,7 +292,7 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	if strings.ContainsAny(compositeID, "\r\n") {
 		t.Fatalf("composite id must be URL-safe without newlines: %q", compositeID)
 	}
-	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_article_tags/records?fields=id,article_id,tag_id,weight&filter[tag_id][_eq]=cuid_text_1&perPage=10", slug), token)
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_article_tags/records?fields=id,article_id,tag_id,weight&filter[tag_id][_eq]=%s&perPage=10", slug, longTextID), token)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("list imported composite records: want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
