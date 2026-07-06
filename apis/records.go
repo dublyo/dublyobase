@@ -3,6 +3,7 @@ package apis
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -57,7 +58,7 @@ func directusFilterQuery(r *http.Request) string {
 	if len(root) == 0 {
 		return ""
 	}
-	body, err := json.Marshal(root)
+	body, err := json.Marshal(normalizeDirectusFilterNode(root))
 	if err != nil {
 		return ""
 	}
@@ -100,6 +101,48 @@ func assignFilterValue(root map[string]any, segments []string, value string) {
 		root[segments[0]] = next
 	}
 	assignFilterValue(next, segments[1:], value)
+}
+
+func normalizeDirectusFilterNode(value any) any {
+	body, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	out := make(map[string]any, len(body))
+	for key, child := range body {
+		child = normalizeDirectusFilterNode(child)
+		if key == "_and" || key == "_or" {
+			if list, ok := directusNumericMapToList(child); ok {
+				out[key] = list
+				continue
+			}
+		}
+		out[key] = child
+	}
+	return out
+}
+
+func directusNumericMapToList(value any) ([]any, bool) {
+	body, ok := value.(map[string]any)
+	if !ok || len(body) == 0 {
+		return nil, false
+	}
+	indexes := make([]int, 0, len(body))
+	byIndex := make(map[int]any, len(body))
+	for key, child := range body {
+		index, err := strconv.Atoi(key)
+		if err != nil || index < 0 {
+			return nil, false
+		}
+		indexes = append(indexes, index)
+		byIndex[index] = child
+	}
+	sort.Ints(indexes)
+	out := make([]any, 0, len(indexes))
+	for _, index := range indexes {
+		out = append(out, byIndex[index])
+	}
+	return out, true
 }
 
 func (s *server) createRecord(w http.ResponseWriter, r *http.Request) {
