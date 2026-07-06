@@ -272,7 +272,12 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("patch imported primary key: want 422, got %d: %s", rec.Code, rec.Body.String())
 	}
-	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_article_tags/records", slug), token, fmt.Sprintf(`{"article_id":%q,"tag_id":"cuid_text_1","weight":9}`, articleID))
+	longTextID := "tag_" + strings.Repeat("x", 96)
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_text_ids/records", slug), token, fmt.Sprintf(`{"id":%q,"name":"Long text primary key","rank":9}`, longTextID))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create imported long text-id record: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_article_tags/records", slug), token, fmt.Sprintf(`{"article_id":%q,"tag_id":%q,"weight":9}`, articleID, longTextID))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create imported composite record: want 201, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -281,8 +286,11 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 		t.Fatal(err)
 	}
 	compositeID, ok := compositeRecord["id"].(string)
-	if !ok || compositeID == "" || compositeRecord["article_id"] != articleID || compositeRecord["tag_id"] != "cuid_text_1" {
+	if !ok || compositeID == "" || compositeRecord["article_id"] != articleID || compositeRecord["tag_id"] != longTextID {
 		t.Fatalf("unexpected imported composite create result: %+v", compositeRecord)
+	}
+	if strings.ContainsAny(compositeID, "\r\n") {
+		t.Fatalf("composite id must be URL-safe without newlines: %q", compositeID)
 	}
 	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_article_tags/records?fields=id,article_id,tag_id,weight&filter[tag_id][_eq]=cuid_text_1&perPage=10", slug), token)
 	if rec.Code != http.StatusOK {

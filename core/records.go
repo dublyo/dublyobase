@@ -1141,7 +1141,7 @@ func compositeRecordIDSQL(collection *Collection) string {
 	if len(values) == 0 {
 		return quoteIdent(defaultRecordPrimaryKey)
 	}
-	return "translate(rtrim(encode(convert_to(json_build_array(" + strings.Join(values, ", ") + ")::text, 'UTF8'), 'base64'), '='), '+/', '-_')"
+	return "translate(replace(replace(rtrim(encode(convert_to(json_build_array(" + strings.Join(values, ", ") + ")::text, 'UTF8'), 'base64'), '='), E'\\n', ''), E'\\r', ''), '+/', '-_')"
 }
 
 func recordPrimaryKeyWhere(collection *Collection, id string, start int) (string, []any, error) {
