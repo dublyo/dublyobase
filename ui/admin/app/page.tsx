@@ -66,7 +66,9 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
+import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ApexOptions } from "apexcharts";
 import {
   ApiError,
   changeAdminEmail,
@@ -89,6 +91,8 @@ import {
   discoverSchema,
   exportCollections,
   getProjectAuthSettings,
+  getCollectionInsights,
+  getProjectInsights,
   getProjectMetrics,
   getProjectQuotas,
   health,
@@ -134,7 +138,9 @@ import {
   uploadFile,
   backupDownloadURL,
 } from "../src/lib/api";
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InstanceSettings, MCPToken, OpsAlert, Project, ProjectAuthSettings, ProjectMetrics, ProjectQuotas, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "../src/lib/types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionInsights, CollectionOptions, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InsightNameValue, InstanceSettings, MCPToken, OpsAlert, Project, ProjectAuthSettings, ProjectInsights, ProjectMetrics, ProjectQuotas, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "../src/lib/types";
+
+const ApexChart = dynamic(() => import("react-apexcharts"), { ssr: false });
 
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
@@ -191,6 +197,7 @@ const collectionIconChoices: CollectionIconChoice[] = [
 const collectionIconMap = Object.fromEntries(collectionIconChoices.map((choice) => [choice.name, choice.icon])) as Record<string, LucideIcon>;
 const navItems = [
   { id: "collections", label: "Collections", icon: Layers3 },
+  { id: "insights", label: "Insights", icon: Activity },
   { id: "logs", label: "Logs", icon: Archive },
   { id: "settings", label: "Settings", icon: Settings },
 ] as const;
@@ -220,6 +227,8 @@ type Notice = { type: "success" | "error"; message: string } | null;
 type CollectionModalMode = "create" | "settings" | null;
 type CollectionsMode = "records" | "overview";
 type OverviewTab = "fields" | "rules";
+type InsightsTab = "overview" | "collections" | "dashboards";
+type InsightsRangeHours = 1 | 24 | 168 | 720;
 type RelationCardinality = "many_to_one" | "one_to_one" | "one_to_many" | "many_to_many";
 type RelationEdge = {
   sourceCollection: string;
@@ -365,6 +374,13 @@ const emptyWebhookDraft = {
   secret: "",
 };
 
+const insightRanges: Array<{ hours: InsightsRangeHours; label: string }> = [
+  { hours: 1, label: "1h" },
+  { hours: 24, label: "24h" },
+  { hours: 168, label: "7d" },
+  { hours: 720, label: "30d" },
+];
+
 export default function AdminApp() {
   const [token, setToken] = useState<string | null>(null);
   const [admin, setAdmin] = useState<Admin | null>(null);
@@ -401,6 +417,12 @@ export default function AdminApp() {
   const [projectQuotas, setProjectQuotas] = useState<ProjectQuotas | null>(null);
   const [quotaDraft, setQuotaDraft] = useState(emptyQuotaDraft);
   const [projectMetrics, setProjectMetrics] = useState<ProjectMetrics | null>(null);
+  const [insightsTab, setInsightsTab] = useState<InsightsTab>("overview");
+  const [insightsRange, setInsightsRange] = useState<InsightsRangeHours>(24);
+  const [projectInsights, setProjectInsights] = useState<ProjectInsights | null>(null);
+  const [collectionInsights, setCollectionInsights] = useState<CollectionInsights | null>(null);
+  const [insightCollection, setInsightCollection] = useState("");
+  const [insightsLoading, setInsightsLoading] = useState(false);
   const [opsAlerts, setOpsAlerts] = useState<OpsAlert[]>([]);
   const [adminUsers, setAdminUsers] = useState<Admin[]>([]);
   const [adminDraft, setAdminDraft] = useState(emptyAdminDraft);
@@ -459,6 +481,10 @@ export default function AdminApp() {
   const selectedCollectionModel = useMemo(
     () => (collectionsProject === selectedProject ? collections.find((collection) => collection.name === selectedCollection) ?? collections[0] ?? null : null),
     [collections, collectionsProject, selectedCollection, selectedProject],
+  );
+  const insightCollectionModel = useMemo(
+    () => (collectionsProject === selectedProject ? collections.find((collection) => collection.name === insightCollection) ?? null : null),
+    [collections, collectionsProject, insightCollection, selectedProject],
   );
   const fileFields = useMemo(() => selectedCollectionModel?.fields.filter((field) => field.type === "file") ?? [], [selectedCollectionModel]);
   const selectedExportItems = useMemo(() => {
@@ -598,6 +624,9 @@ export default function AdminApp() {
           setProjectQuotas(null);
           setQuotaDraft(emptyQuotaDraft);
           setProjectMetrics(null);
+          setProjectInsights(null);
+          setCollectionInsights(null);
+          setInsightCollection("");
           setOpsAlerts([]);
           setWebhooks([]);
         }
@@ -670,6 +699,43 @@ export default function AdminApp() {
   }, [handleError, settingsSection, token, view]);
 
   useEffect(() => {
+    if (collectionsProject !== selectedProject) return;
+    const fallback = defaultInsightCollection(collections);
+    if (!fallback) {
+      if (insightCollection) setInsightCollection("");
+      return;
+    }
+    if (!collections.some((collection) => collection.name === insightCollection)) {
+      setInsightCollection(fallback);
+    }
+  }, [collections, collectionsProject, insightCollection, selectedProject]);
+
+  useEffect(() => {
+    if (!token || view !== "insights" || !selectedProject || collectionsProject !== selectedProject) return;
+    let cancelled = false;
+    const collectionName = insightCollection || defaultInsightCollection(collections);
+    setInsightsLoading(true);
+    Promise.all([
+      getProjectInsights(token, selectedProject, insightsRange),
+      collectionName ? getCollectionInsights(token, selectedProject, collectionName, insightsRange) : Promise.resolve(null),
+    ])
+      .then(([projectResponse, collectionResponse]) => {
+        if (cancelled) return;
+        setProjectInsights(projectResponse);
+        setCollectionInsights(collectionResponse);
+      })
+      .catch((error) => {
+        if (!cancelled) handleError(error);
+      })
+      .finally(() => {
+        if (!cancelled) setInsightsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [collections, collectionsProject, handleError, insightCollection, insightsRange, selectedProject, token, view]);
+
+  useEffect(() => {
     if (!selectedCollectionModel) {
       setEditingFields([]);
       setEditingRules(emptyRules);
@@ -713,6 +779,26 @@ export default function AdminApp() {
     setView("settings");
     setSettingsSection(next);
     window.history.replaceState(null, "", `#settings/${next}`);
+  }
+
+  async function refreshInsights(collectionName = insightCollection, range = insightsRange) {
+    if (!token || !selectedProject) return;
+    const targetCollection = collectionName || defaultInsightCollection(collections);
+    setInsightsLoading(true);
+    try {
+      const [projectResponse, collectionResponse] = await Promise.all([
+        getProjectInsights(token, selectedProject, range),
+        targetCollection ? getCollectionInsights(token, selectedProject, targetCollection, range) : Promise.resolve(null),
+      ]);
+      setProjectInsights(projectResponse);
+      setCollectionInsights(collectionResponse);
+      if (targetCollection) setInsightCollection(targetCollection);
+      showNotice("success", "Insights refreshed");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setInsightsLoading(false);
+    }
   }
 
   async function submitLogin(event: React.FormEvent<HTMLFormElement>) {
@@ -762,6 +848,9 @@ export default function AdminApp() {
     setProjectQuotas(null);
     setQuotaDraft(emptyQuotaDraft);
     setProjectMetrics(null);
+    setProjectInsights(null);
+    setCollectionInsights(null);
+    setInsightCollection("");
     setLogDraft(emptyLogDraft);
     setCORSDraft(emptyCORSDraft);
     setCronJobs([]);
@@ -1733,12 +1822,15 @@ export default function AdminApp() {
             setCollectionsProject("");
             setApiKeys([]);
             setAudit({ items: [], page: 1, perPage: auditPerPage, totalItems: 0 });
-          setRequestLogs({ items: [], page: 1, perPage: requestPerPage, totalItems: 0 });
-          setAuthSettings(null);
-          setProjectQuotas(null);
-          setQuotaDraft(emptyQuotaDraft);
-          setProjectMetrics(null);
-          setWebhooks([]);
+            setRequestLogs({ items: [], page: 1, perPage: requestPerPage, totalItems: 0 });
+            setAuthSettings(null);
+            setProjectQuotas(null);
+            setQuotaDraft(emptyQuotaDraft);
+            setProjectMetrics(null);
+            setProjectInsights(null);
+            setCollectionInsights(null);
+            setInsightCollection("");
+            setWebhooks([]);
             setWebhookDeliveries({});
             setCORSDraft(settingsToCORSDraft(settings, projects.find((project) => project.slug === slug) ?? null));
             setSelectedCollection("");
@@ -1811,6 +1903,28 @@ export default function AdminApp() {
           }}
           onDeleteRecord={removeRecord}
           onDeleteCollection={removeCollection}
+          version={healthState?.version ?? "unknown"}
+        />
+      ) : null}
+
+      {view === "insights" ? (
+        <InsightsWorkspace
+          project={selectedProjectModel}
+          collections={collections}
+          selectedCollection={insightCollectionModel}
+          selectedCollectionName={insightCollection}
+          projectInsights={projectInsights}
+          collectionInsights={collectionInsights}
+          tab={insightsTab}
+          setTab={setInsightsTab}
+          range={insightsRange}
+          setRange={setInsightsRange}
+          loading={insightsLoading}
+          onSelectCollection={(name) => {
+            setInsightCollection(name);
+            void refreshInsights(name);
+          }}
+          onRefresh={() => void refreshInsights()}
           version={healthState?.version ?? "unknown"}
         />
       ) : null}
@@ -4068,6 +4182,306 @@ const records = await client.list("${collection.name}", {
         </div>
       </section>
     </div>
+  );
+}
+
+function InsightsWorkspace({
+  project,
+  collections,
+  selectedCollection,
+  selectedCollectionName,
+  projectInsights,
+  collectionInsights,
+  tab,
+  setTab,
+  range,
+  setRange,
+  loading,
+  onSelectCollection,
+  onRefresh,
+  version,
+}: {
+  project: Project | null;
+  collections: Collection[];
+  selectedCollection: Collection | null;
+  selectedCollectionName: string;
+  projectInsights: ProjectInsights | null;
+  collectionInsights: CollectionInsights | null;
+  tab: InsightsTab;
+  setTab: (tab: InsightsTab) => void;
+  range: InsightsRangeHours;
+  setRange: (range: InsightsRangeHours) => void;
+  loading: boolean;
+  onSelectCollection: (name: string) => void;
+  onRefresh: () => void;
+  version: string;
+}) {
+  const analyticsCollections = collections.filter((collection) => collection.type !== "view");
+  const metrics = projectInsights?.metrics;
+  const requestLabels = projectInsights?.requests.map((bucket) => formatInsightTick(bucket.timestamp, projectInsights.range.hours)) ?? [];
+  const requestSeries = [
+    { name: "Requests", data: projectInsights?.requests.map((bucket) => bucket.total) ?? [] },
+    { name: "Errors", data: projectInsights?.requests.map((bucket) => bucket.errors) ?? [] },
+  ];
+  const latencySeries = [
+    { name: "Avg", data: projectInsights?.requests.map((bucket) => bucket.avgDurationMs) ?? [] },
+    { name: "P95", data: projectInsights?.requests.map((bucket) => bucket.p95DurationMs) ?? [] },
+  ];
+  const collectionLabels = collectionInsights?.created.map((bucket) => formatInsightTick(bucket.timestamp, collectionInsights.range.hours)) ?? [];
+  const collectionSeries = [{ name: "New records", data: collectionInsights?.created.map((bucket) => bucket.count) ?? [] }];
+
+  return (
+    <section className="pb-module pb-insights-module">
+      <header className="pb-module-header">
+        <div>
+          <p className="pb-kicker">Insights</p>
+          <h1>{project ? project.name : "No project"}</h1>
+        </div>
+        <div className="pb-header-actions">
+          <div className="pb-segmented-control compact" role="radiogroup" aria-label="Insights range">
+            {insightRanges.map((item) => (
+              <button key={item.hours} type="button" role="radio" aria-checked={range === item.hours} className={range === item.hours ? "active" : ""} onClick={() => setRange(item.hours)}>
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <button type="button" className="pb-btn secondary" onClick={onRefresh} disabled={!project || loading}>
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
+      </header>
+
+      <div className="pb-insights-tabs" role="tablist" aria-label="Insights">
+        {[
+          ["overview", "Overview"],
+          ["collections", "Collections"],
+          ["dashboards", "Dashboards"],
+        ].map(([id, label]) => (
+          <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id as InsightsTab)}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {!project ? (
+        <EmptyState title="Choose a project" detail="Insights are scoped to the selected project." />
+      ) : tab === "overview" ? (
+        <div className="pb-insights-stack">
+          <div className="pb-insight-kpis">
+            <InsightKPI label="Requests" value={formatCount(metrics?.requests.total ?? 0)} />
+            <InsightKPI label="Errors" value={formatCount(metrics?.requests.errors ?? 0)} tone={(metrics?.requests.errors ?? 0) > 0 ? "warning" : "default"} />
+            <InsightKPI label="P95 latency" value={`${formatCount(Math.round(metrics?.requests.p95DurationMs ?? 0))} ms`} />
+            <InsightKPI label="App users" value={formatCount(metrics?.appUsers ?? 0)} />
+            <InsightKPI label="Sessions" value={formatCount(metrics?.activeSessions ?? 0)} />
+            <InsightKPI label="Storage" value={formatBytes(metrics?.storageBytes ?? 0)} />
+          </div>
+          <div className="pb-insights-grid two">
+            <InsightChart title="Request volume" type="area" labels={requestLabels} series={requestSeries} empty={!projectInsights || projectInsights.requests.every((bucket) => bucket.total === 0)} />
+            <InsightChart title="Latency" type="line" labels={requestLabels} series={latencySeries} empty={!projectInsights || projectInsights.requests.every((bucket) => bucket.p95DurationMs === 0)} />
+          </div>
+          <div className="pb-insights-grid three">
+            <InsightNameValuePanel title="Methods" items={projectInsights?.methods ?? []} />
+            <InsightNameValuePanel title="Status classes" items={projectInsights?.statuses ?? []} />
+            <InsightNameValuePanel title="Top paths" items={projectInsights?.topPaths ?? []} wide />
+          </div>
+          <section className="pb-settings-block">
+            <div className="pb-section-title-row">
+              <div>
+                <h3>Collection activity</h3>
+                <p className="pb-muted-copy">{formatCount(projectInsights?.collections.length ?? 0)} collections in this project.</p>
+              </div>
+            </div>
+            <div className="pb-table-wrap">
+              <table className="pb-records-table compact">
+                <thead>
+                  <tr>
+                    <th>Collection</th>
+                    <th>Type</th>
+                    <th>Records</th>
+                    <th>New</th>
+                    <th>Fields</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(projectInsights?.collections ?? []).map((collection) => (
+                    <tr key={collection.name}>
+                      <td>{collection.name}</td>
+                      <td>{collection.type}</td>
+                      <td>{formatCount(collection.records)}</td>
+                      <td>{formatCount(collection.newRecords)}</td>
+                      <td>{formatCount(collection.fields)}</td>
+                    </tr>
+                  ))}
+                  {projectInsights?.collections.length === 0 ? (
+                    <tr>
+                      <td colSpan={5}>No collections found.</td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      ) : tab === "collections" ? (
+        <div className="pb-insights-stack">
+          <section className="pb-settings-block">
+            <div className="pb-section-title-row">
+              <div>
+                <h3>Collection analytics</h3>
+                <p className="pb-muted-copy">{selectedCollection ? `${selectedCollection.fields.length} fields` : "No collection selected"}</p>
+              </div>
+              <label className="pb-field inline-field">
+                <span>Collection</span>
+                <select value={selectedCollectionName} onChange={(event) => onSelectCollection(event.target.value)}>
+                  {analyticsCollections.map((collection) => (
+                    <option key={collection.id} value={collection.name}>
+                      {collection.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </section>
+          <div className="pb-insight-kpis">
+            <InsightKPI label="Records" value={formatCount(collectionInsights?.records ?? 0)} />
+            <InsightKPI label="New records" value={formatCount(collectionInsights?.newRecords ?? 0)} />
+            <InsightKPI label="Analyzed fields" value={formatCount(collectionInsights?.fields.length ?? 0)} />
+            <InsightKPI label="Range" value={insightRanges.find((item) => item.hours === range)?.label ?? "24h"} />
+          </div>
+          <InsightChart title="Created records" type="bar" labels={collectionLabels} series={collectionSeries} empty={!collectionInsights || collectionInsights.created.every((bucket) => bucket.count === 0)} />
+          <section className="pb-settings-block">
+            <div className="pb-section-title-row">
+              <div>
+                <h3>Field analysis</h3>
+                <p className="pb-muted-copy">{collectionInsights?.collection ?? selectedCollectionName}</p>
+              </div>
+            </div>
+            <div className="pb-insight-field-grid">
+              {(collectionInsights?.fields ?? []).map((field) => (
+                <FieldInsightCard key={field.name} field={field} total={collectionInsights?.records ?? 0} />
+              ))}
+              {collectionInsights?.fields.length === 0 ? <EmptyState title="No analyzable fields" detail="Hidden, file, JSON, editor, and password fields are skipped." /> : null}
+            </div>
+          </section>
+        </div>
+      ) : (
+        <div className="pb-insights-stack">
+          <section className="pb-settings-block">
+            <div className="pb-section-title-row">
+              <div>
+                <h3>Saved dashboards</h3>
+                <p className="pb-muted-copy">Directus-style saved layouts will build on these project and collection panels.</p>
+              </div>
+              <button type="button" className="pb-btn secondary" disabled>
+                <Plus className="h-4 w-4" />
+                New dashboard
+              </button>
+            </div>
+            <EmptyState title="No saved dashboards yet" detail="The analytics endpoints and panel components are ready for persisted dashboard layouts." />
+          </section>
+        </div>
+      )}
+      <PageFooter left="Insights" version={version} />
+    </section>
+  );
+}
+
+function InsightKPI({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "warning" }) {
+  return (
+    <div className={`pb-insight-kpi ${tone === "warning" ? "warning" : ""}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function InsightChart({ title, labels, series, type, empty }: { title: string; labels: string[]; series: Array<{ name: string; data: number[] }>; type: "line" | "area" | "bar"; empty: boolean }) {
+  const options: ApexOptions = {
+    chart: {
+      toolbar: { show: false },
+      animations: { enabled: false },
+      fontFamily: "inherit",
+      foreColor: "var(--surface-hint)",
+    },
+    colors: ["#2563eb", "#dc2626", "#16a34a"],
+    dataLabels: { enabled: false },
+    fill: { opacity: type === "area" ? 0.22 : 1 },
+    grid: { borderColor: "var(--surface-alt-2)", strokeDashArray: 3 },
+    legend: { position: "top", horizontalAlign: "left", fontSize: "12px", markers: { size: 6 } },
+    stroke: { curve: "smooth", width: type === "bar" ? 0 : 2 },
+    xaxis: { categories: labels, labels: { rotate: -25, hideOverlappingLabels: true, trim: true } },
+    yaxis: { labels: { formatter: (value) => formatCompactNumber(value) } },
+    tooltip: { theme: "light", y: { formatter: (value) => formatCount(Math.round(value)) } },
+  };
+  return (
+    <section className="pb-settings-block pb-chart-card">
+      <div className="pb-section-title-row">
+        <h3>{title}</h3>
+      </div>
+      {empty ? <EmptyState title="No data" detail="No matching events in this range." compact /> : <ApexChart options={options} series={series} type={type} height={280} />}
+    </section>
+  );
+}
+
+function InsightNameValuePanel({ title, items, wide = false }: { title: string; items: InsightNameValue[]; wide?: boolean }) {
+  const max = Math.max(1, ...items.map((item) => item.value));
+  return (
+    <section className={`pb-settings-block pb-insight-list ${wide ? "wide" : ""}`}>
+      <div className="pb-section-title-row">
+        <h3>{title}</h3>
+      </div>
+      {items.length === 0 ? <EmptyState title="No data" detail="No matching events in this range." compact /> : null}
+      {items.map((item) => (
+        <div key={item.name} className="pb-insight-rank-row">
+          <span title={item.name}>{item.name}</span>
+          <div aria-hidden="true">
+            <i style={{ width: `${Math.max(4, Math.round((item.value / max) * 100))}%` }} />
+          </div>
+          <strong>{formatCount(item.value)}</strong>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function FieldInsightCard({ field, total }: { field: CollectionInsights["fields"][number]; total: number }) {
+  const fillRate = total > 0 ? Math.round((field.filled / total) * 100) : 0;
+  return (
+    <article className="pb-field-insight-card">
+      <header>
+        <span>
+          <strong>{field.name}</strong>
+          <em>{field.type}</em>
+        </span>
+        <b>{fillRate}%</b>
+      </header>
+      <div className="pb-fill-meter" aria-label={`${field.name} fill rate ${fillRate}%`}>
+        <span style={{ width: `${fillRate}%` }} />
+      </div>
+      <div className="pb-info-grid compact">
+        <Info label="Filled" value={formatCount(field.filled)} />
+        <Info label="Empty" value={formatCount(field.empty)} />
+        <Info label="Distinct" value={formatCount(field.distinct)} />
+      </div>
+      {field.numeric ? (
+        <div className="pb-info-grid compact">
+          <Info label="Sum" value={formatCompactNumber(field.numeric.sum)} />
+          <Info label="Avg" value={formatCompactNumber(field.numeric.avg)} />
+          <Info label="Min" value={formatCompactNumber(field.numeric.min)} />
+          <Info label="Max" value={formatCompactNumber(field.numeric.max)} />
+        </div>
+      ) : null}
+      {field.top?.length ? (
+        <div className="pb-chip-row">
+          {field.top.slice(0, 6).map((item) => (
+            <span key={item.name} className="pb-chip" title={item.name}>
+              {item.name} · {formatCount(item.value)}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </article>
   );
 }
 
@@ -6972,11 +7386,21 @@ function CompactTable({ headers, rows, empty }: { headers: string[]; rows: strin
   );
 }
 
-function EmptyState({ label, action, onAction }: { label: string; action?: string; onAction?: () => void }) {
+function EmptyState({ label, title, detail, compact = false, action, onAction }: { label?: string; title?: string; detail?: string; compact?: boolean; action?: string; onAction?: () => void }) {
+  const message = title ?? label ?? "No data";
   return (
-    <div className="pb-empty-state">
+    <div className={`pb-empty-state ${compact ? "compact" : ""}`}>
       <AlertCircle className="h-4 w-4" />
-      <span>{label}</span>
+      <span>
+        {detail ? (
+          <>
+            <strong>{message}</strong>
+            <em>{detail}</em>
+          </>
+        ) : (
+          message
+        )}
+      </span>
       {action && onAction ? (
         <button type="button" className="pb-btn secondary expanded-lg" onClick={onAction}>
           {action}
@@ -7927,6 +8351,24 @@ function formatBytes(value: number) {
 function formatCount(value: number) {
   if (!Number.isFinite(value)) return "-";
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
+}
+
+function formatCompactNumber(value: number) {
+  if (!Number.isFinite(value)) return "-";
+  return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: Math.abs(value) < 10 ? 1 : 0 }).format(value);
+}
+
+function formatInsightTick(value: string, hours: number) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  if (hours <= 24) {
+    return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
+  }
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+}
+
+function defaultInsightCollection(collections: Collection[]) {
+  return collections.find((collection) => collection.type !== "view" && !collection.system)?.name ?? collections.find((collection) => collection.type !== "view")?.name ?? "";
 }
 
 function parseHeadersJSON(value: string): Record<string, string> {

@@ -1,4 +1,4 @@
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Health, InstanceSettings, MCPToken, OpsAlert, Project, ProjectAuthSettings, ProjectMetrics, ProjectQuotas, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaDiscoveryResult, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "./types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CollectionInsights, CronJob, CronRun, Health, InstanceSettings, MCPToken, OpsAlert, Project, ProjectAuthSettings, ProjectInsights, ProjectMetrics, ProjectQuotas, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaDiscoveryResult, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "./types";
 
 type RequestOptions = RequestInit & {
   token?: string | null;
@@ -607,6 +607,17 @@ export function updateProjectQuotas(token: string, project: string, input: Parti
 
 export function getProjectMetrics(token: string, project: string, hours = 24) {
   return request<ProjectMetrics>(`/admin/api/projects/${encodeURIComponent(project)}/metrics?hours=${encodeURIComponent(String(hours))}`, { token });
+}
+
+export function getProjectInsights(token: string, project: string, hours = 24) {
+  return request<ProjectInsights>(`/admin/api/projects/${encodeURIComponent(project)}/insights?hours=${encodeURIComponent(String(hours))}`, { token });
+}
+
+export function getCollectionInsights(token: string, project: string, collection: string, hours = 24) {
+  return request<CollectionInsights>(
+    `/admin/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection)}/insights?hours=${encodeURIComponent(String(hours))}`,
+    { token },
+  );
 }
 
 export function listOpsAlerts(token: string, project: string, refresh = false) {

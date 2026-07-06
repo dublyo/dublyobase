@@ -315,6 +315,78 @@ export type ProjectMetrics = {
   windowFinishedAt: string;
 };
 
+export type InsightsRange = {
+  hours: number;
+  bucketMinutes: number;
+  startedAt: string;
+  finishedAt: string;
+};
+
+export type RequestInsightBucket = {
+  timestamp: string;
+  total: number;
+  errors: number;
+  avgDurationMs: number;
+  p95DurationMs: number;
+};
+
+export type InsightCountBucket = {
+  timestamp: string;
+  count: number;
+};
+
+export type InsightNameValue = {
+  name: string;
+  value: number;
+};
+
+export type CollectionInsightSummary = {
+  name: string;
+  type: Collection["type"];
+  system: boolean;
+  records: number;
+  newRecords: number;
+  fields: number;
+};
+
+export type CollectionFieldInsight = {
+  name: string;
+  type: FieldType;
+  filled: number;
+  empty: number;
+  distinct: number;
+  top?: InsightNameValue[];
+  numeric?: {
+    sum: number;
+    avg: number;
+    min: number;
+    max: number;
+  } | null;
+};
+
+export type ProjectInsights = {
+  projectId: string;
+  projectSlug: string;
+  range: InsightsRange;
+  metrics: ProjectMetrics;
+  requests: RequestInsightBucket[];
+  methods: InsightNameValue[];
+  statuses: InsightNameValue[];
+  topPaths: InsightNameValue[];
+  collections: CollectionInsightSummary[];
+};
+
+export type CollectionInsights = {
+  projectId: string;
+  projectSlug: string;
+  collection: string;
+  range: InsightsRange;
+  records: number;
+  newRecords: number;
+  created: InsightCountBucket[];
+  fields: CollectionFieldInsight[];
+};
+
 export type OpsAlert = {
   id: string;
   projectId?: string | null;

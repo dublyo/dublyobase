@@ -64,6 +64,8 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("GET /admin/api/projects/{slug}/quotas", s.requireAdminReady(http.HandlerFunc(s.adminGetProjectQuotas)))
 	mux.Handle("PUT /admin/api/projects/{slug}/quotas", s.requireAdminReady(http.HandlerFunc(s.adminUpdateProjectQuotas)))
 	mux.Handle("GET /admin/api/projects/{slug}/metrics", s.requireAdminReady(http.HandlerFunc(s.adminGetProjectMetrics)))
+	mux.Handle("GET /admin/api/projects/{slug}/insights", s.requireAdminReady(http.HandlerFunc(s.adminGetProjectInsights)))
+	mux.Handle("GET /admin/api/projects/{slug}/collections/{name}/insights", s.requireAdminReady(http.HandlerFunc(s.adminGetCollectionInsights)))
 	mux.Handle("GET /admin/api/projects/{slug}/ops/alerts", s.requireAdminReady(http.HandlerFunc(s.adminListOpsAlerts)))
 	mux.Handle("POST /admin/api/projects/{slug}/ops/alerts/{id}/resolve", s.requireAdminReady(http.HandlerFunc(s.adminResolveOpsAlert)))
 	mux.Handle("GET /admin/api/projects/{slug}/webhooks", s.requireAdminReady(http.HandlerFunc(s.adminListWebhooks)))
