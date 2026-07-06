@@ -304,8 +304,8 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 		t.Fatalf("patch imported composite record: want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	rec = deleteJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_article_tags/records/%s", slug, compositeID), token, "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("delete imported composite record: want 200, got %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete imported composite record: want 204, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_articles", slug), token, `{"fields":[{"name":"title","type":"text"},{"name":"summary","type":"text"}]}`)
