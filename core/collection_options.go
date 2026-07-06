@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -25,6 +26,14 @@ type collectionRuntimeOptions struct {
 	PrimaryKeyType        string `json:"primaryKeyType,omitempty"`
 	PrimaryKeyHasDefault  bool   `json:"primaryKeyHasDefault,omitempty"`
 	StandardSystemColumns bool   `json:"standardSystemColumns,omitempty"`
+
+	CompositePrimaryKey []collectionPrimaryKeyPart `json:"compositePrimaryKey,omitempty"`
+}
+
+type collectionPrimaryKeyPart struct {
+	Column string `json:"column"`
+	Field  string `json:"field"`
+	Type   string `json:"type"`
 }
 
 func parseCollectionRuntimeOptions(raw json.RawMessage) collectionRuntimeOptions {
@@ -38,6 +47,11 @@ func parseCollectionRuntimeOptions(raw json.RawMessage) collectionRuntimeOptions
 	opts.PrimaryKey = strings.TrimSpace(opts.PrimaryKey)
 	opts.PrimaryKeyField = NormalizeIdentifier(opts.PrimaryKeyField)
 	opts.PrimaryKeyType = strings.ToLower(strings.TrimSpace(opts.PrimaryKeyType))
+	for i := range opts.CompositePrimaryKey {
+		opts.CompositePrimaryKey[i].Column = strings.TrimSpace(opts.CompositePrimaryKey[i].Column)
+		opts.CompositePrimaryKey[i].Field = NormalizeIdentifier(opts.CompositePrimaryKey[i].Field)
+		opts.CompositePrimaryKey[i].Type = strings.ToLower(strings.TrimSpace(opts.CompositePrimaryKey[i].Type))
+	}
 	return opts
 }
 
@@ -114,6 +128,9 @@ func collectionPrimaryKeySource(collection *Collection) string {
 
 func collectionPrimaryKeyField(collection *Collection) string {
 	opts := parseCollectionRuntimeOptions(collection.Options)
+	if len(opts.CompositePrimaryKey) > 0 {
+		return defaultRecordPrimaryKey
+	}
 	if opts.PrimaryKeyField != "" {
 		return opts.PrimaryKeyField
 	}
@@ -132,6 +149,9 @@ func RecordPrimaryKeyField(collection *Collection) string {
 
 func collectionPrimaryKeyType(collection *Collection) string {
 	opts := parseCollectionRuntimeOptions(collection.Options)
+	if len(opts.CompositePrimaryKey) > 0 {
+		return "text"
+	}
 	if opts.PrimaryKeyType != "" {
 		return opts.PrimaryKeyType
 	}
@@ -141,6 +161,22 @@ func collectionPrimaryKeyType(collection *Collection) string {
 func collectionPrimaryKeyHasDefault(collection *Collection) bool {
 	opts := parseCollectionRuntimeOptions(collection.Options)
 	return opts.PrimaryKeyHasDefault
+}
+
+func collectionCompositePrimaryKey(collection *Collection) []collectionPrimaryKeyPart {
+	opts := parseCollectionRuntimeOptions(collection.Options)
+	parts := make([]collectionPrimaryKeyPart, 0, len(opts.CompositePrimaryKey))
+	for _, part := range opts.CompositePrimaryKey {
+		if part.Column == "" || part.Field == "" {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	return parts
+}
+
+func collectionHasCompositePrimaryKey(collection *Collection) bool {
+	return len(collectionCompositePrimaryKey(collection)) > 0
 }
 
 func collectionOptionsWithRuntime(base json.RawMessage, runtime collectionRuntimeOptions) (json.RawMessage, error) {
@@ -158,8 +194,33 @@ func collectionOptionsWithRuntime(base json.RawMessage, runtime collectionRuntim
 	body["primaryKeyField"] = runtime.PrimaryKeyField
 	body["primaryKeyType"] = runtime.PrimaryKeyType
 	body["primaryKeyHasDefault"] = runtime.PrimaryKeyHasDefault
+	if len(runtime.CompositePrimaryKey) > 0 {
+		body["compositePrimaryKey"] = runtime.CompositePrimaryKey
+	} else {
+		delete(body, "compositePrimaryKey")
+	}
 	body["standardSystemColumns"] = runtime.StandardSystemColumns
 	return json.Marshal(body)
+}
+
+func encodeCompositeRecordID(values []string) (string, error) {
+	body, err := json.Marshal(values)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(body), nil
+}
+
+func decodeCompositeRecordID(id string) ([]string, error) {
+	body, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(id))
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid composite record id", ErrValidation)
+	}
+	var values []string
+	if err := json.Unmarshal(body, &values); err != nil {
+		return nil, fmt.Errorf("%w: invalid composite record id", ErrValidation)
+	}
+	return values, nil
 }
 
 func normalizeColumnAPIName(name string) string {

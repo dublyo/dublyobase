@@ -29,6 +29,7 @@ type DiscoveredTable struct {
 	CanManage             bool                   `json:"canManage"`
 	Reason                string                 `json:"reason,omitempty"`
 	PrimaryKey            *DiscoveredPrimaryKey  `json:"primaryKey,omitempty"`
+	CompositePrimaryKey   []DiscoveredPrimaryKey `json:"compositePrimaryKey,omitempty"`
 	StandardSystemColumns bool                   `json:"standardSystemColumns"`
 	Columns               []DiscoveredColumn     `json:"columns"`
 	Fields                []Field                `json:"fields"`
@@ -349,7 +350,7 @@ func discoverOneTable(ctx context.Context, pool *pgxpool.Pool, project *Project,
 		// record URLs, and client SDKs.
 		columnNames[pkCols[0]] = defaultRecordPrimaryKey
 	}
-	fields, discoveredColumns := fieldsForDiscoveredColumns(columns, columnNames, fks, existingByTable, existingNames, standard)
+	fields, discoveredColumns := fieldsForDiscoveredColumns(columns, columnNames, fks, existingByTable, existingNames, standard, len(pkCols) == 1)
 
 	table := DiscoveredTable{
 		Schema:                schemaName,
@@ -364,11 +365,34 @@ func discoverOneTable(ctx context.Context, pool *pgxpool.Pool, project *Project,
 		ForeignKeys:           fks,
 	}
 	if len(pkCols) != 1 {
-		table.CanImport = false
 		if len(pkCols) == 0 {
+			table.CanImport = false
 			table.Reason = "table has no primary key"
+			return table, nil
+		}
+		for _, pk := range pkCols {
+			pkColumn := columnsByName(columns)[pk]
+			if !primaryKeyTypeUsable(pkColumn.UDTName) {
+				table.CanImport = false
+				table.Reason = "primary key type is not supported for REST record routes"
+				return table, nil
+			}
+			table.CompositePrimaryKey = append(table.CompositePrimaryKey, DiscoveredPrimaryKey{
+				Column:     pkColumn.Name,
+				Field:      columnNames[pkColumn.Name],
+				Type:       pkColumn.UDTName,
+				HasDefault: pkColumn.HasDefault,
+			})
+		}
+		if len(table.Fields) == 0 {
+			table.CanImport = false
+			table.Reason = "no supported editable columns were found"
 		} else {
-			table.Reason = "composite primary keys are not supported yet"
+			table.CanImport = true
+			if table.ExistingCollection != "" {
+				table.CanImport = false
+				table.Reason = "table already has collection metadata"
+			}
 		}
 		return table, nil
 	}
@@ -486,19 +510,44 @@ func insertImportedCollection(ctx context.Context, tx pgx.Tx, project *Project, 
 	if err != nil {
 		return err
 	}
-	if table.PrimaryKey == nil {
+	if table.PrimaryKey == nil && len(table.CompositePrimaryKey) == 0 {
 		return fmt.Errorf("%w: primary key is required", ErrValidation)
 	}
-	options, err := collectionOptionsWithRuntime([]byte(`{}`), collectionRuntimeOptions{
+	runtime := collectionRuntimeOptions{
 		Imported:              true,
 		Managed:               false,
 		SourceSchema:          table.Schema,
 		SourceTable:           table.Table,
-		PrimaryKey:            table.PrimaryKey.Column,
-		PrimaryKeyField:       table.PrimaryKey.Field,
-		PrimaryKeyType:        table.PrimaryKey.Type,
-		PrimaryKeyHasDefault:  table.PrimaryKey.HasDefault,
 		StandardSystemColumns: table.StandardSystemColumns,
+	}
+	if len(table.CompositePrimaryKey) > 0 {
+		runtime.PrimaryKeyField = defaultRecordPrimaryKey
+		runtime.PrimaryKeyType = "text"
+		runtime.CompositePrimaryKey = make([]collectionPrimaryKeyPart, 0, len(table.CompositePrimaryKey))
+		for _, part := range table.CompositePrimaryKey {
+			runtime.CompositePrimaryKey = append(runtime.CompositePrimaryKey, collectionPrimaryKeyPart{
+				Column: part.Column,
+				Field:  part.Field,
+				Type:   part.Type,
+			})
+		}
+	} else {
+		runtime.PrimaryKey = table.PrimaryKey.Column
+		runtime.PrimaryKeyField = table.PrimaryKey.Field
+		runtime.PrimaryKeyType = table.PrimaryKey.Type
+		runtime.PrimaryKeyHasDefault = table.PrimaryKey.HasDefault
+	}
+	options, err := collectionOptionsWithRuntime([]byte(`{}`), collectionRuntimeOptions{
+		Imported:              runtime.Imported,
+		Managed:               runtime.Managed,
+		SourceSchema:          runtime.SourceSchema,
+		SourceTable:           runtime.SourceTable,
+		PrimaryKey:            runtime.PrimaryKey,
+		PrimaryKeyField:       runtime.PrimaryKeyField,
+		PrimaryKeyType:        runtime.PrimaryKeyType,
+		PrimaryKeyHasDefault:  runtime.PrimaryKeyHasDefault,
+		StandardSystemColumns: runtime.StandardSystemColumns,
+		CompositePrimaryKey:   runtime.CompositePrimaryKey,
 	})
 	if err != nil {
 		return err
@@ -523,7 +572,7 @@ func insertImportedCollection(ctx context.Context, tx pgx.Tx, project *Project, 
 	return nil
 }
 
-func fieldsForDiscoveredColumns(columns []discoveredColumnInternal, names map[string]string, fks []DiscoveredForeignKey, existingByTable map[string]string, existingNames map[string]struct{}, standard bool) ([]Field, []DiscoveredColumn) {
+func fieldsForDiscoveredColumns(columns []discoveredColumnInternal, names map[string]string, fks []DiscoveredForeignKey, existingByTable map[string]string, existingNames map[string]struct{}, standard bool, skipPrimaryKeyFields bool) ([]Field, []DiscoveredColumn) {
 	fkByColumn := map[string]DiscoveredForeignKey{}
 	for _, fk := range fks {
 		fkByColumn[fk.Column] = fk
@@ -533,7 +582,7 @@ func fieldsForDiscoveredColumns(columns []discoveredColumnInternal, names map[st
 	for _, col := range columns {
 		fieldName := names[col.Name]
 		col.FieldName = fieldName
-		if col.PrimaryKey || (standard && (col.Name == "created" || col.Name == "updated")) {
+		if (skipPrimaryKeyFields && col.PrimaryKey) || (standard && (col.Name == "created" || col.Name == "updated")) {
 			col.Supported = true
 			outColumns = append(outColumns, col.DiscoveredColumn)
 			continue

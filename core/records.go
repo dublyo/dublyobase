@@ -176,13 +176,15 @@ func GetRecordWithOptions(ctx context.Context, pool *pgxpool.Pool, auth *RecordA
 	if err != nil {
 		return nil, err
 	}
-	pkField := collectionPrimaryKeyField(collection)
-	pkColumn := recordColumnSQL(collection, pkField)
+	where, whereArgs, err := recordPrimaryKeyWhere(collection, id, 1)
+	if err != nil {
+		return nil, err
+	}
 
 	var out Record
 	err = withRecordTxForCollection(ctx, pool, auth, collection, "view", func(tx pgx.Tx) error {
-		query := fmt.Sprintf(`select %s from %s where %s = %s`, recordSelectList(collection, columns), table, pkColumn, recordKeyPlaceholder(collection, 1))
-		record, err := queryOneRecord(ctx, tx, query, columns, id)
+		query := fmt.Sprintf(`select %s from %s where %s`, recordSelectList(collection, columns), table, where)
+		record, err := queryOneRecord(ctx, tx, query, columns, whereArgs...)
 		if err != nil {
 			return err
 		}
@@ -313,8 +315,6 @@ func UpdateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	if err != nil {
 		return nil, err
 	}
-	pkField := collectionPrimaryKeyField(collection)
-	pkColumn := recordColumnSQL(collection, pkField)
 
 	var out Record
 	err = withRecordTxForCollection(ctx, pool, auth, collection, "update", func(tx pgx.Tx) error {
@@ -331,12 +331,15 @@ func UpdateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 		if len(assignments) == 0 {
 			return fmt.Errorf("%w: patch body is empty", ErrValidation)
 		}
-		args = append(args, id)
-		query := fmt.Sprintf(`update %s set %s where %s = %s returning %s`,
+		where, whereArgs, err := recordPrimaryKeyWhere(collection, id, len(args)+1)
+		if err != nil {
+			return err
+		}
+		args = append(args, whereArgs...)
+		query := fmt.Sprintf(`update %s set %s where %s returning %s`,
 			table,
 			strings.Join(assignments, ", "),
-			pkColumn,
-			recordKeyPlaceholder(collection, len(args)),
+			where,
 			recordSelectList(collection, columns),
 		)
 		record, err := queryOneRecord(ctx, tx, query, columns, args...)
@@ -365,12 +368,14 @@ func DeleteRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	if err != nil {
 		return nil, err
 	}
-	pkField := collectionPrimaryKeyField(collection)
-	pkColumn := recordColumnSQL(collection, pkField)
+	where, whereArgs, err := recordPrimaryKeyWhere(collection, id, 1)
+	if err != nil {
+		return nil, err
+	}
 	var out Record
 	err = withRecordTxForCollection(ctx, pool, auth, collection, "delete", func(tx pgx.Tx) error {
-		query := fmt.Sprintf(`delete from %s where %s = %s returning %s`, table, pkColumn, recordKeyPlaceholder(collection, 1), recordSelectList(collection, columns))
-		record, err := queryOneRecord(ctx, tx, query, columns, id)
+		query := fmt.Sprintf(`delete from %s where %s returning %s`, table, where, recordSelectList(collection, columns))
+		record, err := queryOneRecord(ctx, tx, query, columns, whereArgs...)
 		if err != nil {
 			return err
 		}
@@ -539,7 +544,7 @@ func allowedRecordColumns(collection *Collection) map[string]struct{} {
 }
 
 func normalizeCreatePayload(collection *Collection, raw map[string]json.RawMessage) (*normalizedPayload, error) {
-	payload, err := normalizeRecordPayload(collection, raw, collectionIsImported(collection))
+	payload, err := normalizeRecordPayload(collection, raw, collectionIsImported(collection) && !collectionHasCompositePrimaryKey(collection))
 	if err != nil {
 		return nil, err
 	}
@@ -1052,6 +1057,9 @@ func recordColumnList(collection *Collection, columns []string) string {
 
 func recordColumnSQL(collection *Collection, name string) string {
 	if name == collectionPrimaryKeyField(collection) {
+		if collectionHasCompositePrimaryKey(collection) {
+			return compositeRecordIDSQL(collection)
+		}
 		return quoteIdent(collectionPrimaryKeySource(collection))
 	}
 	if collectionStandardSystemColumns(collection) && (name == "created" || name == "updated") {
@@ -1124,6 +1132,63 @@ func valuePlaceholder(field Field, pos int) string {
 	}
 }
 
+func compositeRecordIDSQL(collection *Collection) string {
+	parts := collectionCompositePrimaryKey(collection)
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		values = append(values, quoteIdent(part.Column)+"::text")
+	}
+	if len(values) == 0 {
+		return quoteIdent(defaultRecordPrimaryKey)
+	}
+	return "translate(rtrim(encode(convert_to(json_build_array(" + strings.Join(values, ", ") + ")::text, 'UTF8'), 'base64'), '='), '+/', '-_')"
+}
+
+func recordPrimaryKeyWhere(collection *Collection, id string, start int) (string, []any, error) {
+	if !collectionHasCompositePrimaryKey(collection) {
+		return fmt.Sprintf(`%s = %s`, recordColumnSQL(collection, collectionPrimaryKeyField(collection)), recordKeyPlaceholder(collection, start)), []any{id}, nil
+	}
+	parts := collectionCompositePrimaryKey(collection)
+	values, err := decodeCompositeRecordID(id)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(values) != len(parts) {
+		return "", nil, fmt.Errorf("%w: invalid composite record id", ErrValidation)
+	}
+	clauses := make([]string, 0, len(parts))
+	args := make([]any, 0, len(parts))
+	for i, part := range parts {
+		value, err := normalizeCompositeRecordKeyPart(part, values[i])
+		if err != nil {
+			return "", nil, err
+		}
+		placeholder := fmt.Sprintf("$%d", start+i)
+		if cast := postgresPlaceholderCast(part.Type); cast != "" {
+			placeholder += "::" + cast
+		}
+		clauses = append(clauses, fmt.Sprintf(`%s = %s`, quoteIdent(part.Column), placeholder))
+		args = append(args, value)
+	}
+	return strings.Join(clauses, " and "), args, nil
+}
+
+func normalizeCompositeRecordKeyPart(part collectionPrimaryKeyPart, raw string) (any, error) {
+	switch strings.ToLower(strings.TrimSpace(part.Type)) {
+	case "int2", "int4", "int8":
+		value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid composite record id", ErrValidation)
+		}
+		return value, nil
+	default:
+		if strings.TrimSpace(raw) == "" {
+			return nil, fmt.Errorf("%w: invalid composite record id", ErrValidation)
+		}
+		return raw, nil
+	}
+}
+
 func recordKeyPlaceholder(collection *Collection, pos int) string {
 	p := fmt.Sprintf("$%d", pos)
 	if cast := postgresPlaceholderCast(collectionPrimaryKeyType(collection)); cast != "" {
@@ -1160,6 +1225,8 @@ func postgresPlaceholderCast(udtName string) string {
 		return "json"
 	case "jsonb":
 		return "jsonb"
+	case "text", "varchar", "bpchar", "citext":
+		return "text"
 	default:
 		return ""
 	}

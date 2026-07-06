@@ -132,12 +132,21 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 		);
 		insert into %s (id, name, rank) values ('cuid_text_1', 'Text primary key row', 7);
 		create table %s (
+			article_id uuid not null references %s(id),
+			tag_id text not null references %s(id),
+			weight int not null default 0,
+			primary key (article_id, tag_id)
+		);
+		create table %s (
 			title text not null
 		);`,
 		pgx.Identifier{legacySchema, "authors"}.Sanitize(),
 		pgx.Identifier{legacySchema, "articles"}.Sanitize(),
 		pgx.Identifier{legacySchema, "authors"}.Sanitize(),
 		pgx.Identifier{legacySchema, "text_ids"}.Sanitize(),
+		pgx.Identifier{legacySchema, "text_ids"}.Sanitize(),
+		pgx.Identifier{legacySchema, "article_tags"}.Sanitize(),
+		pgx.Identifier{legacySchema, "articles"}.Sanitize(),
 		pgx.Identifier{legacySchema, "text_ids"}.Sanitize(),
 		pgx.Identifier{legacySchema, "without_pk"}.Sanitize(),
 	)); err != nil {
@@ -156,11 +165,14 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	for _, table := range discovery.Items {
 		found[table.Table] = table
 	}
-	if !found["authors"].CanImport || !found["articles"].CanImport || !found["text_ids"].CanImport {
-		t.Fatalf("authors/articles should be importable: %+v", found)
+	if !found["authors"].CanImport || !found["articles"].CanImport || !found["text_ids"].CanImport || !found["article_tags"].CanImport {
+		t.Fatalf("legacy tables should be importable: %+v", found)
 	}
 	if found["text_ids"].PrimaryKey == nil || found["text_ids"].PrimaryKey.Field != "id" {
 		t.Fatalf("text primary key should be exposed as id: %+v", found["text_ids"].PrimaryKey)
+	}
+	if len(found["article_tags"].CompositePrimaryKey) != 2 {
+		t.Fatalf("junction table should expose composite primary key: %+v", found["article_tags"].CompositePrimaryKey)
 	}
 	if found["text_ids"].PrimaryKey.HasDefault {
 		t.Fatalf("text primary key should not report a database default: %+v", found["text_ids"].PrimaryKey)
@@ -178,9 +190,10 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 			{"schema":%q,"table":"authors","name":"legacy_authors"},
 			{"schema":%q,"table":"articles","name":"legacy_articles"},
 			{"schema":%q,"table":"text_ids","name":"legacy_text_ids"},
+			{"schema":%q,"table":"article_tags","name":"legacy_article_tags"},
 			{"schema":%q,"table":"without_pk","name":"legacy_without_pk"}
 		]
-	}`, legacySchema, legacySchema, legacySchema, legacySchema)
+	}`, legacySchema, legacySchema, legacySchema, legacySchema, legacySchema)
 	rec = postJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/schema/import", slug), token, importBody)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("preview schema import: want 200, got %d: %s", rec.Code, rec.Body.String())
@@ -189,7 +202,7 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
 		t.Fatal(err)
 	}
-	if !preview.DryRun || preview.Created != 3 || preview.Skipped != 1 {
+	if !preview.DryRun || preview.Created != 4 || preview.Skipped != 1 {
 		t.Fatalf("unexpected import preview: %+v", preview)
 	}
 
@@ -202,7 +215,7 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &applied); err != nil {
 		t.Fatal(err)
 	}
-	if applied.Created != 3 || applied.Skipped != 1 {
+	if applied.Created != 4 || applied.Skipped != 1 {
 		t.Fatalf("unexpected import result: %+v", applied)
 	}
 
@@ -214,6 +227,10 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	article := createRecordInCollectionForTest(t, srv.Handler, slug, "legacy_articles", token, fmt.Sprintf(`{"title":"First","author_id":%q,"views":3}`, authorID))
 	if article["title"] != "First" || article["views"] == nil {
 		t.Fatalf("unexpected imported article response: %+v", article)
+	}
+	articleID, ok := article["id"].(string)
+	if !ok || articleID == "" {
+		t.Fatalf("imported article record missing id: %+v", article)
 	}
 	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_articles/records?filter[title][_eq]=First&perPage=10", slug), token)
 	if rec.Code != http.StatusOK {
@@ -254,6 +271,41 @@ func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_text_ids/records/cuid_text_2", slug), token, `{"id":"cuid_text_3"}`)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("patch imported primary key: want 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_article_tags/records", slug), token, fmt.Sprintf(`{"article_id":%q,"tag_id":"cuid_text_1","weight":9}`, articleID))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create imported composite record: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var compositeRecord core.Record
+	if err := json.Unmarshal(rec.Body.Bytes(), &compositeRecord); err != nil {
+		t.Fatal(err)
+	}
+	compositeID, ok := compositeRecord["id"].(string)
+	if !ok || compositeID == "" || compositeRecord["article_id"] != articleID || compositeRecord["tag_id"] != "cuid_text_1" {
+		t.Fatalf("unexpected imported composite create result: %+v", compositeRecord)
+	}
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_article_tags/records?fields=id,article_id,tag_id,weight&filter[tag_id][_eq]=cuid_text_1&perPage=10", slug), token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list imported composite records: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var compositeList core.RecordListResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &compositeList); err != nil {
+		t.Fatal(err)
+	}
+	if len(compositeList.Items) != 1 || compositeList.Items[0]["id"] != compositeID {
+		t.Fatalf("unexpected imported composite list result: %+v", compositeList.Items)
+	}
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_article_tags/records/%s", slug, compositeID), token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get imported composite record: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_article_tags/records/%s", slug, compositeID), token, `{"weight":10}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch imported composite record: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = deleteJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_article_tags/records/%s", slug, compositeID), token, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete imported composite record: want 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy_articles", slug), token, `{"fields":[{"name":"title","type":"text"},{"name":"summary","type":"text"}]}`)
