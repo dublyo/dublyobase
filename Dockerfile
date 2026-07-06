@@ -21,8 +21,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
       -o /out/dublyobase .
 
 # ---- runtime: tiny alpine, non-root, one process ----
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates postgresql16-client wget \
+FROM alpine:3.23
+RUN apk add --no-cache ca-certificates postgresql18-client wget \
  && adduser -D -u 1001 dublyo \
  && mkdir -p /data/storage \
  && chown -R 1001:1001 /data
