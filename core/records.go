@@ -553,7 +553,7 @@ func normalizeCreatePayload(collection *Collection, raw map[string]json.RawMessa
 		provided[column] = struct{}{}
 	}
 	pkField := collectionPrimaryKeyField(collection)
-	if collectionIsImported(collection) && !collectionStandardSystemColumns(collection) && !collectionPrimaryKeyHasDefault(collection) {
+	if collectionIsImported(collection) && !collectionHasCompositePrimaryKey(collection) && !collectionStandardSystemColumns(collection) && !collectionPrimaryKeyHasDefault(collection) {
 		if _, ok := provided[pkField]; !ok {
 			return nil, fmt.Errorf("%w: field %q is required", ErrValidation, pkField)
 		}
