@@ -44,6 +44,8 @@ type AuthTemplates struct {
 }
 
 type ProjectAuthSettingsInput struct {
+	ProjectID                   string         `json:"projectId,omitempty"`
+	ProjectSlug                 string         `json:"projectSlug,omitempty"`
 	AccessTokenMinutes          int            `json:"accessTokenMinutes"`
 	RefreshTokenDays            int            `json:"refreshTokenDays"`
 	VerifyTokenHours            int            `json:"verifyTokenHours"`
@@ -56,6 +58,8 @@ type ProjectAuthSettingsInput struct {
 	EmailChangeRequiresPassword *bool          `json:"emailChangeRequiresPassword,omitempty"`
 	Templates                   AuthTemplates  `json:"templates"`
 	Providers                   map[string]any `json:"providers"`
+	CreatedAt                   time.Time      `json:"createdAt,omitempty"`
+	UpdatedAt                   time.Time      `json:"updatedAt,omitempty"`
 }
 
 func DefaultProjectAuthSettings(project *Project) *ProjectAuthSettings {

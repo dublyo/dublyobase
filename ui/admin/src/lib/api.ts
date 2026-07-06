@@ -10,6 +10,21 @@ type LoginResponse = {
   admin: Admin;
 };
 
+type ProjectAuthSettingsUpdateInput = {
+  accessTokenMinutes?: number;
+  refreshTokenDays?: number;
+  verifyTokenHours?: number;
+  resetTokenHours?: number;
+  otpEnabled?: boolean;
+  otpTokenMinutes?: number;
+  mfaEnabled?: boolean;
+  mfaRequired?: boolean;
+  emailChangeEnabled?: boolean;
+  emailChangeRequiresPassword?: boolean;
+  templates?: ProjectAuthSettings["templates"];
+  providers?: Record<string, unknown>;
+};
+
 export class ApiError extends Error {
   code: string;
   status: number;
@@ -542,8 +557,40 @@ export function updateProjectAuthSettings(token: string, project: string, input:
   return request<ProjectAuthSettings>(`/admin/api/projects/${encodeURIComponent(project)}/auth-settings`, {
     method: "PUT",
     token,
-    body: JSON.stringify(input),
+    body: JSON.stringify(projectAuthSettingsUpdateInput(input)),
   });
+}
+
+function projectAuthSettingsUpdateInput(input: Partial<ProjectAuthSettings>): ProjectAuthSettingsUpdateInput {
+  return {
+    accessTokenMinutes: input.accessTokenMinutes,
+    refreshTokenDays: input.refreshTokenDays,
+    verifyTokenHours: input.verifyTokenHours,
+    resetTokenHours: input.resetTokenHours,
+    otpEnabled: input.otpEnabled,
+    otpTokenMinutes: input.otpTokenMinutes,
+    mfaEnabled: input.mfaEnabled,
+    mfaRequired: input.mfaRequired,
+    emailChangeEnabled: input.emailChangeEnabled,
+    emailChangeRequiresPassword: input.emailChangeRequiresPassword,
+    templates: input.templates,
+    providers: sanitizeAuthProviderInput(input.providers),
+  };
+}
+
+function sanitizeAuthProviderInput(input: unknown): Record<string, unknown> | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const output: Record<string, unknown> = {};
+  for (const [provider, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const providerInput: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      if (key === "clientSecretSet") continue;
+      providerInput[key] = item;
+    }
+    output[provider] = providerInput;
+  }
+  return output;
 }
 
 export function getProjectQuotas(token: string, project: string) {
