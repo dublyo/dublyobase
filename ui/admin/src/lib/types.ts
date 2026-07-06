@@ -270,6 +270,8 @@ export type ProjectAuthSettings = {
   resetTokenHours: number;
   otpEnabled: boolean;
   otpTokenMinutes: number;
+  mfaEnabled: boolean;
+  mfaRequired: boolean;
   emailChangeEnabled: boolean;
   emailChangeRequiresPassword: boolean;
   templates: {
@@ -316,6 +318,18 @@ export type ProjectMetrics = {
   quota: ProjectQuotas;
   windowStartedAt: string;
   windowFinishedAt: string;
+};
+
+export type OpsAlert = {
+  id: string;
+  projectId?: string | null;
+  project?: string;
+  severity: "info" | "warning" | "critical";
+  code: string;
+  message: string;
+  metadata: Record<string, unknown>;
+  resolvedAt?: string | null;
+  createdAt: string;
 };
 
 export type Webhook = {

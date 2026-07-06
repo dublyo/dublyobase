@@ -2,7 +2,7 @@
 
 Dublyobase is an open-source Supabase Alternative, Postgres-backed backend for building apps with a
 PocketBase-style developer experience. It provides a control panel, projects,
-collections, REST APIs, realtime record events, email/password auth, file
+collections, REST APIs, SSE/WebSocket realtime, email/password auth, file
 storage, SMTP settings, cron jobs, backups, and scoped remote MCP access from
 one Go backend and one embedded admin UI.
 
@@ -42,7 +42,8 @@ installs get the latest tested main build.
 
 ### Realtime
 
-- Server-Sent Events endpoint for record `create`, `update`, and `delete`.
+- Server-Sent Events and WebSocket endpoints for record `create`, `update`, and
+  `delete`.
 - Project-scoped and collection-filtered subscriptions.
 - Bearer auth, API keys, app-user JWTs, and anonymous access use the same record
   auth path as REST APIs.
@@ -50,10 +51,10 @@ installs get the latest tested main build.
   are sent to a subscriber.
 - Delete events are service-subscriber only in this release to avoid leaking
   private tombstones before a durable visibility cache exists.
-- Record events are persisted in Postgres and relayed to local SSE subscribers
-  by each app replica, so multi-node deployments can receive writes handled by
-  another replica. WebSocket parity is still future work; SSE is the supported
-  realtime transport.
+- Record events are persisted in Postgres, published with `LISTEN/NOTIFY`, and
+  relayed to local SSE/WebSocket subscribers by each app replica.
+- WebSocket channels support presence heartbeats and broadcast messages with
+  persisted fanout.
 
 ### App Auth
 
@@ -63,8 +64,10 @@ installs get the latest tested main build.
 - Email verification and password reset flows.
 - App-user email change flow with confirmation email.
 - Project-level token duration and email template settings.
-- OAuth provider settings skeleton for callback URLs and credentials. OAuth
-  callback execution, OTP, and MFA are not enabled yet.
+- Email one-time password login.
+- OAuth login runtime for Google, GitHub, Facebook, and configurable OIDC
+  providers.
+- TOTP multi-factor auth enrollment, login challenges, and recovery codes.
 - SMTP delivery for verification and reset emails.
 - Service API keys for backend-to-backend access.
 
@@ -280,8 +283,12 @@ can also be managed from the admin panel after setup.
 | `DELETE /api/projects/{slug}/collections/{name}/records/{id}` | Delete a record. |
 | `POST /api/projects/{slug}/batch` | Run up to 50 bounded record operations sequentially. |
 | `GET /api/projects/{slug}/realtime` | SSE stream for record create/update/delete events. |
+| `GET /api/projects/{slug}/realtime/ws` | WebSocket stream for record events, presence, and broadcast. |
 | `GET /admin/api/projects/{slug}/collections/export` | Export collection schema JSON. |
 | `POST /admin/api/projects/{slug}/collections/import` | Preview or apply collection schema imports. |
+| `GET /admin/api/projects/{slug}/schema/versions` | List schema metadata snapshots. |
+| `POST /admin/api/projects/{slug}/schema/versions` | Create a schema metadata snapshot. |
+| `GET /admin/api/projects/{slug}/sdk/typescript` | Download generated TypeScript types and client helpers. |
 
 Record list APIs support `page`, `perPage` (`10`, `25`, `100`, `250`, or `500`),
 `offset`, `sort`, `fields`, `search`, PocketBase-style string `filter`, and
@@ -313,6 +320,15 @@ avoid logging those URLs.
 |---|---|
 | `POST /api/projects/{slug}/auth/signup` | Create an app user. |
 | `POST /api/projects/{slug}/auth/login` | Login an app user. |
+| `POST /api/projects/{slug}/auth/request-otp` | Request an email one-time login code. |
+| `POST /api/projects/{slug}/auth/login-otp` | Login with an email one-time code. |
+| `GET /api/projects/{slug}/auth/oauth/{provider}/start` | Start OAuth login for `google`, `github`, `facebook`, or `oidc`. |
+| `GET /api/projects/{slug}/auth/oauth/{provider}/callback` | OAuth provider callback. |
+| `POST /api/projects/{slug}/auth/mfa/enroll` | Start TOTP MFA enrollment. |
+| `POST /api/projects/{slug}/auth/mfa/confirm` | Confirm TOTP setup and receive recovery codes. |
+| `POST /api/projects/{slug}/auth/mfa/verify` | Finish login with a TOTP MFA code. |
+| `POST /api/projects/{slug}/auth/mfa/recovery` | Finish login with a recovery code. |
+| `POST /api/projects/{slug}/auth/mfa/disable` | Disable MFA for the current app user. |
 | `POST /api/projects/{slug}/auth/refresh` | Rotate a refresh token. |
 | `POST /api/projects/{slug}/auth/logout` | Revoke the current refresh token. |
 | `POST /api/projects/{slug}/auth/logout-all` | Revoke all sessions for the user. |
@@ -356,8 +372,10 @@ avoid logging those URLs.
 | `POST /admin/api/backups/{id}/run` | Run a backup job immediately. |
 | `GET /admin/api/backups/{id}/runs/{runId}/download` | Download a completed backup archive from configured storage. |
 | `POST /admin/api/restores` | Upload a backup archive for dry-run validation or confirmed restore. |
-| `GET /admin/api/projects/{slug}/auth-settings` | Read project auth token durations, templates, and provider skeleton settings. |
+| `GET /admin/api/projects/{slug}/auth-settings` | Read project auth token durations, templates, MFA flags, and OAuth provider settings. |
 | `PUT /admin/api/projects/{slug}/auth-settings` | Save project auth settings. |
+| `GET /admin/api/projects/{slug}/ops/alerts` | List or refresh project ops alerts. |
+| `POST /admin/api/projects/{slug}/ops/alerts/{id}/resolve` | Resolve an ops alert. |
 | `GET /admin/api/projects/{slug}/webhooks` | List outbound webhooks. |
 | `POST /admin/api/projects/{slug}/webhooks` | Create a signed outbound webhook. |
 | `DELETE /admin/api/projects/{slug}/webhooks/{id}` | Delete an outbound webhook. |
@@ -380,7 +398,9 @@ avoid logging those URLs.
 - Prefer project-scoped backups for app tenants and full backups for instance
   administrators.
 - S3 and SMTP secrets are masked in API responses and audit logs.
-- Use SSE for realtime-sensitive projects; WebSocket parity remains future work.
+- OAuth provider secrets are encrypted at rest and masked in API responses.
+- For multi-replica realtime, use the same Postgres database so persisted events
+  and `LISTEN/NOTIFY` fanout are shared by all replicas.
 
 ## Local Development
 

@@ -30,9 +30,10 @@ var realtimeActions = map[string]struct{}{
 }
 
 type realtimeHub struct {
-	mu          sync.RWMutex
-	nextID      uint64
-	subscribers map[uint64]*realtimeSubscriber
+	mu                   sync.RWMutex
+	nextID               uint64
+	subscribers          map[uint64]*realtimeSubscriber
+	broadcastSubscribers map[uint64]*realtimeBroadcastSubscriber
 }
 
 type realtimeSubscriber struct {
@@ -52,6 +53,22 @@ type realtimeEvent struct {
 	At         time.Time
 }
 
+type realtimeBroadcastSubscriber struct {
+	id      uint64
+	project string
+	channel string
+	ch      chan realtimeBroadcastEvent
+}
+
+type realtimeBroadcastEvent struct {
+	Project string
+	Channel string
+	Event   string
+	UserID  string
+	Payload map[string]any
+	At      time.Time
+}
+
 type realtimePayload struct {
 	Project    string      `json:"project"`
 	Collection string      `json:"collection"`
@@ -62,7 +79,10 @@ type realtimePayload struct {
 }
 
 func newRealtimeHub() *realtimeHub {
-	return &realtimeHub{subscribers: map[uint64]*realtimeSubscriber{}}
+	return &realtimeHub{
+		subscribers:          map[uint64]*realtimeSubscriber{},
+		broadcastSubscribers: map[uint64]*realtimeBroadcastSubscriber{},
+	}
 }
 
 func newRealtimeSourceID() string {
@@ -94,6 +114,26 @@ func (h *realtimeHub) unsubscribe(id uint64) {
 	delete(h.subscribers, id)
 }
 
+func (h *realtimeHub) subscribeBroadcast(project string, channel string) *realtimeBroadcastSubscriber {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.nextID++
+	sub := &realtimeBroadcastSubscriber{
+		id:      h.nextID,
+		project: project,
+		channel: channel,
+		ch:      make(chan realtimeBroadcastEvent, 64),
+	}
+	h.broadcastSubscribers[sub.id] = sub
+	return sub
+}
+
+func (h *realtimeHub) unsubscribeBroadcast(id uint64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.broadcastSubscribers, id)
+}
+
 func (h *realtimeHub) publish(ev realtimeEvent) {
 	if ev.Project == "" || ev.Collection == "" || ev.Action == "" {
 		return
@@ -109,6 +149,23 @@ func (h *realtimeHub) publish(ev realtimeEvent) {
 		default:
 			// Keep write paths non-blocking. A slow realtime client can miss
 			// events, but it must never stall record writes for the project.
+		}
+	}
+}
+
+func (h *realtimeHub) publishBroadcast(ev realtimeBroadcastEvent) {
+	if ev.Project == "" || ev.Channel == "" || ev.Event == "" {
+		return
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, sub := range h.broadcastSubscribers {
+		if sub.project != ev.Project || sub.channel != ev.Channel {
+			continue
+		}
+		select {
+		case sub.ch <- ev:
+		default:
 		}
 	}
 }
@@ -206,6 +263,9 @@ func (s *server) resolveRealtimeAuth(w http.ResponseWriter, r *http.Request) (*c
 		writeCoreError(w, err)
 		return nil, false
 	}
+	if !s.checkResolvedProjectQuota(w, r, auth) {
+		return nil, false
+	}
 	return auth, true
 }
 
@@ -300,36 +360,115 @@ func (s *server) runRealtimeFanout(ctx context.Context) {
 	if s.app.Pool == nil || s.realtime == nil || s.realtimeSourceID == "" {
 		return
 	}
+	wake := make(chan struct{}, 1)
+	go s.runRealtimeNotifyListener(ctx, wake)
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	var lastID int64
+	var lastRecordID int64
+	var lastBroadcastID int64
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-wake:
+			s.pollRealtimeFanout(ctx, &lastRecordID, &lastBroadcastID)
 		case <-ticker.C:
-			pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			events, err := core.ListRealtimeEventsAfter(pollCtx, s.app.Pool, lastID, s.realtimeSourceID, 100)
-			if err == nil {
-				for _, item := range events {
-					if item.ID > lastID {
-						lastID = item.ID
-					}
-					s.realtime.publish(realtimeEvent{
-						Project:    item.Project,
-						Collection: item.Collection,
-						Action:     item.Action,
-						ID:         item.RecordID,
-						Record:     item.Record,
-						At:         item.CreatedAt,
-					})
-				}
-				_ = core.PruneRealtimeEvents(pollCtx, s.app.Pool, 24*time.Hour)
-			} else if ctx.Err() == nil {
-				s.app.Log.Warn("realtime fanout poll failed", "err", err)
-			}
-			cancel()
+			s.pollRealtimeFanout(ctx, &lastRecordID, &lastBroadcastID)
 		}
+	}
+}
+
+func (s *server) runRealtimeNotifyListener(ctx context.Context, wake chan<- struct{}) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		conn, err := s.app.Pool.Acquire(ctx)
+		if err != nil {
+			s.app.Log.Warn("realtime notify acquire failed", "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+				continue
+			}
+		}
+		if _, err := conn.Exec(ctx, `listen dbo_realtime`); err != nil {
+			conn.Release()
+			s.app.Log.Warn("realtime listen failed", "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+				continue
+			}
+		}
+		if _, err := conn.Exec(ctx, `listen dbo_realtime_broadcast`); err != nil {
+			conn.Release()
+			s.app.Log.Warn("realtime broadcast listen failed", "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+				continue
+			}
+		}
+		for ctx.Err() == nil {
+			if _, err := conn.Conn().WaitForNotification(ctx); err != nil {
+				if ctx.Err() == nil {
+					s.app.Log.Warn("realtime notification wait failed", "err", err)
+				}
+				break
+			}
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+		}
+		conn.Release()
+	}
+}
+
+func (s *server) pollRealtimeFanout(ctx context.Context, lastRecordID *int64, lastBroadcastID *int64) {
+	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	events, err := core.ListRealtimeEventsAfter(pollCtx, s.app.Pool, *lastRecordID, s.realtimeSourceID, 100)
+	if err == nil {
+		for _, item := range events {
+			if item.ID > *lastRecordID {
+				*lastRecordID = item.ID
+			}
+			s.realtime.publish(realtimeEvent{
+				Project:    item.Project,
+				Collection: item.Collection,
+				Action:     item.Action,
+				ID:         item.RecordID,
+				Record:     item.Record,
+				At:         item.CreatedAt,
+			})
+		}
+		_ = core.PruneRealtimeEvents(pollCtx, s.app.Pool, 24*time.Hour)
+	} else if ctx.Err() == nil {
+		s.app.Log.Warn("realtime fanout poll failed", "err", err)
+	}
+	broadcasts, err := core.ListRealtimeBroadcastsAfter(pollCtx, s.app.Pool, *lastBroadcastID, s.realtimeSourceID, 100)
+	if err == nil {
+		for _, item := range broadcasts {
+			if item.ID > *lastBroadcastID {
+				*lastBroadcastID = item.ID
+			}
+			s.realtime.publishBroadcast(realtimeBroadcastEvent{
+				Project: item.Project,
+				Channel: item.Channel,
+				Event:   item.Event,
+				UserID:  item.UserID,
+				Payload: item.Payload,
+				At:      item.CreatedAt,
+			})
+		}
+		_ = core.PruneRealtimeChannelState(pollCtx, s.app.Pool, 24*time.Hour)
+	} else if ctx.Err() == nil {
+		s.app.Log.Warn("realtime broadcast fanout poll failed", "err", err)
 	}
 }
 

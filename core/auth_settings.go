@@ -20,6 +20,8 @@ type ProjectAuthSettings struct {
 	ResetTokenHours             int            `json:"resetTokenHours"`
 	OTPEnabled                  bool           `json:"otpEnabled"`
 	OTPTokenMinutes             int            `json:"otpTokenMinutes"`
+	MFAEnabled                  bool           `json:"mfaEnabled"`
+	MFARequired                 bool           `json:"mfaRequired"`
 	EmailChangeEnabled          bool           `json:"emailChangeEnabled"`
 	EmailChangeRequiresPassword bool           `json:"emailChangeRequiresPassword"`
 	Templates                   AuthTemplates  `json:"templates"`
@@ -48,6 +50,8 @@ type ProjectAuthSettingsInput struct {
 	ResetTokenHours             int            `json:"resetTokenHours"`
 	OTPEnabled                  *bool          `json:"otpEnabled,omitempty"`
 	OTPTokenMinutes             int            `json:"otpTokenMinutes"`
+	MFAEnabled                  *bool          `json:"mfaEnabled,omitempty"`
+	MFARequired                 *bool          `json:"mfaRequired,omitempty"`
 	EmailChangeEnabled          *bool          `json:"emailChangeEnabled,omitempty"`
 	EmailChangeRequiresPassword *bool          `json:"emailChangeRequiresPassword,omitempty"`
 	Templates                   AuthTemplates  `json:"templates"`
@@ -86,12 +90,12 @@ func GetProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, projectSlug
 	return settings, nil
 }
 
-func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID string, projectSlug string, input ProjectAuthSettingsInput, ip string, userAgent string) (*ProjectAuthSettings, error) {
+func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, cfg *Config, adminID string, projectSlug string, input ProjectAuthSettingsInput, ip string, userAgent string) (*ProjectAuthSettings, error) {
 	project, err := GetProject(ctx, pool, projectSlug)
 	if err != nil {
 		return nil, err
 	}
-	current, err := getProjectAuthSettingsByProject(ctx, pool, project)
+	current, err := getProjectAuthSettingsByProjectPrivate(ctx, pool, project)
 	if err != nil {
 		return nil, err
 	}
@@ -114,6 +118,12 @@ func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID 
 	if input.OTPTokenMinutes != 0 {
 		next.OTPTokenMinutes = input.OTPTokenMinutes
 	}
+	if input.MFAEnabled != nil {
+		next.MFAEnabled = *input.MFAEnabled
+	}
+	if input.MFARequired != nil {
+		next.MFARequired = *input.MFARequired
+	}
 	if input.EmailChangeEnabled != nil {
 		next.EmailChangeEnabled = *input.EmailChangeEnabled
 	}
@@ -122,7 +132,11 @@ func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID 
 	}
 	next.Templates = mergeAuthTemplates(defaultAuthTemplates(), input.Templates)
 	if input.Providers != nil {
-		next.Providers = sanitizeAuthProviders(input.Providers)
+		providers, err := normalizeAuthProviders(cfg, current.Providers, input.Providers)
+		if err != nil {
+			return nil, err
+		}
+		next.Providers = providers
 	}
 	if err := validateProjectAuthSettings(&next); err != nil {
 		return nil, err
@@ -142,8 +156,8 @@ func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID 
 	defer tx.Rollback(ctx)
 	if err := tx.QueryRow(ctx, `
 		insert into _dbo.project_auth_settings
-			(project_id, access_token_minutes, refresh_token_days, verify_token_hours, reset_token_hours, otp_enabled, otp_token_minutes, email_change_enabled, email_change_requires_password, templates, providers)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb)
+			(project_id, access_token_minutes, refresh_token_days, verify_token_hours, reset_token_hours, otp_enabled, otp_token_minutes, mfa_enabled, mfa_required, email_change_enabled, email_change_requires_password, templates, providers)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb)
 		on conflict (project_id) do update
 		set access_token_minutes = excluded.access_token_minutes,
 			refresh_token_days = excluded.refresh_token_days,
@@ -151,6 +165,8 @@ func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID 
 			reset_token_hours = excluded.reset_token_hours,
 			otp_enabled = excluded.otp_enabled,
 			otp_token_minutes = excluded.otp_token_minutes,
+			mfa_enabled = excluded.mfa_enabled,
+			mfa_required = excluded.mfa_required,
 			email_change_enabled = excluded.email_change_enabled,
 			email_change_requires_password = excluded.email_change_requires_password,
 			templates = excluded.templates,
@@ -164,6 +180,8 @@ func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID 
 		next.ResetTokenHours,
 		next.OTPEnabled,
 		next.OTPTokenMinutes,
+		next.MFAEnabled,
+		next.MFARequired,
 		next.EmailChangeEnabled,
 		next.EmailChangeRequiresPassword,
 		templates,
@@ -186,6 +204,8 @@ func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID 
 			"resetTokenHours":             next.ResetTokenHours,
 			"otpEnabled":                  next.OTPEnabled,
 			"otpTokenMinutes":             next.OTPTokenMinutes,
+			"mfaEnabled":                  next.MFAEnabled,
+			"mfaRequired":                 next.MFARequired,
 			"emailChangeEnabled":          next.EmailChangeEnabled,
 			"emailChangeRequiresPassword": next.EmailChangeRequiresPassword,
 			"oauthProviderCount":          len(next.Providers),
@@ -193,18 +213,34 @@ func UpdateProjectAuthSettings(ctx context.Context, pool *pgxpool.Pool, adminID 
 	}); err != nil {
 		return nil, err
 	}
-	return &next, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	next.Providers = publicAuthProviders(next.Providers)
+	return &next, nil
 }
 
 func getProjectAuthSettingsByProject(ctx context.Context, q interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }, project *Project) (*ProjectAuthSettings, error) {
+	return getProjectAuthSettingsByProjectMode(ctx, q, project, false)
+}
+
+func getProjectAuthSettingsByProjectPrivate(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, project *Project) (*ProjectAuthSettings, error) {
+	return getProjectAuthSettingsByProjectMode(ctx, q, project, true)
+}
+
+func getProjectAuthSettingsByProjectMode(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, project *Project, includePrivate bool) (*ProjectAuthSettings, error) {
 	settings := DefaultProjectAuthSettings(project)
 	var rawTemplates []byte
 	var rawProviders []byte
 	err := q.QueryRow(ctx, `
 		select access_token_minutes, refresh_token_days, verify_token_hours, reset_token_hours,
-		       otp_enabled, otp_token_minutes, email_change_enabled, email_change_requires_password,
+		       otp_enabled, otp_token_minutes, mfa_enabled, mfa_required, email_change_enabled, email_change_requires_password,
 		       templates, providers, created_at, updated_at
 		from _dbo.project_auth_settings
 		where project_id = $1`,
@@ -216,6 +252,8 @@ func getProjectAuthSettingsByProject(ctx context.Context, q interface {
 		&settings.ResetTokenHours,
 		&settings.OTPEnabled,
 		&settings.OTPTokenMinutes,
+		&settings.MFAEnabled,
+		&settings.MFARequired,
 		&settings.EmailChangeEnabled,
 		&settings.EmailChangeRequiresPassword,
 		&rawTemplates,
@@ -242,6 +280,9 @@ func getProjectAuthSettingsByProject(ctx context.Context, q interface {
 	}
 	if err := validateProjectAuthSettings(settings); err != nil {
 		return DefaultProjectAuthSettings(project), nil
+	}
+	if !includePrivate {
+		settings.Providers = publicAuthProviders(settings.Providers)
 	}
 	return settings, nil
 }
@@ -352,45 +393,112 @@ func defaultAuthTemplates() AuthTemplates {
 	}
 }
 
-func sanitizeAuthProviders(input map[string]any) map[string]any {
+func normalizeAuthProviders(cfg *Config, current map[string]any, input map[string]any) (map[string]any, error) {
 	out := map[string]any{}
 	for key, value := range input {
 		key = strings.ToLower(strings.TrimSpace(key))
-		if key == "" || len(key) > 50 {
+		if key == "" || len(key) > 50 || strings.ContainsAny(key, "\r\n\t /\\") {
 			continue
 		}
-		if strings.ContainsAny(key, "\r\n\t /\\") {
+		raw, ok := value.(map[string]any)
+		if !ok {
 			continue
 		}
-		out[key] = redactProviderSecrets(value)
+		currentRaw, _ := current[key].(map[string]any)
+		next, err := normalizeAuthProvider(cfg, currentRaw, raw)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = next
 	}
-	return out
+	return out, nil
 }
 
-func redactProviderSecrets(value any) any {
-	switch raw := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(raw))
-		for key, item := range raw {
-			lower := strings.ToLower(key)
-			if strings.Contains(lower, "secret") || strings.Contains(lower, "password") {
-				if strings.TrimSpace(fmt.Sprint(item)) != "" {
-					out[key] = "[set]"
-				}
+func normalizeAuthProvider(cfg *Config, current map[string]any, input map[string]any) (map[string]any, error) {
+	out := map[string]any{}
+	for key, item := range input {
+		key = strings.TrimSpace(key)
+		lower := strings.ToLower(key)
+		switch {
+		case key == "":
+			continue
+		case lower == "clientsecretcipher" || lower == "secretcipher" || strings.HasSuffix(lower, "cipher"):
+			continue
+		case lower == "clientsecret" || lower == "secret" || strings.Contains(lower, "password"):
+			secret := strings.TrimSpace(fmt.Sprint(item))
+			if secret == "" || secret == "[set]" {
 				continue
 			}
-			out[key] = redactProviderSecrets(item)
+			if cfg == nil {
+				return nil, fmt.Errorf("%w: JWT_SECRET is required for OAuth provider secrets", ErrValidation)
+			}
+			ciphertext, err := encryptSecret(cfg.JWTSecret, secret)
+			if err != nil {
+				return nil, err
+			}
+			out["clientSecretCipher"] = ciphertext
+		case lower == "clearclientsecret":
+			continue
+		default:
+			out[key] = sanitizeProviderValue(item)
 		}
-		return out
+	}
+	clearSecret, _ := input["clearClientSecret"].(bool)
+	if !clearSecret && out["clientSecretCipher"] == nil {
+		if cipherText, _ := current["clientSecretCipher"].(string); strings.TrimSpace(cipherText) != "" {
+			out["clientSecretCipher"] = cipherText
+		}
+	}
+	return out, nil
+}
+
+func sanitizeProviderValue(value any) any {
+	switch raw := value.(type) {
+	case string:
+		return strings.TrimSpace(raw)
+	case bool:
+		return raw
+	case float64, int, int64:
+		return raw
 	case []any:
-		out := make([]any, len(raw))
-		for i := range raw {
-			out[i] = redactProviderSecrets(raw[i])
+		out := make([]any, 0, len(raw))
+		for _, item := range raw {
+			if text := strings.TrimSpace(fmt.Sprint(item)); text != "" {
+				out = append(out, text)
+			}
 		}
 		return out
 	default:
-		return value
+		return fmt.Sprint(raw)
 	}
+}
+
+func publicAuthProviders(input map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range input {
+		raw, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		item := map[string]any{}
+		for field, fieldValue := range raw {
+			lower := strings.ToLower(field)
+			switch {
+			case lower == "clientsecretcipher" || lower == "secretcipher" || strings.HasSuffix(lower, "cipher"):
+				if strings.TrimSpace(fmt.Sprint(fieldValue)) != "" {
+					item["clientSecretSet"] = true
+				}
+			case lower == "clientsecret" || lower == "secret" || strings.Contains(lower, "password"):
+				if strings.TrimSpace(fmt.Sprint(fieldValue)) != "" {
+					item["clientSecretSet"] = true
+				}
+			default:
+				item[field] = fieldValue
+			}
+		}
+		out[key] = item
+	}
+	return out
 }
 
 func (s ProjectAuthSettings) AccessTokenTTL() time.Duration {

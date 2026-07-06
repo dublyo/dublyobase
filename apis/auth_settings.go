@@ -21,7 +21,7 @@ func (s *server) adminUpdateProjectAuthSettings(w http.ResponseWriter, r *http.R
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	settings, err := core.UpdateProjectAuthSettings(r.Context(), s.app.Pool, auth.Admin.ID, r.PathValue("slug"), req, s.clientIP(r), r.UserAgent())
+	settings, err := core.UpdateProjectAuthSettings(r.Context(), s.app.Pool, s.app.Config, auth.Admin.ID, r.PathValue("slug"), req, s.clientIP(r), r.UserAgent())
 	if err != nil {
 		writeCoreError(w, err)
 		return

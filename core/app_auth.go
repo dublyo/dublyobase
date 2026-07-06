@@ -15,11 +15,14 @@ import (
 )
 
 type AppAuthResult struct {
-	Token            string    `json:"token"`
-	ExpiresAt        time.Time `json:"expiresAt"`
-	RefreshToken     string    `json:"refreshToken"`
-	RefreshExpiresAt time.Time `json:"refreshExpiresAt"`
-	User             AppUser   `json:"user"`
+	Token            string     `json:"token,omitempty"`
+	ExpiresAt        time.Time  `json:"expiresAt,omitempty"`
+	RefreshToken     string     `json:"refreshToken,omitempty"`
+	RefreshExpiresAt time.Time  `json:"refreshExpiresAt,omitempty"`
+	User             AppUser    `json:"user"`
+	MFARequired      bool       `json:"mfaRequired,omitempty"`
+	MFAToken         string     `json:"mfaToken,omitempty"`
+	MFAExpiresAt     *time.Time `json:"mfaExpiresAt,omitempty"`
 }
 
 type AuthTokenRequestResult struct {
@@ -190,6 +193,28 @@ func LoginAppUser(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectS
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, ErrUserDisabled
+	}
+	if required, err := mfaLoginRequiredTx(ctx, tx, project.ID, cred.ID, authSettings); err != nil {
+		return nil, err
+	} else if required {
+		result, err := createMFAChallengeTx(ctx, tx, project.ID, cred.AppUser, ip, userAgent, now)
+		if err != nil {
+			return nil, err
+		}
+		if err := InsertAudit(ctx, tx, AuditEvent{
+			Action:     "app_user.login_mfa_required",
+			TargetType: "app_user",
+			TargetID:   cred.ID,
+			IP:         ip,
+			UserAgent:  userAgent,
+			Data:       map[string]any{"project": project.Slug, "collection": authUsersCollection},
+		}); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
 	refreshToken, session, err := createAppSessionTx(ctx, tx, project.ID, cred.ID, "", ip, userAgent, now, authSettings.RefreshTokenTTL())
 	if err != nil {
@@ -587,6 +612,31 @@ func LoginAppUserWithOTP(ctx context.Context, pool *pgxpool.Pool, cfg *Config, p
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, ErrUserDisabled
+	}
+	if required, err := mfaLoginRequiredTx(ctx, tx, project.ID, user.ID, settings); err != nil {
+		return nil, err
+	} else if required {
+		result, err := createMFAChallengeTx(ctx, tx, project.ID, user.AppUser, ip, userAgent, now)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `update _dbo.auth_tokens set used_at = $1 where id = $2`, now.UTC(), authToken.ID); err != nil {
+			return nil, err
+		}
+		if err := InsertAudit(ctx, tx, AuditEvent{
+			Action:     "app_user.login_otp_mfa_required",
+			TargetType: "app_user",
+			TargetID:   user.ID,
+			IP:         ip,
+			UserAgent:  userAgent,
+			Data:       map[string]any{"project": project.Slug, "collection": authUsersCollection},
+		}); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
 	refreshToken, session, err := createAppSessionTx(ctx, tx, project.ID, user.ID, "", ip, userAgent, now, settings.RefreshTokenTTL())
 	if err != nil {

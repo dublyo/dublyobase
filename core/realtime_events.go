@@ -28,8 +28,12 @@ func InsertRealtimeEvent(ctx context.Context, pool *pgxpool.Pool, sourceID strin
 		return err
 	}
 	_, err = pool.Exec(ctx, `
-		insert into _dbo.realtime_events (source_id, project_slug, collection, action, record_id, record)
-		values ($1, $2, $3, $4, $5, $6::jsonb)`,
+		with inserted as (
+			insert into _dbo.realtime_events (source_id, project_slug, collection, action, record_id, record)
+			values ($1, $2, $3, $4, $5, $6::jsonb)
+			returning id::text
+		)
+		select pg_notify('dbo_realtime', (select id from inserted))`,
 		sourceID,
 		projectSlug,
 		collection,

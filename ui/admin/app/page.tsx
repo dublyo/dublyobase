@@ -70,6 +70,8 @@ import {
   ApiError,
   changeAdminEmail,
   changeAdminPassword,
+  clearAuditLog,
+  clearRequestLogs,
   createAdmin,
   createAPIKey,
   createBackupJob,
@@ -101,6 +103,7 @@ import {
   listCronJobs,
   listCronRuns,
   listMCPTokens,
+  listOpsAlerts,
   listProjects,
   listRecords,
   listRequestLogs,
@@ -111,6 +114,7 @@ import {
   me,
   revokeAPIKey,
   revokeMCPToken,
+  resolveOpsAlert,
   restoreBackup,
   runBackupJob,
   runCronJob,
@@ -129,7 +133,7 @@ import {
   uploadFile,
   backupDownloadURL,
 } from "../src/lib/api";
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InstanceSettings, MCPToken, Project, ProjectAuthSettings, ProjectMetrics, ProjectQuotas, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "../src/lib/types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionOptions, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InstanceSettings, MCPToken, OpsAlert, Project, ProjectAuthSettings, ProjectMetrics, ProjectQuotas, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "../src/lib/types";
 
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
@@ -394,6 +398,7 @@ export default function AdminApp() {
   const [projectQuotas, setProjectQuotas] = useState<ProjectQuotas | null>(null);
   const [quotaDraft, setQuotaDraft] = useState(emptyQuotaDraft);
   const [projectMetrics, setProjectMetrics] = useState<ProjectMetrics | null>(null);
+  const [opsAlerts, setOpsAlerts] = useState<OpsAlert[]>([]);
   const [adminUsers, setAdminUsers] = useState<Admin[]>([]);
   const [adminDraft, setAdminDraft] = useState(emptyAdminDraft);
   const [oneTimeAdmin, setOneTimeAdmin] = useState<{ email: string; password: string } | null>(null);
@@ -500,7 +505,7 @@ export default function AdminApp() {
   const loadProjectData = useCallback(
     async (authToken: string, projectSlug: string, preferredCollection?: string) => {
       if (!projectSlug) return;
-      const [collectionResponse, keysResponse, auditResponse, requestResponse, authResponse, quotaResponse, metricsResponse, webhookResponse] = await Promise.all([
+      const [collectionResponse, keysResponse, auditResponse, requestResponse, authResponse, quotaResponse, metricsResponse, alertsResponse, webhookResponse] = await Promise.all([
         listCollections(authToken, projectSlug),
         listAPIKeys(authToken, projectSlug),
         listAudit(authToken, { project: projectSlug, page: 1, perPage: auditPerPage, ...auditFilters }),
@@ -508,6 +513,7 @@ export default function AdminApp() {
         getProjectAuthSettings(authToken, projectSlug),
         getProjectQuotas(authToken, projectSlug),
         getProjectMetrics(authToken, projectSlug, 24),
+        listOpsAlerts(authToken, projectSlug),
         listWebhooks(authToken, projectSlug),
       ]);
       setCollections(collectionResponse.items);
@@ -519,6 +525,7 @@ export default function AdminApp() {
       setProjectQuotas(quotaResponse);
       setQuotaDraft(quotasToDraft(quotaResponse));
       setProjectMetrics(metricsResponse);
+      setOpsAlerts(alertsResponse.items);
       setWebhooks(webhookResponse.items);
       const targetCollection = preferredCollection ?? selectedCollection;
       const currentExists = collectionResponse.items.some((collection) => collection.name === targetCollection);
@@ -582,6 +589,7 @@ export default function AdminApp() {
           setProjectQuotas(null);
           setQuotaDraft(emptyQuotaDraft);
           setProjectMetrics(null);
+          setOpsAlerts([]);
           setWebhooks([]);
         }
       } catch (error) {
@@ -866,6 +874,8 @@ export default function AdminApp() {
       setQuotaDraft(quotasToDraft(response));
       const metrics = await getProjectMetrics(token, selectedProject, 24);
       setProjectMetrics(metrics);
+      const alerts = await listOpsAlerts(token, selectedProject, true);
+      setOpsAlerts(alerts.items);
       showNotice("success", "Project quotas saved");
     } catch (error) {
       handleError(error);
@@ -880,7 +890,23 @@ export default function AdminApp() {
     try {
       const response = await getProjectMetrics(token, selectedProject, 24);
       setProjectMetrics(response);
+      const alerts = await listOpsAlerts(token, selectedProject, true);
+      setOpsAlerts(alerts.items);
       showNotice("success", "Metrics refreshed");
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resolveProjectAlert(id: string) {
+    if (!token || !selectedProject) return;
+    setBusy(true);
+    try {
+      await resolveOpsAlert(token, selectedProject, id);
+      setOpsAlerts((items) => items.filter((item) => item.id !== id));
+      showNotice("success", "Alert resolved");
     } catch (error) {
       handleError(error);
     } finally {
@@ -931,6 +957,28 @@ export default function AdminApp() {
       showNotice("success", `Super admin ${response.admin.email} created`);
       const admins = await listAdmins(token);
       setAdminUsers(admins.items);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearCurrentLogs() {
+    if (!token) return;
+    const label = logMode === "audit" ? "audit log" : "request log";
+    if (!window.confirm(`Clear the entire ${label} table? This cannot be undone.`)) return;
+    setBusy(true);
+    try {
+      const response = logMode === "audit" ? await clearAuditLog(token) : await clearRequestLogs(token);
+      if (logMode === "audit") {
+        setAudit({ items: [], page: 1, perPage: auditPerPage, totalItems: 0 });
+        await refreshAudit(1, auditPerPage);
+      } else {
+        setRequestLogs({ items: [], page: 1, perPage: requestPerPage, totalItems: 0 });
+        await refreshRequestLogs(1, requestPerPage);
+      }
+      showNotice("success", `Cleared ${formatCount(response.deleted)} ${logMode === "audit" ? "audit entries" : "request logs"}.`);
     } catch (error) {
       handleError(error);
     } finally {
@@ -1775,6 +1823,7 @@ export default function AdminApp() {
           onRequestFilterChange={setRequestFilters}
           onSaveLogSettings={saveLogSettings}
           onRefresh={() => void (logMode === "audit" ? refreshAudit() : refreshRequestLogs())}
+          onClearLogs={() => void clearCurrentLogs()}
           onPageChange={(page) => {
             void refreshAudit(page);
           }}
@@ -1811,8 +1860,10 @@ export default function AdminApp() {
           quotaDraft={quotaDraft}
           setQuotaDraft={setQuotaDraft}
           projectMetrics={projectMetrics}
+          opsAlerts={opsAlerts}
           onSaveQuotas={saveQuotaSettings}
           onRefreshMetrics={refreshProjectMetrics}
+          onResolveOpsAlert={resolveProjectAlert}
           onOpenAuth={() => changeSettings("auth")}
           onOpenMail={() => changeSettings("mail")}
           onOpenFiles={() => changeSettings("files")}
@@ -3577,9 +3628,17 @@ function JSONFieldEditor({ value, onChange }: { value: unknown; onChange: (value
 
 function APIPreviewModal({ project, collection, onClose, onCopy }: { project: string; collection: Collection; onClose: () => void; onCopy: (text: string) => void }) {
   const [tab, setTab] = useState("list");
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
   const basePath = `/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection.name)}`;
   const authBase = `/api/projects/${encodeURIComponent(project)}/auth`;
   const realtimePath = `/api/projects/${encodeURIComponent(project)}/realtime?collection=${encodeURIComponent(collection.name)}&events=create,update,delete`;
+  const realtimeWSPath = `/api/projects/${encodeURIComponent(project)}/realtime/ws?collection=${encodeURIComponent(collection.name)}&events=create,update,delete&channel=${encodeURIComponent(collection.name)}`;
   const primaryKeyField = collectionPrimaryKeyFieldName(collection);
   const hasStandardColumns = collectionStandardSystemColumns(collection);
   const searchableField = collection.fields.find((field) => field.searchable && canSearchField(field));
@@ -3667,6 +3726,28 @@ source.addEventListener("record.update", (event) => console.log(JSON.parse(event
 source.addEventListener("record.delete", (event) => console.log(JSON.parse(event.data)));`,
       params: ["collection", "events", "token or Authorization"],
     },
+    websocket: {
+      title: "WebSocket realtime",
+      detail: "WebSocket supports record events, channel broadcasts, presence updates, and Postgres-backed fanout across replicas.",
+      code: `const ws = new WebSocket("${realtimeWSPath}&token=" + encodeURIComponent(accessToken));
+ws.addEventListener("message", (event) => {
+  const message = JSON.parse(event.data);
+  if (message.type === "ready") {
+    ws.send(JSON.stringify({ type: "presence.update", state: { status: "online" } }));
+  }
+  if (message.type === "record.create") console.log("created", message.data);
+  if (message.type === "broadcast") console.log("broadcast", message.event, message.payload);
+});
+
+ws.addEventListener("open", () => {
+  ws.send(JSON.stringify({
+    type: "broadcast",
+    event: "client.ready",
+    payload: { collection: "${collection.name}" }
+  }));
+});`,
+      params: ["channel", "collection", "events", "presence.update", "broadcast"],
+    },
     files: {
       title: "Files",
       detail: "Upload to file fields with multipart form data; protected files use short-lived file tokens.",
@@ -3691,6 +3772,24 @@ curl -X POST "${`/api/projects/${encodeURIComponent(project)}/files/${encodeURIC
 
 		POST ${authBase}/login-otp
 		{"email":"user@example.com","token":"dbo_otp_..."}
+
+		GET ${authBase}/oauth/google/start?format=json
+		GET ${authBase}/oauth/facebook/start?format=json
+		GET ${authBase}/oauth/github/start?format=json
+
+		POST ${authBase}/mfa/enroll
+		Authorization: Bearer $ACCESS_TOKEN
+		{"name":"Authenticator app"}
+
+		POST ${authBase}/mfa/confirm
+		Authorization: Bearer $ACCESS_TOKEN
+		{"factorId":"...","code":"123456"}
+
+		POST ${authBase}/mfa/verify
+		{"mfaToken":"dbo_mfa_...","code":"123456"}
+
+		POST ${authBase}/mfa/recovery
+		{"mfaToken":"dbo_mfa_...","code":"xxxx-yyyy-zzzz-1111"}
 
 		POST ${authBase}/refresh
 		{"refreshToken":"..."}
@@ -3759,6 +3858,22 @@ export function subscribe${pascalCase(collection.name)}(token, onEvent) {
   });
   return () => source.close();
 }`,
+    },
+    typedSdk: {
+      title: "Generated TypeScript SDK",
+      detail: "Download project-specific collection types and a small fetch client generated from the current schema.",
+      code: `curl "${`/admin/api/projects/${encodeURIComponent(project)}/sdk/typescript`}" \\
+  -H "Authorization: Bearer $DUBLYO_ADMIN_TOKEN" \\
+  -o dublyobase-client.ts
+
+import { DublyobaseClient } from "./dublyobase-client";
+
+const client = new DublyobaseClient("https://your-dublyobase.app", "${project}", accessToken);
+const records = await client.list("${collection.name}", {
+  page: 1,
+  perPage: 25,
+  filter: ${JSON.stringify(filterObject)}
+});`,
     },
     responses: {
       title: "Response shapes",
@@ -3873,6 +3988,7 @@ function LogsView({
   onRequestFilterChange,
   onSaveLogSettings,
   onRefresh,
+  onClearLogs,
   onPageChange,
   onRequestPageChange,
   onPageSizeChange,
@@ -3895,6 +4011,7 @@ function LogsView({
   onRequestFilterChange: React.Dispatch<React.SetStateAction<typeof emptyRequestFilters>>;
   onSaveLogSettings: (event: React.FormEvent<HTMLFormElement>) => void;
   onRefresh: () => void;
+  onClearLogs: () => void;
   onPageChange: (page: number) => void;
   onRequestPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: (typeof recordPageSizes)[number]) => void;
@@ -3931,6 +4048,10 @@ function LogsView({
             <button type="button" onClick={onRefresh} className="pb-btn outline">
               <RefreshCw className="h-4 w-4" />
               Refresh
+            </button>
+            <button type="button" onClick={onClearLogs} className="pb-btn danger">
+              <Trash2 className="h-4 w-4" />
+              Clear log table
             </button>
           </div>
         </header>
@@ -4310,8 +4431,10 @@ function SettingsWorkspace(props: {
   quotaDraft: typeof emptyQuotaDraft;
   setQuotaDraft: React.Dispatch<React.SetStateAction<typeof emptyQuotaDraft>>;
   projectMetrics: ProjectMetrics | null;
+  opsAlerts: OpsAlert[];
   onSaveQuotas: (event: React.FormEvent<HTMLFormElement>) => void;
   onRefreshMetrics: () => void;
+  onResolveOpsAlert: (id: string) => void;
   onOpenAuth: () => void;
   onOpenMail: () => void;
   onOpenFiles: () => void;
@@ -4641,7 +4764,7 @@ function AuthSettingsPanel({
   const oauthProviders = [
     { id: "google", label: "Google", authURL: "https://accounts.google.com/o/oauth2/v2/auth", tokenURL: "https://oauth2.googleapis.com/token", userInfoURL: "https://openidconnect.googleapis.com/v1/userinfo", scopes: "openid email profile" },
     { id: "github", label: "GitHub", authURL: "https://github.com/login/oauth/authorize", tokenURL: "https://github.com/login/oauth/access_token", userInfoURL: "https://api.github.com/user", scopes: "read:user user:email" },
-    { id: "apple", label: "Apple", authURL: "https://appleid.apple.com/auth/authorize", tokenURL: "https://appleid.apple.com/auth/token", userInfoURL: "", scopes: "name email" },
+    { id: "facebook", label: "Facebook", authURL: "https://www.facebook.com/v25.0/dialog/oauth", tokenURL: "https://graph.facebook.com/v25.0/oauth/access_token", userInfoURL: "https://graph.facebook.com/v25.0/me?fields=id,email,name,picture", scopes: "email public_profile" },
     { id: "oidc", label: "OIDC", authURL: "", tokenURL: "", userInfoURL: "", scopes: "openid email profile" },
   ];
   function providerConfig(id: string): Record<string, unknown> {
@@ -4672,6 +4795,13 @@ function AuthSettingsPanel({
     ["POST", `${base}/auth/login`, "Email/password login"],
     ["POST", `${base}/auth/request-otp`, "Send one-time login code"],
     ["POST", `${base}/auth/login-otp`, "Login with one-time code"],
+    ["GET", `${base}/auth/oauth/{provider}/start`, "Start OAuth login"],
+    ["GET", `${base}/auth/oauth/{provider}/callback`, "OAuth provider callback"],
+    ["POST", `${base}/auth/mfa/enroll`, "Start TOTP MFA enrollment"],
+    ["POST", `${base}/auth/mfa/confirm`, "Confirm TOTP and receive recovery codes"],
+    ["POST", `${base}/auth/mfa/verify`, "Finish login with MFA code"],
+    ["POST", `${base}/auth/mfa/recovery`, "Finish login with recovery code"],
+    ["POST", `${base}/auth/mfa/disable`, "Disable MFA for current app user"],
     ["POST", `${base}/auth/refresh`, "Rotate refresh token"],
     ["GET", `${base}/auth/sessions`, "List app user sessions"],
     ["GET", `${base}/auth/me`, "Current app user"],
@@ -4755,6 +4885,18 @@ POST ${base}/auth/login-otp
   "email": "user@example.com",
   "token": "dbo_otp_..."
 }`}</pre>
+          <pre className="pb-code-box">{`GET ${base}/auth/oauth/google/start?format=json
+
+POST ${base}/auth/mfa/enroll
+Authorization: Bearer $ACCESS_TOKEN
+{"name":"Authenticator app"}
+
+POST ${base}/auth/mfa/confirm
+Authorization: Bearer $ACCESS_TOKEN
+{"factorId":"...","code":"123456"}
+
+POST ${base}/auth/mfa/verify
+{"mfaToken":"dbo_mfa_...","code":"123456"}`}</pre>
         </div>
       </section>
       <section className="pb-settings-block">
@@ -4769,6 +4911,14 @@ POST ${base}/auth/login-otp
         <label className="pb-checkline switchline">
           <input type="checkbox" checked={draft.otpEnabled} onChange={(event) => updateDraft({ otpEnabled: event.target.checked })} />
           Enable email one-time password login
+        </label>
+        <label className="pb-checkline switchline">
+          <input type="checkbox" checked={draft.mfaEnabled} onChange={(event) => updateDraft({ mfaEnabled: event.target.checked })} />
+          Enable TOTP multi-factor auth enrollment
+        </label>
+        <label className="pb-checkline switchline">
+          <input type="checkbox" checked={draft.mfaRequired} onChange={(event) => updateDraft({ mfaRequired: event.target.checked })} />
+          Mark MFA as required for projects that enforce enrollment in the app UI
         </label>
         <label className="pb-checkline switchline">
           <input type="checkbox" checked={draft.emailChangeEnabled} onChange={(event) => updateDraft({ emailChangeEnabled: event.target.checked })} />
@@ -4848,10 +4998,11 @@ POST ${base}/auth/login-otp
       </section>
       <section className="pb-settings-block">
         <h2>Providers and factors</h2>
-        <div className="pb-inline-alert info">OAuth provider settings can be saved now so projects can document callback URLs and credentials before full OAuth execution is enabled.</div>
+        <div className="pb-inline-alert info">OAuth providers run through Dublyobase callbacks. Leave the secret field blank to keep a saved secret.</div>
         <div className="pb-provider-grid">
           {oauthProviders.map((provider) => {
             const clientSecret = providerString(provider.id, "clientSecret");
+            const secretSaved = providerBool(provider.id, "clientSecretSet");
             return (
               <div key={provider.id} className="pb-provider-tile oauth">
                 <div className="pb-provider-tile-head">
@@ -4867,7 +5018,7 @@ POST ${base}/auth/login-otp
                 </div>
                 <div className="pb-grid-form two compact">
                   <LabeledInput label="Client ID" value={providerString(provider.id, "clientId")} onChange={(value) => updateProvider(provider.id, { clientId: value })} />
-                  <LabeledInput label={clientSecret === "[set]" ? "Client secret (saved)" : "Client secret"} value={clientSecret === "[set]" ? "" : clientSecret} onChange={(value) => updateProvider(provider.id, { clientSecret: value })} />
+                  <LabeledInput label={secretSaved ? "Client secret (saved)" : "Client secret"} value={clientSecret} onChange={(value) => updateProvider(provider.id, { clientSecret: value })} />
                   <LabeledInput label="Auth URL" value={providerString(provider.id, "authURL", provider.authURL)} onChange={(value) => updateProvider(provider.id, { authURL: value })} />
                   <LabeledInput label="Token URL" value={providerString(provider.id, "tokenURL", provider.tokenURL)} onChange={(value) => updateProvider(provider.id, { tokenURL: value })} />
                   <LabeledInput label="User info URL" value={providerString(provider.id, "userInfoURL", provider.userInfoURL)} onChange={(value) => updateProvider(provider.id, { userInfoURL: value })} />
@@ -4878,7 +5029,7 @@ POST ${base}/auth/login-otp
           })}
           {[
             ["One-time password", draft.otpEnabled ? "Enabled for email-code login." : "Disabled for this project."],
-            ["Multi-factor auth", "Planned after OTP and recovery-code policy are designed."],
+            ["Multi-factor auth", draft.mfaEnabled ? "Enabled with TOTP challenges and recovery codes." : "Disabled for this project."],
             ["Email change", draft.emailChangeEnabled ? "Enabled for app users." : "Disabled for app users."],
           ].map(([label, note]) => (
             <div key={label} className="pb-provider-tile disabled">
@@ -4901,16 +5052,20 @@ function QuotasSettingsPanel({
   quotaDraft,
   setQuotaDraft,
   projectMetrics,
+  opsAlerts,
   onSaveQuotas,
   onRefreshMetrics,
+  onResolveOpsAlert,
 }: {
   project: Project | null;
   projectQuotas: ProjectQuotas | null;
   quotaDraft: typeof emptyQuotaDraft;
   setQuotaDraft: React.Dispatch<React.SetStateAction<typeof emptyQuotaDraft>>;
   projectMetrics: ProjectMetrics | null;
+  opsAlerts: OpsAlert[];
   onSaveQuotas: (event: React.FormEvent<HTMLFormElement>) => void;
   onRefreshMetrics: () => void;
+  onResolveOpsAlert: (id: string) => void;
 }) {
   const quotaEnabled = projectQuotas?.enabled ?? quotaDraft.enabled;
   return (
@@ -4959,6 +5114,27 @@ function QuotasSettingsPanel({
           <Info label="Errors" value={formatCount(projectMetrics?.requests.errors ?? 0)} />
           <Info label="Avg duration" value={`${Math.round(projectMetrics?.requests.avgDurationMs ?? 0)} ms`} />
           <Info label="P95 duration" value={`${Math.round(projectMetrics?.requests.p95DurationMs ?? 0)} ms`} />
+        </div>
+        <div className="pb-settings-subsection">
+          <h3>Ops alerts</h3>
+          {opsAlerts.length ? (
+            <div className="pb-list-stack">
+              {opsAlerts.map((alert) => (
+                <div key={alert.id} className={`pb-inline-alert ${alert.severity === "critical" ? "danger" : "info"}`}>
+                  <div>
+                    <strong>{alert.code}</strong>
+                    <p>{alert.message}</p>
+                    <small>{formatDate(alert.createdAt)}</small>
+                  </div>
+                  <button type="button" className="pb-btn sm secondary" onClick={() => onResolveOpsAlert(alert.id)}>
+                    Resolve
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="pb-muted-copy">No active alerts for the selected project.</p>
+          )}
         </div>
       </section>
     </div>
@@ -7205,6 +7381,8 @@ function defaultAuthSettingsForProject(project: Project | null): ProjectAuthSett
     resetTokenHours: 1,
     otpEnabled: true,
     otpTokenMinutes: 10,
+    mfaEnabled: false,
+    mfaRequired: false,
     emailChangeEnabled: true,
     emailChangeRequiresPassword: true,
     templates: {

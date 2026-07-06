@@ -189,6 +189,31 @@ func ListAuditLogFiltered(ctx context.Context, pool *pgxpool.Pool, filter AuditL
 	return result, rows.Err()
 }
 
+func ClearAuditLog(ctx context.Context, pool *pgxpool.Pool, adminID string, ip string, userAgent string) (int64, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `delete from _dbo.audit_log`)
+	if err != nil {
+		return 0, err
+	}
+	deleted := tag.RowsAffected()
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		AdminID:    &adminID,
+		Action:     "logs.audit.clear",
+		TargetType: "audit_log",
+		TargetID:   "all",
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data:       map[string]any{"deleted": deleted},
+	}); err != nil {
+		return 0, err
+	}
+	return deleted, tx.Commit(ctx)
+}
+
 func PruneAuditLog(ctx context.Context, pool *pgxpool.Pool, retentionDays int, retentionCount int) (int64, error) {
 	if retentionDays < 1 {
 		retentionDays = defaultLogRetentionDays

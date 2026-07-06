@@ -25,3 +25,13 @@ func (s *server) adminListAuditLog(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, result)
 }
+
+func (s *server) adminClearAuditLog(w http.ResponseWriter, r *http.Request) {
+	auth := adminAuth(r)
+	deleted, err := core.ClearAuditLog(r.Context(), s.app.Pool, auth.Admin.ID, s.clientIP(r), r.UserAgent())
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
+}

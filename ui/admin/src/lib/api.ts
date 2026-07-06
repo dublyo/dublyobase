@@ -1,4 +1,4 @@
-import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Health, InstanceSettings, MCPToken, Project, ProjectAuthSettings, ProjectMetrics, ProjectQuotas, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaDiscoveryResult, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "./types";
+import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionImportResult, CronJob, CronRun, Health, InstanceSettings, MCPToken, OpsAlert, Project, ProjectAuthSettings, ProjectMetrics, ProjectQuotas, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaDiscoveryResult, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "./types";
 
 type RequestOptions = RequestInit & {
   token?: string | null;
@@ -393,6 +393,20 @@ export function listRequestLogs(token: string, input: { project?: string; page?:
   return request<ApiEnvelope<RequestLogEntry>>(`/admin/api/request-logs?${params}`, { token }).then(normalizeEnvelope);
 }
 
+export function clearAuditLog(token: string) {
+  return request<{ deleted: number }>("/admin/api/audit-log", {
+    method: "DELETE",
+    token,
+  });
+}
+
+export function clearRequestLogs(token: string) {
+  return request<{ deleted: number }>("/admin/api/request-logs", {
+    method: "DELETE",
+    token,
+  });
+}
+
 function normalizeEnvelope<T>(response: ApiEnvelope<T>): ApiEnvelope<T> {
   return {
     ...response,
@@ -546,6 +560,18 @@ export function updateProjectQuotas(token: string, project: string, input: Parti
 
 export function getProjectMetrics(token: string, project: string, hours = 24) {
   return request<ProjectMetrics>(`/admin/api/projects/${encodeURIComponent(project)}/metrics?hours=${encodeURIComponent(String(hours))}`, { token });
+}
+
+export function listOpsAlerts(token: string, project: string, refresh = false) {
+  const suffix = refresh ? "?refresh=true" : "";
+  return request<ApiEnvelope<OpsAlert>>(`/admin/api/projects/${encodeURIComponent(project)}/ops/alerts${suffix}`, { token }).then(normalizeEnvelope);
+}
+
+export function resolveOpsAlert(token: string, project: string, id: string) {
+  return request<void>(`/admin/api/projects/${encodeURIComponent(project)}/ops/alerts/${encodeURIComponent(id)}/resolve`, {
+    method: "POST",
+    token,
+  });
 }
 
 export function listWebhooks(token: string, project: string) {

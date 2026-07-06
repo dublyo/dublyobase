@@ -228,6 +228,9 @@ func (s *server) resolveRecordAuth(w http.ResponseWriter, r *http.Request) (*cor
 		writeCoreError(w, err)
 		return nil, false
 	}
+	if !s.checkResolvedProjectQuota(w, r, auth) {
+		return nil, false
+	}
 	return auth, true
 }
 

@@ -3031,6 +3031,37 @@ button:disabled {
   }
 }
 
+.pb-settings-subsection {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.pb-settings-subsection h3 {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pb-list-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.pb-list-stack .pb-inline-alert {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.pb-list-stack .pb-inline-alert p {
+  margin: 2px 0;
+}
+
+.pb-list-stack .pb-inline-alert small {
+  color: var(--text-muted);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
