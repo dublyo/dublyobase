@@ -47,6 +47,7 @@ func TestValidateFields(t *testing.T) {
 		"bad autodate":     {{Name: "stamp", Type: "autodate"}},
 		"bad file mime":    {{Name: "asset", Type: "file", Options: map[string]any{"mimeTypes": []string{"plain"}}}},
 		"relation target":  {{Name: "author", Type: "relation", Options: map[string]any{"collection": "pg_class"}}},
+		"relation display": {{Name: "author", Type: "relation", Options: map[string]any{"collection": "users", "displayField": "id"}}},
 		"missing relation": {{Name: "author", Type: "relation"}},
 	}
 	for name, fields := range cases {

@@ -135,6 +135,7 @@ const TOKEN_KEY = "dublyobase.adminToken.v1";
 const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
 const recordPageSizes = [10, 25, 100, 250, 500] as const;
 const fieldTypes: FieldType[] = ["text", "editor", "password", "number", "bool", "date", "autodate", "email", "url", "select", "json", "relation", "file"];
+const reservedDataFieldNames = new Set(["cmax", "cmin", "created", "ctid", "id", "information_schema", "oid", "public", "tableoid", "updated", "xmax", "xmin"]);
 type FieldTypeChoice = {
   type?: FieldType;
   label: string;
@@ -3019,6 +3020,7 @@ function CollectionOptionsPanel({
 function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field: Field; collections: Collection[]; onChange: (field: Field) => void; readOnly?: boolean }) {
   const searchSupported = canSearchField(field);
   const relationTarget = field.type === "relation" ? collections.find((collection) => collection.name === field.options?.collection) : undefined;
+  const relationDisplayFields = relationDisplayFieldOptions(relationTarget);
   const commonOptions = (
     <div className="pb-field-options common">
       <label className="pb-field">
@@ -3092,7 +3094,7 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
         </div>
         <label className="pb-field">
           <span>Target collection</span>
-          <select value={String(field.options?.collection ?? "")} onChange={(event) => onChange(setFieldOption(field, "collection", event.target.value))}>
+          <select value={String(field.options?.collection ?? "")} onChange={(event) => onChange(setRelationTargetOption(field, event.target.value, collections))}>
             <option value="">Choose collection</option>
             {collections.map((collection) => (
               <option key={collection.id} value={collection.name}>
@@ -3105,12 +3107,13 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
           <span>Display field</span>
           <select value={String(field.options?.displayField ?? "")} onChange={(event) => onChange(setFieldOption(field, "displayField", event.target.value))} disabled={!relationTarget}>
             <option value="">Auto</option>
-            {relationTarget?.fields.filter((item) => !item.hidden && item.type !== "password").map((item) => (
+            {relationDisplayFields.map((item) => (
               <option key={item.name} value={item.name}>
                 {item.name}
               </option>
             ))}
           </select>
+          {relationTarget && relationDisplayFields.length === 0 ? <small>Reserved, hidden, and password fields cannot be used as relation labels.</small> : null}
         </label>
         <div className="pb-option-grid">
           <label className="pb-field">
@@ -3122,8 +3125,8 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
             <input type="number" min={1} value={numberOptionValue(field.options, "maxSelect")} onChange={(event) => onChange(setNumberFieldOption(field, "maxSelect", event.target.value))} placeholder="1" />
           </label>
           <label className="pb-checkline">
-            <input type="checkbox" checked={Boolean(field.options?.cascadeDelete)} onChange={(event) => onChange(setFieldOption(field, "cascadeDelete", event.target.checked))} />
-            Cascade delete
+            <input type="checkbox" checked={relationOnDeleteValue(field) === "cascade"} onChange={(event) => onChange(setFieldOption(field, "onDelete", event.target.checked ? "cascade" : "restrict"))} />
+            Cascade on target delete
           </label>
           <label className="pb-checkline">
             <input type="checkbox" checked={Boolean(field.options?.unique)} onChange={(event) => onChange(setFieldOption(field, "unique", event.target.checked))} />
@@ -3577,12 +3580,25 @@ function APIPreviewModal({ project, collection, onClose, onCopy }: { project: st
   const basePath = `/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection.name)}`;
   const authBase = `/api/projects/${encodeURIComponent(project)}/auth`;
   const realtimePath = `/api/projects/${encodeURIComponent(project)}/realtime?collection=${encodeURIComponent(collection.name)}&events=create,update,delete`;
-  const searchField = collection.fields.find((field) => field.searchable && canSearchField(field))?.name ?? "title";
-  const relationField = collection.fields.find((field) => field.type === "relation")?.name ?? "author";
-  const filterObject = { [searchField]: { _icontains: "hello" } };
+  const primaryKeyField = collectionPrimaryKeyFieldName(collection);
+  const hasStandardColumns = collectionStandardSystemColumns(collection);
+  const searchableField = collection.fields.find((field) => field.searchable && canSearchField(field));
+  const searchField = searchableField?.name ?? primaryKeyField;
+  const sortField = hasStandardColumns ? "-created" : primaryKeyField;
+  const projectionFields = Array.from(new Set([primaryKeyField, searchField, ...(hasStandardColumns ? ["created"] : [])])).join(",");
+  const searchLine = searchableField ? ` \\
+  --data-urlencode "search=hello"` : "";
+  const relationField = collection.fields.find((field) => field.type === "relation")?.name ?? "";
+  const expandLine = relationField ? ` \\
+  --data-urlencode "expand=${relationField}"` : "";
+  const filterObject = searchableField ? { [searchField]: { _icontains: "hello" } } : { [primaryKeyField]: { _eq: "record-id" } };
   const sampleBody = sampleRecordPayload(collection);
   const updateBody = sampleUpdatePayload(collection);
   const fileField = collection.fields.find((field) => field.type === "file")?.name ?? "attachment";
+  const previewNotes = [
+    collection.system ? "System collections are protected; use dedicated auth, org, or admin APIs when a normal collection route is unavailable." : "",
+    "List requests return only rows visible to the caller. RLS-hidden private rows produce an empty list; hidden single-record reads return 404.",
+  ].filter(Boolean);
   const examples: Record<string, { title: string; detail: string; code: string; params?: string[] }> = {
     list: {
       title: "List/Search records",
@@ -3591,21 +3607,18 @@ function APIPreviewModal({ project, collection, onClose, onCopy }: { project: st
   -H "Authorization: Bearer $DUBLYO_TOKEN" \\
   --data-urlencode "page=1" \\
   --data-urlencode "perPage=25" \\
-  --data-urlencode "sort=-created" \\
-  --data-urlencode "search=hello" \\
+  --data-urlencode "sort=${sortField}"${searchLine} \\
   --data-urlencode 'filter=${JSON.stringify(filterObject)}' \\
-  --data-urlencode "fields=id,${searchField},created" \\
-  --data-urlencode "expand=${relationField}" \\
+  --data-urlencode "fields=${projectionFields}"${expandLine} \\
   --data-urlencode "skipTotal=false"`,
-      params: ["page", "perPage", "sort", "search", "filter", "fields", "expand", "skipTotal"],
+      params: ["page", "perPage", "sort", ...(searchableField ? ["search"] : []), "filter", "fields", ...(relationField ? ["expand"] : []), "skipTotal"],
     },
     view: {
       title: "View one record",
       detail: "Reads a single record by primary key while preserving collection RLS rules. Use expand for first-level relation records.",
-      code: `curl -G "${basePath}/records/{id}" \\
-  -H "Authorization: Bearer $DUBLYO_TOKEN" \\
-  --data-urlencode "expand=${relationField}"`,
-      params: ["id", "expand"],
+      code: `curl -G "${basePath}/records/{${primaryKeyField}}" \\
+  -H "Authorization: Bearer $DUBLYO_TOKEN"${expandLine}`,
+      params: [primaryKeyField, ...(relationField ? ["expand"] : [])],
     },
     create: {
       title: "Create record",
@@ -3618,7 +3631,7 @@ function APIPreviewModal({ project, collection, onClose, onCopy }: { project: st
     update: {
       title: "Update record",
       detail: "Patch accepts partial JSON. Hidden, primary-key, and system fields remain protected.",
-      code: `curl -X PATCH "${basePath}/records/{id}" \\
+      code: `curl -X PATCH "${basePath}/records/{${primaryKeyField}}" \\
   -H "Authorization: Bearer $DUBLYO_TOKEN" \\
   -H "Content-Type: application/json" \\
   --data '${JSON.stringify(updateBody, null, 2)}'`,
@@ -3626,7 +3639,7 @@ function APIPreviewModal({ project, collection, onClose, onCopy }: { project: st
     delete: {
       title: "Delete record",
       detail: "Deletes the record only when delete rules allow the caller.",
-      code: `curl -X DELETE "${basePath}/records/{id}" \\
+      code: `curl -X DELETE "${basePath}/records/{${primaryKeyField}}" \\
   -H "Authorization: Bearer $DUBLYO_TOKEN"`,
     },
     batch: {
@@ -3638,11 +3651,11 @@ function APIPreviewModal({ project, collection, onClose, onCopy }: { project: st
 	  --data '{
 	    "requests": [
       { "method": "POST", "collection": "${collection.name}", "body": ${JSON.stringify(sampleBody)} },
-      { "method": "PATCH", "collection": "${collection.name}", "id": "{id}", "body": ${JSON.stringify(updateBody)} },
-      { "method": "GET", "collection": "${collection.name}", "id": "{id}" }
+      { "method": "PATCH", "collection": "${collection.name}", "id": "{${primaryKeyField}}", "body": ${JSON.stringify(updateBody)} },
+      { "method": "GET", "collection": "${collection.name}", "id": "{${primaryKeyField}}" }
     ]
   }'`,
-	      params: ["requests", "method", "collection", "id", "body"],
+	      params: ["requests", "method", "collection", primaryKeyField, "body"],
     },
     realtime: {
       title: "Realtime records",
@@ -3719,7 +3732,7 @@ export async function list${pascalCase(collection.name)}(token) {
     page: "1",
     perPage: "25",
     filter: JSON.stringify(${JSON.stringify(filterObject)}),
-    expand: "${relationField}",
+    ${relationField ? `expand: "${relationField}",` : ""}
   });
   const res = await fetch(\`\${base}/collections/${collection.name}/records?\${params}\`, {
     headers: { Authorization: \`Bearer \${token}\` },
@@ -3825,6 +3838,13 @@ export function subscribe${pascalCase(collection.name)}(token, onEvent) {
                     <span key={param} className="pb-chip">
                       {param}
                     </span>
+                  ))}
+                </div>
+              ) : null}
+              {previewNotes.length ? (
+                <div className="pb-inline-alert info">
+                  {previewNotes.map((note) => (
+                    <p key={note}>{note}</p>
                   ))}
                 </div>
               ) : null}
@@ -6841,6 +6861,15 @@ function canSearchField(field: Field): boolean {
   return ["text", "editor", "email", "url", "select", "number", "bool", "date", "autodate", "relation"].includes(field.type);
 }
 
+function isReservedDataFieldName(name: string): boolean {
+  const normalized = name.trim().toLowerCase();
+  return reservedDataFieldNames.has(normalized) || normalized.startsWith("_dbo") || normalized.startsWith("pg_");
+}
+
+function relationDisplayFieldOptions(collection?: Collection): Field[] {
+  return (collection?.fields ?? []).filter((field) => !field.hidden && field.type !== "password" && !isReservedDataFieldName(field.name));
+}
+
 function FieldTypeGlyph({ type }: { type: FieldType }) {
   const Icon = fieldTypeIcon(type);
   return <Icon className="h-4 w-4" aria-hidden="true" />;
@@ -6912,6 +6941,11 @@ function collectionReverseRelations(collectionName: string, collections: Collect
 function relationCardinality(field: Field) {
   if (Boolean(field.options?.unique) && !fieldIsMultiple(field)) return "one-to-one";
   return fieldIsMultiple(field) ? "many-to-one/many" : "many-to-one";
+}
+
+function relationOnDeleteValue(field: Field): string {
+  const raw = typeof field.options?.onDelete === "string" ? field.options.onDelete.trim() : "";
+  return raw || (field.options?.cascadeDelete ? "cascade" : "restrict");
 }
 
 function collectionIndexHints(fields: Field[]) {
@@ -7049,6 +7083,8 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
     };
   }
   if (type === "relation") {
+    const rawOnDelete = typeof options.onDelete === "string" ? options.onDelete.trim() : "";
+    const onDelete = rawOnDelete || (Boolean(options.cascadeDelete) ? "cascade" : "");
     return {
       ...sourceOptions,
       collection: typeof options.collection === "string" ? options.collection : "",
@@ -7057,10 +7093,9 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
       ...withString("targetSchema"),
       ...withString("targetTable"),
       ...withString("targetColumn"),
-      ...withString("onDelete"),
+      ...(onDelete ? { onDelete } : {}),
       ...withNumber("minSelect"),
       ...withNumber("maxSelect"),
-      ...withBool("cascadeDelete"),
       ...withBool("unique"),
     };
   }
@@ -7081,6 +7116,15 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
 function setFieldOption(field: Field, key: string, value: unknown): Field {
   const options = { ...(field.options ?? {}), [key]: value };
   return { ...field, options: defaultOptionsForType(field.type, options) };
+}
+
+function setRelationTargetOption(field: Field, target: string, collections: Collection[]): Field {
+  const next = setFieldOption(field, "collection", target);
+  const displayField = typeof next.options?.displayField === "string" ? next.options.displayField : "";
+  if (!displayField) return next;
+  const targetCollection = collections.find((collection) => collection.name === target);
+  const allowed = new Set(relationDisplayFieldOptions(targetCollection).map((item) => item.name));
+  return allowed.has(displayField) ? next : setFieldOption(next, "displayField", "");
 }
 
 function setNumberFieldOption(field: Field, key: string, value: string): Field {
