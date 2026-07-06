@@ -14,6 +14,7 @@ import {
   CalendarCheck2,
   Check,
   ChevronDown,
+  ChevronRight,
   Code2,
   Copy,
   CreditCard,
@@ -501,6 +502,12 @@ export default function AdminApp() {
   useEffect(() => {
     recordQueryRef.current = { search: recordSearch, filter: recordFilter, perPage: recordPerPage };
   }, [recordFilter, recordPerPage, recordSearch]);
+
+  useEffect(() => {
+    setAPIPreviewOpen(false);
+    setRecordEditorOpen(false);
+    setCollectionModal(null);
+  }, [selectedCollection, selectedProject, settingsSection, view]);
 
   const loadProjectData = useCallback(
     async (authToken: string, projectSlug: string, preferredCollection?: string) => {
@@ -2482,9 +2489,11 @@ function CollectionOverview({
 }) {
   const [tab, setTab] = useState<OverviewTab>("fields");
   const [showSystem, setShowSystem] = useState(false);
+  const [zoom, setZoom] = useState<"compact" | "normal" | "wide">("normal");
   const visibleCollections = collections.filter((collection) => showSystem || !collection.system);
   const relationEdges = collectionRelationEdges(visibleCollections);
   const fieldCount = visibleCollections.reduce((total, collection) => total + collection.fields.length, 0);
+  const minNodeWidth = zoom === "compact" ? 210 : zoom === "wide" ? 310 : 245;
   return (
     <div className="pb-overview">
       <div className="pb-overview-topbar">
@@ -2498,6 +2507,17 @@ function CollectionOverview({
           <input type="checkbox" checked={showSystem} onChange={(event) => setShowSystem(event.target.checked)} />
           System collections
         </label>
+        <div className="pb-overview-actions" aria-label="Overview density">
+          <button type="button" className={zoom === "compact" ? "active" : ""} onClick={() => setZoom("compact")}>
+            Fit
+          </button>
+          <button type="button" className={zoom === "normal" ? "active" : ""} onClick={() => setZoom("normal")}>
+            100%
+          </button>
+          <button type="button" className={zoom === "wide" ? "active" : ""} onClick={() => setZoom("wide")}>
+            Wide
+          </button>
+        </div>
       </div>
       <div className="pb-overview-tabs" role="tablist" aria-label="Collections overview">
         <button type="button" role="tab" aria-selected={tab === "fields"} className={tab === "fields" ? "active" : ""} onClick={() => setTab("fields")}>
@@ -2513,10 +2533,23 @@ function CollectionOverview({
         </div>
       ) : tab === "fields" ? (
         <div className="pb-overview-fields">
-          <div className="pb-overview-board">
-            {visibleCollections.map((collection) => (
-              <CollectionOverviewNode key={collection.id} collection={collection} active={selected === collection.name} onSelect={onSelect} />
-            ))}
+          <div className="pb-overview-canvas">
+            {relationEdges.length > 0 ? (
+              <div className="pb-relation-ribbons" aria-label="Relation links">
+                {relationEdges.slice(0, 12).map((edge) => (
+                  <button key={`${edge.sourceCollection}.${edge.sourceField}`} type="button" onClick={() => edge.targetCollection && onSelect(edge.targetCollection)}>
+                    <span>{edge.sourceCollection}.{edge.sourceField}</span>
+                    <ChevronRight className="h-4 w-4" />
+                    <strong>{edge.targetCollection || "unconfigured"}</strong>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <div className="pb-overview-board" style={{ gridTemplateColumns: `repeat(auto-fit, minmax(${minNodeWidth}px, 1fr))` }}>
+              {visibleCollections.map((collection) => (
+                <CollectionOverviewNode key={collection.id} collection={collection} active={selected === collection.name} onSelect={onSelect} />
+              ))}
+            </div>
           </div>
           <RelationTree collections={visibleCollections} edges={relationEdges} onSelect={onSelect} />
         </div>
@@ -2803,6 +2836,13 @@ function CollectionModal({
   const imported = collection ? collectionImportedFromOptions(collection) : false;
   const manageReady = collection ? collectionStandardSystemColumns(collection) : false;
   const schemaLocked = imported && !managed;
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
   return (
     <div className="pb-modal-layer" role="presentation">
       <form
@@ -2880,6 +2920,7 @@ function CollectionModal({
           {tab === "fields" ? (
             <>
               {schemaLocked ? <div className="pb-inline-alert warning">This imported table is staged for CRUD. Enable managed takeover before editing columns or field definitions.</div> : null}
+              <SystemFieldPreview mode={mode} collection={collection} />
               <FieldRows fields={fields} collections={collections} onChange={setFields} onAdd={onAddField} readOnly={schemaLocked} />
             </>
           ) : null}
@@ -2896,6 +2937,28 @@ function CollectionModal({
           </button>
         </footer>
       </form>
+    </div>
+  );
+}
+
+function SystemFieldPreview({ mode, collection }: { mode: "create" | "settings"; collection?: Collection }) {
+  const primaryKey = collection ? collectionPrimaryKeyFieldName(collection) : "id";
+  const standard = mode === "create" || !collection || collectionStandardSystemColumns(collection);
+  const rows = [
+    { name: primaryKey, type: "text", note: "Primary key", required: true },
+    { name: "created", type: "autodate", note: "Create", required: standard },
+    { name: "updated", type: "autodate", note: "Create/Update", required: standard },
+  ];
+  return (
+    <div className="pb-system-field-preview" aria-label="System fields">
+      {rows.map((row) => (
+        <div key={row.name}>
+          <FieldTypeGlyph type={row.type as FieldType} />
+          <strong>{row.name}</strong>
+          <span>{row.note}</span>
+          {row.required ? <em>Required</em> : null}
+        </div>
+      ))}
     </div>
   );
 }
@@ -3972,6 +4035,53 @@ const records = await client.list("${collection.name}", {
   );
 }
 
+function LogActivityPanel({
+  mode,
+  audit,
+  requests,
+  total,
+  visible,
+  errors,
+}: {
+  mode: "audit" | "requests";
+  audit: AuditEntry[];
+  requests: RequestLogEntry[];
+  total: number;
+  visible: number;
+  errors: number;
+}) {
+  const buckets = buildLogBuckets(mode === "audit" ? audit : requests, mode);
+  const max = Math.max(1, ...buckets.map((bucket) => bucket.count));
+  return (
+    <section className="pb-log-activity" aria-label={`${mode} activity`}>
+      <div className="pb-log-summary">
+        <span>
+          <strong>{formatCount(total)}</strong>
+          total
+        </span>
+        <span>
+          <strong>{formatCount(visible)}</strong>
+          visible
+        </span>
+        <span>
+          <strong>{formatCount(errors)}</strong>
+          attention
+        </span>
+      </div>
+      <div className="pb-log-chart" aria-hidden="true">
+        {buckets.map((bucket, index) => (
+          <span key={`${bucket.label}-${index}`} title={`${bucket.label}: ${bucket.count}`} style={{ height: `${Math.max(8, Math.round((bucket.count / max) * 72))}px` }} className={bucket.errors > 0 ? "danger" : ""} />
+        ))}
+      </div>
+      <div className="pb-log-chart-labels" aria-hidden="true">
+        <span>{buckets[0]?.label ?? ""}</span>
+        <span>{buckets[Math.floor(buckets.length / 2)]?.label ?? ""}</span>
+        <span>{buckets[buckets.length - 1]?.label ?? ""}</span>
+      </div>
+    </section>
+  );
+}
+
 function LogsView({
   mode,
   setMode,
@@ -4029,6 +4139,9 @@ function LogsView({
   const requestItems = requestLogs.totalItems ?? requestLogs.items.length;
   const requestPages = Math.max(1, Math.ceil(requestItems / Math.max(1, requestLogs.perPage ?? requestPerPage)));
   const actionOptions = Array.from(new Set(audit.items.map((entry) => entry.action))).sort();
+  const activeTotal = mode === "audit" ? totalItems : requestItems;
+  const visibleTotal = mode === "audit" ? audit.items.length : requestLogs.items.length;
+  const errorTotal = mode === "audit" ? audit.items.filter((entry) => entry.action.includes("fail") || entry.action.includes("error")).length : requestLogs.items.filter((entry) => entry.status >= 400).length;
   return (
     <section className="pb-page single">
       <div className="pb-page-content full-height">
@@ -4055,6 +4168,7 @@ function LogsView({
             </button>
           </div>
         </header>
+        <LogActivityPanel mode={mode} audit={audit.items} requests={requestLogs.items} total={activeTotal} visible={visibleTotal} errors={errorTotal} />
         {mode === "audit" ? (
           <form
             className="pb-record-toolbar logs-toolbar"
@@ -4164,70 +4278,121 @@ function LogsView({
             Save
           </button>
         </form>
-        {mode === "audit" ? <div className="pb-table-wrap">
-          <table className="pb-records-table">
+        {mode === "audit" ? <div className="pb-table-wrap logs-table-wrap">
+          <table className="pb-records-table logs-table">
             <thead>
               <tr>
+                <th className="col-bulk" />
                 <th>Action</th>
                 <th>Target</th>
                 <th>IP</th>
                 <th>Created</th>
                 <th>Data</th>
+                <th className="col-meta" />
               </tr>
             </thead>
             <tbody>
               {audit.items.map((entry) => (
                 <tr key={entry.id} className="clickable-row" onClick={() => setSelectedEntry(entry)}>
-                  <td>{entry.action}</td>
+                  <td className="col-bulk">
+                    <span className="pb-log-level-dot" aria-hidden="true" />
+                  </td>
+                  <td>
+                    <div className="pb-log-message">
+                      <strong>{entry.action}</strong>
+                      <span>
+                        <span className="pb-log-chip">audit</span>
+                        {entry.adminId ? <span className="pb-log-chip">admin</span> : null}
+                      </span>
+                    </div>
+                  </td>
                   <td>
                     {entry.targetType} {entry.targetId}
                   </td>
                   <td>{entry.ip || "-"}</td>
                   <td>{formatDate(entry.createdAt)}</td>
                   <td className="truncate-cell">{JSON.stringify(entry.data)}</td>
+                  <td className="col-meta">
+                    <ChevronRight className="h-4 w-4" />
+                  </td>
                 </tr>
               ))}
               {audit.items.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="pb-empty-cell">
+                  <td colSpan={7} className="pb-empty-cell">
                     <EmptyState label="No audit entries yet." />
                   </td>
                 </tr>
               ) : null}
             </tbody>
           </table>
-        </div> : <div className="pb-table-wrap">
-          <table className="pb-records-table">
+          <div className="pb-log-cards" aria-label="Audit logs">
+            {audit.items.map((entry) => (
+              <button key={entry.id} type="button" onClick={() => setSelectedEntry(entry)}>
+                <strong>{entry.action}</strong>
+                <span>{entry.targetType} {entry.targetId}</span>
+                <em>{entry.ip || "-"} · {formatDate(entry.createdAt)}</em>
+              </button>
+            ))}
+          </div>
+        </div> : <div className="pb-table-wrap logs-table-wrap">
+          <table className="pb-records-table logs-table">
             <thead>
               <tr>
+                <th className="col-bulk" />
                 <th>Method</th>
                 <th>Path</th>
                 <th>Status</th>
                 <th>Duration</th>
                 <th>IP</th>
                 <th>Created</th>
+                <th className="col-meta" />
               </tr>
             </thead>
             <tbody>
               {requestLogs.items.map((entry) => (
                 <tr key={entry.id} className="clickable-row" onClick={() => setSelectedRequest(entry)}>
-                  <td>{entry.method}</td>
+                  <td className="col-bulk">
+                    <span className={`pb-log-level-dot ${entry.status >= 400 ? "danger" : ""}`} aria-hidden="true" />
+                  </td>
+                  <td>
+                    <span className="pb-log-chip method">{entry.method}</span>
+                  </td>
                   <td className="truncate-cell">{entry.path}</td>
-                  <td>{entry.status}</td>
-                  <td>{entry.durationMs}ms</td>
+                  <td>
+                    <span className={`pb-log-chip ${entry.status >= 400 ? "danger" : "success"}`}>status: {entry.status}</span>
+                  </td>
+                  <td>
+                    <span className="pb-log-chip">{entry.durationMs}ms</span>
+                  </td>
                   <td>{entry.ip || "-"}</td>
                   <td>{formatDate(entry.createdAt)}</td>
+                  <td className="col-meta">
+                    <ChevronRight className="h-4 w-4" />
+                  </td>
                 </tr>
               ))}
               {requestLogs.items.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="pb-empty-cell">
+                  <td colSpan={8} className="pb-empty-cell">
                     <EmptyState label="No request logs yet." />
                   </td>
                 </tr>
               ) : null}
             </tbody>
           </table>
+          <div className="pb-log-cards" aria-label="Request logs">
+            {requestLogs.items.map((entry) => (
+              <button key={entry.id} type="button" onClick={() => setSelectedRequest(entry)}>
+                <strong>{entry.method} {entry.path}</strong>
+                <span>
+                  <span className={`pb-log-chip ${entry.status >= 400 ? "danger" : "success"}`}>status: {entry.status}</span>
+                  <span className="pb-log-chip">{entry.durationMs}ms</span>
+                </span>
+                <em>{entry.ip || "-"} · {formatDate(entry.createdAt)}</em>
+              </button>
+            ))}
+          </div>
         </div>}
         {mode === "audit" ? <div className="pb-record-pagination" aria-label="Audit log pagination">
           <label className="pb-page-size-control">
@@ -4643,6 +4808,9 @@ function ApplicationSettings({
   onSubmitProject,
   healthState,
   appUrl,
+  settings,
+  adminUsers,
+  projectQuotas,
   onOpenAuth,
   onOpenMail,
   onOpenFiles,
@@ -4655,20 +4823,59 @@ function ApplicationSettings({
   onSubmitProject: (event: React.FormEvent<HTMLFormElement>) => void;
   healthState: Health | null;
   appUrl: string;
+  settings?: InstanceSettings | null;
+  adminUsers?: Admin[];
+  projectQuotas?: ProjectQuotas | null;
   onOpenAuth: () => void;
   onOpenMail: () => void;
   onOpenFiles: () => void;
   onOpenMCP: () => void;
 }) {
+  const appName = project?.name || "Dublyobase";
   return (
     <div className="pb-settings-stack">
       <section className="pb-settings-block">
         <h2>Application</h2>
-        <div className="pb-info-grid">
-          <Info label="Application URL" value={appUrl} />
-          <Info label="Version" value={healthState?.version ?? ""} />
-          <Info label="DB" value={healthState?.db ?? ""} />
-          <Info label="Storage" value={healthState?.storage ?? ""} />
+        <div className="pb-application-form">
+          <label className="pb-field">
+            <span>Application name</span>
+            <input value={appName} readOnly />
+          </label>
+          <label className="pb-field">
+            <span>Application URL</span>
+            <input value={appUrl} readOnly />
+          </label>
+          <label className="pb-field accent-field">
+            <span>Accent</span>
+            <input value="#1055c9" readOnly />
+          </label>
+        </div>
+        <div className="pb-settings-toggle-list">
+          <div>
+            <Database className="h-4 w-4" />
+            <strong>Postgres connection</strong>
+            <span className={`pb-status-badge ${healthState?.db === "ok" ? "success" : "warning"}`}>{healthState?.db ?? "checking"}</span>
+          </div>
+          <div>
+            <HardDrive className="h-4 w-4" />
+            <strong>File storage</strong>
+            <span className={`pb-status-badge ${healthState?.storage === "ok" ? "success" : "warning"}`}>{settings?.storage.type ?? healthState?.storage ?? "checking"}</span>
+          </div>
+          <div>
+            <Globe className="h-4 w-4" />
+            <strong>CORS origins</strong>
+            <span className="pb-status-badge">{settings?.cors.wildcard ? "wildcard" : `${settings?.cors.adminOrigins.length ?? 0} admin`}</span>
+          </div>
+          <div>
+            <Activity className="h-4 w-4" />
+            <strong>Rate limiting and quotas</strong>
+            <span className={`pb-status-badge ${projectQuotas?.enabled ? "success" : ""}`}>{projectQuotas?.enabled ? "enabled" : "disabled"}</span>
+          </div>
+          <div>
+            <Users className="h-4 w-4" />
+            <strong>Super admins</strong>
+            <span className="pb-status-badge">{formatCount(adminUsers?.length ?? 0)}</span>
+          </div>
         </div>
       </section>
       <section className="pb-settings-block">
@@ -4836,9 +5043,38 @@ function AuthSettingsPanel({
             </button>
           </div>
         ) : null}
+        <div className="pb-auth-feature-grid">
+          <div>
+            <KeyRound className="h-4 w-4" />
+            <strong>Email/password</strong>
+            <span>Signup, login, refresh, sessions</span>
+          </div>
+          <div>
+            <Mail className="h-4 w-4" />
+            <strong>Verification and reset</strong>
+            <span>Template-controlled auth emails</span>
+          </div>
+          <div>
+            <ShieldCheck className="h-4 w-4" />
+            <strong>OTP and MFA</strong>
+            <span>Email codes, TOTP, recovery codes</span>
+          </div>
+          <div>
+            <Globe className="h-4 w-4" />
+            <strong>OAuth</strong>
+            <span>Google, GitHub, Facebook, OIDC</span>
+          </div>
+        </div>
       </section>
       <section className="pb-settings-block">
-        <h2>Auth API</h2>
+        <details className="pb-settings-disclosure">
+          <summary>
+            <span>
+              <strong>Auth API</strong>
+              <em>Signup, login, OTP, MFA, OAuth, sessions, orgs</em>
+            </span>
+            <ChevronDown className="h-4 w-4" />
+          </summary>
         <div className="pb-table-wrap">
           <table className="pb-records-table compact">
             <thead>
@@ -4861,6 +5097,7 @@ function AuthSettingsPanel({
             </tbody>
           </table>
         </div>
+        </details>
       </section>
       <section className="pb-settings-block">
         <h2>Client payloads</h2>
@@ -5159,6 +5396,11 @@ function MailSettings({
       <section className="pb-settings-block">
         <h2>Mail settings</h2>
         <p className="pb-muted-copy">Configure common settings for sending emails.</p>
+        <div className="pb-info-grid compact">
+          <Info label="Source" value={settings?.smtp.source ?? ""} />
+          <Info label="SMTP" value={smtpDraft.enabled ? "enabled" : "disabled"} />
+          <Info label="Saved password" value={settings?.smtp.passwordSet ? "yes" : "no"} />
+        </div>
         <div className="pb-grid-form two">
           <LabeledInput label="Sender address" value={smtpDraft.from} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, from: value }))} placeholder="Support <support@example.com>" />
           <label className="pb-checkline switchline">
@@ -5167,18 +5409,20 @@ function MailSettings({
           </label>
         </div>
         {smtpDraft.enabled ? (
-          <div className="pb-grid-form smtp-grid">
-            <LabeledInput label="SMTP server host" value={smtpDraft.host} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, host: value }))} placeholder="smtp.example.com" />
-            <LabeledInput label="Port" value={smtpDraft.port} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, port: value }))} placeholder="587" />
-            <LabeledInput label="Username" value={smtpDraft.username} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, username: value }))} />
-            <label className="pb-field">
-              <span>Password {settings?.smtp.passwordSet ? <em>(saved)</em> : null}</span>
-              <input type="password" value={smtpDraft.password} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, password: event.target.value, clearPassword: false }))} placeholder={settings?.smtp.passwordSet ? "* * * * * *" : ""} />
-            </label>
-            <label className="pb-checkline">
-              <input type="checkbox" checked={smtpDraft.clearPassword} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, clearPassword: event.target.checked, password: "" }))} />
-              Clear password
-            </label>
+          <div className="pb-smtp-card">
+            <div className="pb-grid-form smtp-grid">
+              <LabeledInput label="SMTP server host" value={smtpDraft.host} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, host: value }))} placeholder="smtp.example.com" />
+              <LabeledInput label="Port" value={smtpDraft.port} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, port: value }))} placeholder="587" />
+              <LabeledInput label="Username" value={smtpDraft.username} onChange={(value) => setSMTPDraft((draft) => ({ ...draft, username: value }))} />
+              <label className="pb-field">
+                <span>Password {settings?.smtp.passwordSet ? <em>(saved)</em> : null}</span>
+                <input type="password" value={smtpDraft.password} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, password: event.target.value, clearPassword: false }))} placeholder={settings?.smtp.passwordSet ? "* * * * * *" : ""} autoComplete="new-password" />
+              </label>
+              <label className="pb-checkline">
+                <input type="checkbox" checked={smtpDraft.clearPassword} onChange={(event) => setSMTPDraft((draft) => ({ ...draft, clearPassword: event.target.checked, password: "" }))} />
+                Clear password
+              </label>
+            </div>
           </div>
         ) : null}
       </section>
@@ -5239,6 +5483,18 @@ function StorageSettingsPanel({
                 s5cmd
               </a>
               .
+            </div>
+            <div className="pb-provider-presets" aria-label="S3-compatible provider presets">
+              {([
+                ["Cloudflare R2", { region: "auto", forcePathStyle: true }],
+                ["Backblaze B2", { region: storageDraft.region || "us-east-005", forcePathStyle: true }],
+                ["AWS S3", { region: storageDraft.region || "us-east-1", forcePathStyle: false }],
+                ["MinIO", { region: storageDraft.region || "us-east-1", forcePathStyle: true }],
+              ] as const).map(([label, preset]) => (
+                <button key={label} type="button" onClick={() => setStorageDraft((draft) => ({ ...draft, ...preset, useSSL: true }))}>
+                  {label}
+                </button>
+              ))}
             </div>
             <div className="pb-grid-form s3-grid">
               <LabeledInput label="Endpoint" value={storageDraft.endpoint} onChange={(value) => setStorageDraft((draft) => ({ ...draft, endpoint: value }))} placeholder="https://s3.example.com" />
@@ -7463,6 +7719,40 @@ function formatDate(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+function formatTime(value: Date) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
+}
+
+function buildLogBuckets(items: Array<AuditEntry | RequestLogEntry>, mode: "audit" | "requests") {
+  const bucketCount = 18;
+  const now = Date.now();
+  const timestamps = items
+    .map((entry) => Date.parse(entry.createdAt))
+    .filter((value) => Number.isFinite(value));
+  const latest = Math.max(now, ...timestamps);
+  const earliest = timestamps.length > 0 ? Math.min(...timestamps) : latest - 60 * 60 * 1000;
+  const span = Math.max(60 * 1000, latest - earliest);
+  const step = Math.max(60 * 1000, Math.ceil(span / bucketCount));
+  const start = latest - step * (bucketCount - 1);
+  const buckets = Array.from({ length: bucketCount }, (_, index) => ({
+    label: formatTime(new Date(start + index * step)),
+    count: 0,
+    errors: 0,
+  }));
+  for (const entry of items) {
+    const time = Date.parse(entry.createdAt);
+    if (!Number.isFinite(time)) continue;
+    const index = Math.min(bucketCount - 1, Math.max(0, Math.floor((time - start) / step)));
+    buckets[index].count += 1;
+    if (mode === "requests" && "status" in entry && entry.status >= 400) buckets[index].errors += 1;
+    if (mode === "audit" && "action" in entry && /fail|error/i.test(entry.action)) buckets[index].errors += 1;
+  }
+  return buckets;
 }
 
 function formatBytes(value: number) {
