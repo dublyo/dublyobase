@@ -9,14 +9,17 @@ import (
 )
 
 type Field struct {
-	Name        string         `json:"name"`
-	Type        string         `json:"type"`
-	Required    bool           `json:"required,omitempty"`
-	Hidden      bool           `json:"hidden,omitempty"`
-	Presentable bool           `json:"presentable,omitempty"`
-	Searchable  bool           `json:"searchable,omitempty"`
-	Help        string         `json:"help,omitempty"`
-	Options     map[string]any `json:"options,omitempty"`
+	Name                string         `json:"name"`
+	Type                string         `json:"type"`
+	Required            bool           `json:"required,omitempty"`
+	Hidden              bool           `json:"hidden,omitempty"`
+	Presentable         bool           `json:"presentable,omitempty"`
+	Searchable          bool           `json:"searchable,omitempty"`
+	Help                string         `json:"help,omitempty"`
+	Options             map[string]any `json:"options,omitempty"`
+	AdoptExistingColumn bool           `json:"adoptExistingColumn,omitempty"`
+	ExistingSQLType     string         `json:"existingSqlType,omitempty"`
+	DatabaseDefault     any            `json:"databaseDefault,omitempty"`
 }
 
 var supportedFieldTypes = map[string]struct{}{
@@ -74,6 +77,21 @@ func ValidateFields(fields []Field) error {
 }
 
 func validateFieldOptions(field Field) error {
+	if !field.AdoptExistingColumn && (field.ExistingSQLType != "" || field.DatabaseDefault != nil) {
+		return fmt.Errorf("%w: field %q existingSqlType and databaseDefault require adoptExistingColumn", ErrValidation, field.Name)
+	}
+	if field.AdoptExistingColumn {
+		if oldName, _ := field.Options["oldName"].(string); strings.TrimSpace(oldName) != "" {
+			return fmt.Errorf("%w: field %q cannot combine oldName with adoptExistingColumn", ErrValidation, field.Name)
+		}
+	}
+	if field.DatabaseDefault != nil {
+		switch field.DatabaseDefault.(type) {
+		case string, bool, float64, json.Number:
+		default:
+			return fmt.Errorf("%w: field %q databaseDefault must be a string, number or boolean", ErrValidation, field.Name)
+		}
+	}
 	if len(field.Help) > 500 {
 		return fmt.Errorf("%w: field %q help text is too long", ErrValidation, field.Name)
 	}
@@ -318,6 +336,7 @@ func normalizeFields(fields []Field) []Field {
 		out[i].Name = NormalizeIdentifier(out[i].Name)
 		out[i].Type = strings.ToLower(strings.TrimSpace(out[i].Type))
 		out[i].Help = strings.TrimSpace(out[i].Help)
+		out[i].ExistingSQLType = strings.TrimSpace(out[i].ExistingSQLType)
 		if out[i].Hidden {
 			out[i].Presentable = false
 		}

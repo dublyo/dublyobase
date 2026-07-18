@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -68,6 +70,11 @@ func ValidateCollectionInput(input *CollectionInput) error {
 func CreateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, projectSlug string, input CollectionInput, ip string, userAgent string) (*Collection, error) {
 	if err := ValidateCollectionInput(&input); err != nil {
 		return nil, err
+	}
+	for _, field := range input.Fields {
+		if field.AdoptExistingColumn {
+			return nil, fmt.Errorf("%w: field %q can adopt an existing column only when updating a collection", ErrValidation, field.Name)
+		}
 	}
 	if err := validateCollectionOptionsJSON(input.Options); err != nil {
 		return nil, err
@@ -626,6 +633,15 @@ func applyFieldDiff(ctx context.Context, tx pgx.Tx, schemaName string, tableName
 			}
 			continue
 		}
+		if field.AdoptExistingColumn {
+			// Application-owned migrations may add a column before Dublyobase metadata
+			// is updated. Adoption is explicit and catalog-verified so an upsert can
+			// never turn a typo or incompatible column into trusted metadata.
+			if err := validateAdoptExistingColumn(ctx, tx, schemaName, tableName, field); err != nil {
+				return err
+			}
+			continue
+		}
 		ddl, err := ColumnDDL(field)
 		if err != nil {
 			return err
@@ -712,19 +728,228 @@ func stripFieldMigrationOptions(fields []Field) []Field {
 	out := make([]Field, len(fields))
 	copy(out, fields)
 	for i := range out {
-		if _, ok := out[i].Options["oldName"]; !ok {
-			continue
-		}
-		options := make(map[string]any, len(out[i].Options))
-		for key, value := range out[i].Options {
-			if key == "oldName" {
-				continue
+		if _, ok := out[i].Options["oldName"]; ok {
+			options := make(map[string]any, len(out[i].Options))
+			for key, value := range out[i].Options {
+				if key == "oldName" {
+					continue
+				}
+				options[key] = value
 			}
-			options[key] = value
+			out[i].Options = options
 		}
-		out[i].Options = options
+		out[i].AdoptExistingColumn = false
+		out[i].ExistingSQLType = ""
+		out[i].DatabaseDefault = nil
 	}
 	return out
+}
+
+func validateAdoptExistingFields(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, schemaName string, tableName string, currentFields []Field, nextFields []Field) error {
+	current := fieldByName(currentFields)
+	for _, field := range nextFields {
+		if !field.AdoptExistingColumn {
+			continue
+		}
+		if _, exists := current[field.Name]; exists {
+			continue
+		}
+		if err := validateAdoptExistingColumn(ctx, q, schemaName, tableName, field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type adoptedPhysicalColumn struct {
+	FormattedType string
+	UDTName       string
+	Nullable      bool
+	Default       *string
+}
+
+func validateAdoptExistingColumn(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, schemaName string, tableName string, field Field) error {
+	var column adoptedPhysicalColumn
+	err := q.QueryRow(ctx, `
+		select pg_catalog.format_type(a.atttypid, a.atttypmod),
+		       t.typname,
+		       not a.attnotnull,
+		       pg_catalog.pg_get_expr(d.adbin, d.adrelid)
+		from pg_catalog.pg_attribute a
+		join pg_catalog.pg_class c on c.oid = a.attrelid
+		join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+		join pg_catalog.pg_type t on t.oid = a.atttypid
+		left join pg_catalog.pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+		where n.nspname = $1
+		  and c.relname = $2
+		  and a.attname = $3
+		  and a.attnum > 0
+		  and not a.attisdropped`,
+		schemaName,
+		tableName,
+		field.Name,
+	).Scan(&column.FormattedType, &column.UDTName, &column.Nullable, &column.Default)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: field %q requested adoption but column %s.%s.%s does not exist", ErrSchemaDrift, field.Name, schemaName, tableName, field.Name)
+	}
+	if err != nil {
+		return err
+	}
+	if !fieldTypeCompatibleWithExistingColumn(field, column.UDTName) {
+		return fmt.Errorf("%w: field %q type %q is incompatible with existing SQL type %q", ErrSchemaDrift, field.Name, field.Type, column.FormattedType)
+	}
+	if field.ExistingSQLType != "" && normalizePostgresType(field.ExistingSQLType) != normalizePostgresType(column.FormattedType) {
+		return fmt.Errorf("%w: field %q expected SQL type %q but found %q", ErrSchemaDrift, field.Name, field.ExistingSQLType, column.FormattedType)
+	}
+	if field.Required && column.Nullable {
+		return fmt.Errorf("%w: required field %q cannot adopt a nullable column", ErrSchemaDrift, field.Name)
+	}
+	if !field.Required && !column.Nullable && column.Default == nil {
+		return fmt.Errorf("%w: optional field %q cannot adopt a not-null column without a database default", ErrSchemaDrift, field.Name)
+	}
+	if field.DatabaseDefault != nil {
+		if column.Default == nil || !databaseDefaultMatches(*column.Default, field.DatabaseDefault) {
+			return fmt.Errorf("%w: field %q database default does not match the existing column", ErrSchemaDrift, field.Name)
+		}
+	}
+	return nil
+}
+
+func fieldTypeCompatibleWithExistingColumn(field Field, udtName string) bool {
+	udtName = strings.ToLower(strings.TrimSpace(udtName))
+	switch field.Type {
+	case "text", "email", "url", "editor", "password":
+		return udtName == "text" || udtName == "varchar" || udtName == "bpchar" || udtName == "citext"
+	case "number":
+		switch udtName {
+		case "int2", "int4", "int8", "numeric", "float4", "float8":
+			return true
+		default:
+			return false
+		}
+	case "bool":
+		return udtName == "bool"
+	case "date", "autodate":
+		return udtName == "timestamptz"
+	case "json", "file":
+		return udtName == "jsonb"
+	case "select":
+		if fieldIsMultiple(field) {
+			return udtName == "_text"
+		}
+		return udtName == "text"
+	case "relation":
+		if fieldIsMultiple(field) {
+			return udtName == "_uuid"
+		}
+		return udtName == "uuid"
+	default:
+		return false
+	}
+}
+
+func normalizePostgresType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.Join(strings.Fields(value), " ")
+	value = strings.ReplaceAll(value, " ,", ",")
+	value = strings.ReplaceAll(value, ", ", ",")
+	switch {
+	case value == "int2":
+		return "smallint"
+	case value == "int4" || value == "int":
+		return "integer"
+	case value == "int8":
+		return "bigint"
+	case value == "float4":
+		return "real"
+	case value == "float8":
+		return "double precision"
+	case value == "bool":
+		return "boolean"
+	case value == "timestamptz":
+		return "timestamp with time zone"
+	case value == "timestamp":
+		return "timestamp without time zone"
+	case value == "varchar":
+		return "character varying"
+	case strings.HasPrefix(value, "varchar("):
+		return "character varying" + strings.TrimPrefix(value, "varchar")
+	case value == "decimal":
+		return "numeric"
+	case strings.HasPrefix(value, "decimal("):
+		return "numeric" + strings.TrimPrefix(value, "decimal")
+	default:
+		return value
+	}
+}
+
+func databaseDefaultMatches(actual string, expected any) bool {
+	switch value := expected.(type) {
+	case string:
+		actualValue, ok := postgresStringDefault(actual)
+		return ok && actualValue == value
+	case bool:
+		actualValue := strings.ToLower(stripPostgresDefaultCast(actual))
+		return (value && actualValue == "true") || (!value && actualValue == "false")
+	case float64:
+		return numericDefaultMatches(actual, strconv.FormatFloat(value, 'g', -1, 64))
+	case json.Number:
+		return numericDefaultMatches(actual, value.String())
+	default:
+		return false
+	}
+}
+
+func postgresStringDefault(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	for strings.HasPrefix(value, "(") && strings.HasSuffix(value, ")") {
+		value = strings.TrimSpace(value[1 : len(value)-1])
+	}
+	if len(value) < 2 || value[0] != '\'' {
+		return "", false
+	}
+	var out strings.Builder
+	for i := 1; i < len(value); i++ {
+		if value[i] != '\'' {
+			out.WriteByte(value[i])
+			continue
+		}
+		if i+1 < len(value) && value[i+1] == '\'' {
+			out.WriteByte('\'')
+			i++
+			continue
+		}
+		tail := strings.TrimSpace(value[i+1:])
+		if tail == "" || strings.HasPrefix(tail, "::") {
+			return out.String(), true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+func numericDefaultMatches(actual string, expected string) bool {
+	actualNumber, ok := new(big.Rat).SetString(stripPostgresDefaultCast(actual))
+	if !ok {
+		return false
+	}
+	expectedNumber, ok := new(big.Rat).SetString(expected)
+	return ok && actualNumber.Cmp(expectedNumber) == 0
+}
+
+func stripPostgresDefaultCast(value string) string {
+	value = strings.TrimSpace(value)
+	if index := strings.Index(value, "::"); index >= 0 {
+		value = strings.TrimSpace(value[:index])
+	}
+	for strings.HasPrefix(value, "(") && strings.HasSuffix(value, ")") {
+		value = strings.TrimSpace(value[1 : len(value)-1])
+	}
+	return value
 }
 
 func mapSchemaSyncError(err error) error {

@@ -100,6 +100,154 @@ func TestAdminCollectionSyncEndpoints(t *testing.T) {
 	assertProjectAuditExists(t, app.Pool, "collections.import", target)
 }
 
+func TestAdminCollectionUpsertAdoptsExistingSQLColumns(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+	schema, _ := core.ProjectNames(slug)
+
+	createCollection := func(t *testing.T, name string) {
+		t.Helper()
+		rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token, fmt.Sprintf(`{
+			"name":%q,
+			"type":"base",
+			"fields":[{"name":"title","type":"text","required":true}]
+		}`, name))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create collection %s: want 201, got %d: %s", name, rec.Code, rec.Body.String())
+		}
+	}
+	upsertCollection := func(t *testing.T, name string, fields []core.Field, dryRun bool) (int, string) {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{
+			"items": []core.CollectionSchemaItem{{
+				Name:   name,
+				Type:   core.CollectionBase,
+				Fields: fields,
+			}},
+			"mode":   core.CollectionImportUpsert,
+			"dryRun": dryRun,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := postJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/collections/import", slug), token, string(body))
+		return rec.Code, rec.Body.String()
+	}
+
+	t.Run("success", func(t *testing.T) {
+		const collection = "adopt_success"
+		createCollection(t, collection)
+		table := pgx.Identifier{schema, collection}.Sanitize()
+		if _, err := app.Pool.Exec(context.Background(), fmt.Sprintf(`
+			alter table %s
+				add column numeric_value numeric(18,8),
+				add column integer_value integer not null default 1,
+				add column double_value double precision,
+				add column state text not null default 'ready',
+				add column occurred_at timestamptz`, table)); err != nil {
+			t.Fatal(err)
+		}
+		fields := []core.Field{
+			{Name: "title", Type: "text", Required: true},
+			{Name: "numeric_value", Type: "number", AdoptExistingColumn: true, ExistingSQLType: "numeric(18,8)"},
+			{Name: "integer_value", Type: "number", Required: true, Options: map[string]any{"onlyInt": true}, AdoptExistingColumn: true, DatabaseDefault: 1},
+			{Name: "double_value", Type: "number", AdoptExistingColumn: true},
+			{Name: "state", Type: "select", Required: true, Options: map[string]any{"values": []string{"ready", "done"}}, AdoptExistingColumn: true, DatabaseDefault: "ready"},
+			{Name: "occurred_at", Type: "date", AdoptExistingColumn: true},
+		}
+		if code, body := upsertCollection(t, collection, fields, true); code != http.StatusOK {
+			t.Fatalf("preview adoption: want 200, got %d: %s", code, body)
+		}
+		if code, body := upsertCollection(t, collection, fields, false); code != http.StatusOK {
+			t.Fatalf("apply adoption: want 200, got %d: %s", code, body)
+		}
+
+		rec := getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/%s", slug, collection), token)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("get adopted collection: want 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "adoptExistingColumn") || strings.Contains(rec.Body.String(), "existingSqlType") || strings.Contains(rec.Body.String(), "databaseDefault") {
+			t.Fatalf("migration-only field options were persisted: %s", rec.Body.String())
+		}
+		var adopted core.Collection
+		if err := json.Unmarshal(rec.Body.Bytes(), &adopted); err != nil {
+			t.Fatal(err)
+		}
+		if len(adopted.Fields) != len(fields) {
+			t.Fatalf("adopted field count = %d, want %d", len(adopted.Fields), len(fields))
+		}
+		var numericType string
+		if err := app.Pool.QueryRow(context.Background(), `
+			select pg_catalog.format_type(a.atttypid, a.atttypmod)
+			from pg_catalog.pg_attribute a
+			join pg_catalog.pg_class c on c.oid = a.attrelid
+			join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+			where n.nspname = $1 and c.relname = $2 and a.attname = 'numeric_value'`,
+			schema,
+			collection,
+		).Scan(&numericType); err != nil {
+			t.Fatal(err)
+		}
+		if numericType != "numeric(18,8)" {
+			t.Fatalf("numeric_value SQL type = %q, want numeric(18,8)", numericType)
+		}
+		// Once metadata contains the fields, the same manifest is an ordinary,
+		// idempotent upsert; the transient adoption marker no longer has an effect.
+		if code, body := upsertCollection(t, collection, fields, false); code != http.StatusOK {
+			t.Fatalf("repeat adoption upsert: want 200, got %d: %s", code, body)
+		}
+	})
+
+	t.Run("missing", func(t *testing.T) {
+		const collection = "adopt_missing"
+		createCollection(t, collection)
+		fields := []core.Field{
+			{Name: "title", Type: "text", Required: true},
+			{Name: "missing_value", Type: "number", AdoptExistingColumn: true},
+		}
+		for _, dryRun := range []bool{true, false} {
+			if code, body := upsertCollection(t, collection, fields, dryRun); code != http.StatusInternalServerError || !strings.Contains(body, `"error":"schema_drift"`) {
+				t.Fatalf("missing adoption dryRun=%v: want schema_drift 500, got %d: %s", dryRun, code, body)
+			}
+		}
+		assertColumnMissing(t, app.Pool, schema, collection, "missing_value")
+	})
+
+	t.Run("incompatible", func(t *testing.T) {
+		const collection = "adopt_incompatible"
+		createCollection(t, collection)
+		if _, err := app.Pool.Exec(context.Background(), fmt.Sprintf(`alter table %s add column migrated_value text`, pgx.Identifier{schema, collection}.Sanitize())); err != nil {
+			t.Fatal(err)
+		}
+		fields := []core.Field{
+			{Name: "title", Type: "text", Required: true},
+			{Name: "migrated_value", Type: "number", AdoptExistingColumn: true},
+		}
+		for _, dryRun := range []bool{true, false} {
+			if code, body := upsertCollection(t, collection, fields, dryRun); code != http.StatusInternalServerError || !strings.Contains(body, `"error":"schema_drift"`) {
+				t.Fatalf("incompatible adoption dryRun=%v: want schema_drift 500, got %d: %s", dryRun, code, body)
+			}
+		}
+	})
+
+	t.Run("duplicate without adoption remains drift", func(t *testing.T) {
+		const collection = "duplicate_drift"
+		createCollection(t, collection)
+		if _, err := app.Pool.Exec(context.Background(), fmt.Sprintf(`alter table %s add column migrated_value text`, pgx.Identifier{schema, collection}.Sanitize())); err != nil {
+			t.Fatal(err)
+		}
+		fields := []core.Field{
+			{Name: "title", Type: "text", Required: true},
+			{Name: "migrated_value", Type: "text"},
+		}
+		if code, body := upsertCollection(t, collection, fields, false); code != http.StatusInternalServerError || !strings.Contains(body, `"error":"schema_drift"`) {
+			t.Fatalf("duplicate without adoption: want schema_drift 500, got %d: %s", code, body)
+		}
+	})
+}
+
 func TestAdminSchemaDiscoveryImportAndTakeover(t *testing.T) {
 	app, _ := newIntegrationApp(t)
 	srv := NewServer(app)

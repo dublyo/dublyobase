@@ -153,6 +153,11 @@ func ImportCollections(ctx context.Context, pool *pgxpool.Pool, adminID string, 
 				})
 				continue
 			}
+			for _, field := range createInput.Fields {
+				if field.AdoptExistingColumn {
+					return nil, fmt.Errorf("%w: field %q can adopt an existing column only when updating a collection", ErrValidation, field.Name)
+				}
+			}
 			if input.DryRun {
 				result.Created++
 				result.Items = append(result.Items, CollectionImportItemResult{Name: createInput.Name, Action: "create", Status: "ready"})
@@ -201,6 +206,15 @@ func ImportCollections(ctx context.Context, pool *pgxpool.Pool, adminID string, 
 				return nil, err
 			}
 			if err := ValidateCollectionRules(&next); err != nil {
+				return nil, err
+			}
+			schemaName, tableName, err := collectionPhysicalTable(project, existing)
+			if err != nil {
+				return nil, err
+			}
+			// Adoption is the one migration-only diff that must be checked during
+			// preview: apply is allowed to trust it only after the same catalog proof.
+			if err := validateAdoptExistingFields(ctx, pool, schemaName, tableName, existing.Fields, next.Fields); err != nil {
 				return nil, err
 			}
 			result.Updated++
