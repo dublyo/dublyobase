@@ -3031,9 +3031,11 @@ function CollectionModal({
             <button type="button" role="tab" aria-selected={tab === "fields"} className={`pb-tab-item ${tab === "fields" ? "active" : ""}`} onClick={() => setTab("fields")}>
               Fields
             </button>
-            <button type="button" role="tab" aria-selected={tab === "rules"} className={`pb-tab-item ${tab === "rules" ? "active" : ""}`} onClick={() => setTab("rules")}>
-              API rules
-            </button>
+            {imported ? null : (
+              <button type="button" role="tab" aria-selected={tab === "rules"} className={`pb-tab-item ${tab === "rules" ? "active" : ""}`} onClick={() => setTab("rules")}>
+                API rules
+              </button>
+            )}
             <button type="button" role="tab" aria-selected={tab === "options"} className={`pb-tab-item ${tab === "options" ? "active" : ""}`} onClick={() => setTab("options")}>
               Options
             </button>
@@ -3046,7 +3048,12 @@ function CollectionModal({
               <FieldRows fields={fields} collections={collections} onChange={setFields} onAdd={onAddField} readOnly={schemaLocked} />
             </>
           ) : null}
-          {tab === "rules" ? <RuleInputs rules={rules} onChange={setRules} /> : null}
+          {tab === "rules" && !imported ? <RuleInputs rules={rules} onChange={setRules} /> : null}
+          {imported ? (
+            <div className="pb-inline-alert warning">
+              Access to this table is governed by its existing PostgreSQL grants and row-level security, not by Dublyobase API rules. Define policies on the source table from the SQL console.
+            </div>
+          ) : null}
           {tab === "options" ? <CollectionOptionsPanel collection={collection} fields={fields} collections={collections} icon={icon} imported={imported} managed={Boolean(managed)} /> : null}
         </div>
 
@@ -8344,6 +8351,17 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
       ...withNumber("max"),
       ...withString("pattern"),
       ...(type === "password" ? withNumber("cost") : {}),
+    };
+  }
+  if (type === "decimal") {
+    // Without this branch the editor showed precision/scale/min/max and then
+    // dropped them, so every decimal field silently became numeric(18,2).
+    return {
+      ...sourceOptions,
+      ...withNumber("precision"),
+      ...withNumber("scale"),
+      ...withString("min"),
+      ...withString("max"),
     };
   }
   if (type === "number") {

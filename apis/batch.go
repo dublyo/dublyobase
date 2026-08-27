@@ -57,6 +57,12 @@ func (s *server) batchRecords(w http.ResponseWriter, r *http.Request) {
 // runAtomicBatch commits every operation or none. Side effects are published
 // only after the transaction commits, so a rolled-back batch never emits a
 // realtime event or a webhook for a write that does not exist.
+//
+// KNOWN LIMIT: the converse is not guaranteed. A crash between COMMIT and the
+// publish/enqueue below loses those events with no record that they were owed,
+// so committed data and delivered events can diverge. The fix is a
+// transactional outbox — writing the event rows inside the same transaction and
+// letting a worker drain them — not a retry here.
 func (s *server) runAtomicBatch(w http.ResponseWriter, r *http.Request, auth *core.RecordAuth, ops []batchOperation) {
 	coreOps := make([]core.BatchOp, 0, len(ops))
 	for _, op := range ops {

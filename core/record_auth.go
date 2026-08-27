@@ -61,8 +61,11 @@ func ResolveRecordAuthForOrg(ctx context.Context, pool *pgxpool.Pool, cfg *Confi
 		}
 		auth.OrgID, auth.OrgRole = orgID, role
 	case RecordRoleService:
-		// Service callers are already trusted with the whole project; they may
-		// scope themselves to an org to exercise tenant-shaped rules.
+		// The claim is published so rules referencing @request.auth.orgId can be
+		// exercised, but it does NOT restrict what a service key may read or
+		// write: service policies are unconditional (see syncCollectionPolicies).
+		// A service key is a project-wide credential and passing X-Org-Id does
+		// not turn it into a tenant-scoped one.
 		auth.OrgID, auth.OrgRole = orgID, OrgRoleOwner
 	default:
 		return nil, ErrForbidden

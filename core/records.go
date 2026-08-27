@@ -1041,7 +1041,7 @@ func selectList(columns []string) string {
 func recordSelectList(collection *Collection, columns []string) string {
 	parts := make([]string, len(columns))
 	for i, column := range columns {
-		expr := recordColumnSQL(collection, column)
+		expr := recordSelectExpr(collection, column)
 		alias := quoteIdent(column)
 		if expr == alias {
 			parts[i] = expr
@@ -1050,6 +1050,34 @@ func recordSelectList(collection *Collection, columns []string) string {
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+// recordSelectExpr pins the wire type of a column to its declared field type,
+// and is used for SELECT only so filters and ORDER BY still hit the bare column
+// and its indexes.
+//
+// This matters for imported tables: a Postgres numeric column mapped to a
+// `number` field would otherwise be scanned as pgtype.Numeric and emitted as an
+// exact string, while writes to the same field still go through float64 and the
+// generated SDK still declares it a number. Casting here keeps read, write and
+// SDK agreeing on one type per field.
+func recordSelectExpr(collection *Collection, column string) string {
+	expr := recordColumnSQL(collection, column)
+	for _, field := range collection.Fields {
+		if field.Name != column {
+			continue
+		}
+		switch field.Type {
+		case "decimal":
+			// text keeps every digit; pgtype.Numeric would too, but the cast
+			// makes the contract explicit and survives odd typmods.
+			return expr + "::text"
+		case "number":
+			return expr + "::double precision"
+		}
+		break
+	}
+	return expr
 }
 
 func recordColumnList(collection *Collection, columns []string) string {

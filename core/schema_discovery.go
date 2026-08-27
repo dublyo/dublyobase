@@ -647,10 +647,23 @@ func postgresFieldType(col discoveredColumnInternal) (string, map[string]any, bo
 	case "numeric":
 		// numeric columns become decimal, not number: mapping them to float8
 		// would defeat the exactness the column was chosen for.
-		if col.NumericPrecision > 0 {
-			options["precision"] = col.NumericPrecision
-			options["scale"] = col.NumericScale
+		//
+		// Postgres allows shapes a decimal field cannot represent — unbounded
+		// numeric, precision above 38, and (since PG15) negative scale or scale
+		// greater than precision. Quietly clamping those to the 18,2 default
+		// would silently truncate real stored values, so the column is reported
+		// as unsupported and left out of the import instead.
+		if col.NumericPrecision <= 0 {
+			return "", options, false, "unbounded numeric: declare numeric(precision,scale) to import it as a decimal field"
 		}
+		if col.NumericPrecision > maxDecimalPrecision {
+			return "", options, false, fmt.Sprintf("numeric precision %d exceeds the supported maximum of %d", col.NumericPrecision, maxDecimalPrecision)
+		}
+		if col.NumericScale < 0 || col.NumericScale > col.NumericPrecision {
+			return "", options, false, fmt.Sprintf("numeric(%d,%d) has a scale a decimal field cannot represent", col.NumericPrecision, col.NumericScale)
+		}
+		options["precision"] = col.NumericPrecision
+		options["scale"] = col.NumericScale
 		return "decimal", options, true, ""
 	case "timestamptz", "timestamp", "date":
 		return "date", options, true, ""

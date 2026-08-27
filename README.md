@@ -317,6 +317,18 @@ GET /api/projects/app/collections/deals/records/aggregate?aggregate=sum:amount,c
 Sums over `decimal` fields are exact — `100.10 + 200.20` returns `"300.30"`,
 not `300.29999999999995`.
 
+Aggregates accept the same filter forms as the record list, including the
+bracket form (`filter[stage][_eq]=won`). `min`/`max` are rejected on boolean,
+UUID and relation fields, which have no Postgres aggregate.
+
+### Imported collections and rules
+
+Collection API rules are compiled into PostgreSQL row-level security on tables
+Dublyobase created. Imported tables keep their existing grants and RLS —
+Dublyobase does not take ownership of another schema's security model — so
+setting an API rule on an imported collection is rejected rather than stored
+where nothing would enforce it. Manage those policies from the SQL console.
+
 ### Organization-scoped rules
 
 Send `X-Org-Id` with a request to act inside one organization. Membership is
@@ -331,6 +343,10 @@ createRule: org = @request.auth.orgId && @request.auth.orgRole != "viewer"
 
 Browser `EventSource` clients that cannot set headers may pass `org=...` in the
 realtime query string instead.
+
+`X-Org-Id` scopes app-user requests. It does **not** restrict a service API key:
+service policies are unconditional by design, so a service key remains a
+project-wide credential regardless of the header.
 
 Realtime accepts `collection`, `collections`, `event`, and `events` query
 parameters. Values can be repeated or comma-separated:

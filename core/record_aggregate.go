@@ -100,6 +100,14 @@ func AggregateRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth,
 					return nil, fmt.Errorf("%w: %s requires a number or decimal field, got %q", ErrValidation, fn, target)
 				}
 			}
+			if fn == "min" || fn == "max" {
+				// Postgres has no min/max aggregate for boolean or uuid; without
+				// this the request reaches the database and comes back as a 500
+				// instead of telling the caller what is wrong.
+				if !fieldSupportsMinMax(collection, field) {
+					return nil, fmt.Errorf("%w: %s is not supported on field %q", ErrValidation, fn, target)
+				}
+			}
 			expr = fn + "(" + recordColumnSQL(collection, field) + ")"
 			alias = fn + "_" + field
 		}
@@ -172,8 +180,12 @@ func aggregatableField(collection *Collection, name string) (string, bool) {
 	if name == "" {
 		return "", false
 	}
-	if name == collectionPrimaryKeyField(collection) || name == "created" || name == "updated" {
+	if name == collectionPrimaryKeyField(collection) {
 		return name, true
+	}
+	if name == "created" || name == "updated" {
+		// Imported tables need not have the managed system columns.
+		return name, collectionStandardSystemColumns(collection)
 	}
 	for _, field := range collection.Fields {
 		if field.Name != name {
@@ -188,6 +200,29 @@ func aggregatableField(collection *Collection, name string) (string, bool) {
 		return field.Name, true
 	}
 	return "", false
+}
+
+// fieldSupportsMinMax mirrors the types Postgres actually provides min/max
+// aggregates for. Relation columns are uuid and bool is bool: neither has one.
+func fieldSupportsMinMax(collection *Collection, name string) bool {
+	if name == "created" || name == "updated" {
+		return true
+	}
+	if name == collectionPrimaryKeyField(collection) {
+		return false
+	}
+	for _, field := range collection.Fields {
+		if field.Name != name {
+			continue
+		}
+		switch field.Type {
+		case "number", "decimal", "date", "autodate", "text", "email", "url", "editor":
+			return !fieldIsMultiple(field)
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func fieldIsNumericForAggregate(collection *Collection, name string) bool {

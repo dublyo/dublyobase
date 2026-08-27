@@ -655,3 +655,83 @@ func TestAggregateRecords(t *testing.T) {
 		t.Fatalf("list with aggregate: want 400, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestAggregateHonoursBracketFilters covers the worst failure mode of the
+// aggregate endpoint: a filter that is silently dropped returns a total over
+// every row, which reads as a correct report.
+func TestAggregateHonoursBracketFilters(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"deals","type":"base","fields":[
+			{"name":"stage","type":"text"},{"name":"amount","type":"decimal","options":{"precision":18,"scale":3}},
+			{"name":"flag","type":"bool"}]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("collection: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, row := range [][2]string{{"won", "100.000"}, {"won", "50.000"}, {"lost", "999.000"}} {
+		postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/deals/records", slug), token,
+			fmt.Sprintf(`{"stage":%q,"amount":%q}`, row[0], row[1]))
+	}
+	sum := func(url string) string {
+		rec := getJSON(srv.Handler, url, token)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("aggregate: %d %s", rec.Code, rec.Body.String())
+		}
+		var r struct {
+			Items []struct{ Values map[string]any } `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &r); err != nil {
+			t.Fatal(err)
+		}
+		if len(r.Items) != 1 {
+			t.Fatalf("want 1 row, got %d: %s", len(r.Items), rec.Body.String())
+		}
+		return fmt.Sprint(r.Items[0].Values["sum_amount"])
+	}
+	base := fmt.Sprintf("/api/projects/%s/collections/deals/records/aggregate?aggregate=sum:amount", slug)
+	if got := sum(base + `&filter={"stage":{"_eq":"won"}}`); got != "150.000" {
+		t.Fatalf("json filter sum = %s, want 150.000", got)
+	}
+	// The bracket form must total the same. It used to be ignored, giving 1149.
+	if got := sum(base + "&filter[stage][_eq]=won"); got != "150.000" {
+		t.Fatalf("bracket filter sum = %s, want 150.000 (filter was dropped)", got)
+	}
+
+	// min/max on types Postgres has no aggregate for must be a validation
+	// error, not a database error surfacing as a 500.
+	rec = getJSON(srv.Handler, fmt.Sprintf(
+		"/api/projects/%s/collections/deals/records/aggregate?aggregate=max:flag", slug), token)
+	if rec.Code < 400 || rec.Code >= 500 {
+		t.Fatalf("max on bool: want 4xx, got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestImportedCollectionRejectsRules: the editor used to accept API rules on
+// imported tables and store them, while policy sync skipped those tables — an
+// access rule that nothing enforced.
+func TestImportedCollectionRejectsRules(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+	schema, _ := core.ProjectNames(slug)
+
+	if _, err := app.Pool.Exec(context.Background(),
+		fmt.Sprintf(`create table %s.legacy (id uuid primary key default gen_random_uuid(), owner uuid, note text)`, schema)); err != nil {
+		t.Fatal(err)
+	}
+	rec := postJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/schema/import", slug), token,
+		`{"items":[{"schema":"`+schema+`","table":"legacy","name":"legacy"}]}`)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Skipf("schema import unavailable: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/legacy", slug), token,
+		`{"listRule":"@request.auth.id != \"\""}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("rules on imported collection: want 422, got %d %s", rec.Code, rec.Body.String())
+	}
+}

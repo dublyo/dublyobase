@@ -12,6 +12,18 @@ import (
 )
 
 // BatchOp is one record operation inside a batch.
+//
+// KNOWN LIMIT: operations cannot reference each other's results. Managed
+// collections reject caller-assigned ids, so a batch cannot create an invoice
+// and then create its lines against the generated id — the parent must be
+// created first, and only the lines batched. Closing this needs either
+// caller-assigned ids on managed collections or a result-reference syntax
+// (e.g. "$0.id"). Not yet implemented.
+//
+// Also absent, and required before calling this an ERP-grade transaction:
+// idempotency keys, optimistic concurrency (If-Match / row version),
+// conditional updates for stock decrement, and a transactional audit/outbox
+// row written inside this same transaction.
 type BatchOp struct {
 	Method     string
 	Collection string

@@ -570,10 +570,16 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	if err != nil {
 		return nil, err
 	}
-	if !collectionIsImported(&next) {
-		if err := syncCollectionPolicies(ctx, tx, project, &next); err != nil {
+	if collectionIsImported(&next) {
+		// Policies are not applied to imported tables — Dublyobase does not own
+		// their grants and would be overwriting an existing security model. So
+		// rules must not be accepted either: storing them would show the
+		// operator an access rule in the editor that nothing enforces.
+		if err := rejectRulesOnImportedCollection(&next); err != nil {
 			return nil, err
 		}
+	} else if err := syncCollectionPolicies(ctx, tx, project, &next); err != nil {
+		return nil, err
 	}
 	if err := InsertAudit(ctx, tx, AuditEvent{
 		AdminID:    &adminID,
@@ -950,6 +956,22 @@ func stripPostgresDefaultCast(value string) string {
 		value = strings.TrimSpace(value[1 : len(value)-1])
 	}
 	return value
+}
+
+// rejectRulesOnImportedCollection fails loudly rather than persisting an
+// unenforced rule. Imported tables keep whatever RLS and grants they already
+// had; use the SQL console to manage those directly.
+func rejectRulesOnImportedCollection(collection *Collection) error {
+	for label, rule := range map[string]*string{
+		"listRule": collection.ListRule, "viewRule": collection.ViewRule,
+		"createRule": collection.CreateRule, "updateRule": collection.UpdateRule,
+		"deleteRule": collection.DeleteRule,
+	} {
+		if rule != nil {
+			return fmt.Errorf("%w: %s cannot be set on an imported collection — Dublyobase does not manage its row-level security; use the SQL console to define policies on the source table", ErrValidation, label)
+		}
+	}
+	return nil
 }
 
 func mapSchemaSyncError(err error) error {

@@ -563,6 +563,19 @@ func (c *ruleCompiler) identIsTextTyped(node ruleNode) bool {
 		if field.Name != ident.name {
 			continue
 		}
+		// Imported columns record their real Postgres type. A uuid column on an
+		// imported table is metadata type "text", so trusting the metadata alone
+		// would cast the ref to text and compare text against uuid.
+		if sourceType, ok := field.Options["sourceType"].(string); ok {
+			switch strings.ToLower(strings.TrimSpace(sourceType)) {
+			case "uuid":
+				return false
+			case "text", "varchar", "bpchar", "citext", "name":
+				return true
+			default:
+				return false
+			}
+		}
 		switch field.Type {
 		case "text", "email", "url", "editor", "select":
 			return !fieldIsMultiple(field)

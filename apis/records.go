@@ -284,10 +284,21 @@ func (s *server) aggregateRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
+	// Accept exactly the filter forms the record list accepts. Reading only
+	// `filter` meant `filter[stage][_eq]=won` was dropped and the caller got a
+	// total over every row — a wrong report that looks like a right one.
+	filter := query.Get("filter")
+	if filter == "" {
+		filter = directusFilterQuery(r)
+	}
+	groupBy := splitAggregateParam(query["groupBy"])
+	if len(groupBy) == 0 {
+		groupBy = splitAggregateParam(query["group_by"])
+	}
 	input := core.AggregateInput{
 		Aggregates: splitAggregateParam(query["aggregate"]),
-		GroupBy:    splitAggregateParam(query["groupBy"]),
-		Filter:     query.Get("filter"),
+		GroupBy:    groupBy,
+		Filter:     filter,
 		Search:     query.Get("search"),
 		Limit:      queryInt(r, "limit", 0),
 	}
