@@ -43,6 +43,7 @@ export type FieldType =
   | "editor"
   | "password"
   | "number"
+  | "decimal"
   | "bool"
   | "date"
   | "email"

@@ -259,7 +259,7 @@ func (s *server) resolveRealtimeAuth(w http.ResponseWriter, r *http.Request) (*c
 	if token == "" {
 		token = strings.TrimSpace(r.URL.Query().Get("access_token"))
 	}
-	auth, err := core.ResolveRecordAuth(r.Context(), s.app.Pool, s.app.Config, r.PathValue("slug"), token, time.Now())
+	auth, err := core.ResolveRecordAuthForOrg(r.Context(), s.app.Pool, s.app.Config, r.PathValue("slug"), token, activeOrgID(r), time.Now())
 	if err != nil {
 		writeCoreError(w, err)
 		return nil, false

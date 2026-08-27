@@ -26,6 +26,7 @@ var supportedFieldTypes = map[string]struct{}{
 	"autodate": {},
 	"bool":     {},
 	"date":     {},
+	"decimal":  {},
 	"email":    {},
 	"editor":   {},
 	"file":     {},
@@ -117,6 +118,10 @@ func validateFieldOptions(field Field) error {
 		}
 		if hasMin && hasMax && max < min {
 			return fmt.Errorf("%w: number field %q options.max must be greater than or equal to options.min", ErrValidation, field.Name)
+		}
+	case "decimal":
+		if err := validateDecimalOptions(field); err != nil {
+			return err
 		}
 	case "text", "url", "password":
 		min, hasMin := intOption(field.Options, "min")
@@ -290,6 +295,9 @@ func ColumnDDL(field Field) (string, error) {
 		columnType = "text"
 	case "number":
 		columnType = "double precision"
+	case "decimal":
+		precision, scale := decimalOptions(field)
+		columnType = fmt.Sprintf("numeric(%d,%d)", precision, scale)
 	case "bool":
 		columnType = "boolean"
 	case "date", "autodate":

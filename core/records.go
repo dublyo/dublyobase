@@ -122,6 +122,21 @@ func CreateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	if err != nil {
 		return nil, err
 	}
+	var out Record
+	err = withRecordTxForCollection(ctx, pool, auth, collection, "create", func(tx pgx.Tx) error {
+		record, err := createRecordInTx(ctx, tx, auth, collection, raw)
+		out = record
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// createRecordInTx is the transaction-scoped core, split out so a batch can run
+// many operations inside one transaction instead of one transaction each.
+func createRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collection *Collection, raw map[string]json.RawMessage) (Record, error) {
 	payload, err := normalizeCreatePayload(collection, raw)
 	if err != nil {
 		return nil, err
@@ -132,42 +147,21 @@ func CreateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	if err != nil {
 		return nil, err
 	}
-
-	var out Record
-	err = withRecordTxForCollection(ctx, pool, auth, collection, "create", func(tx pgx.Tx) error {
-		var query string
-		if len(payload.Columns) == 0 {
-			query = fmt.Sprintf(`insert into %s default values returning %s`, table, recordSelectList(collection, columns))
-		} else {
-			query = fmt.Sprintf(`insert into %s (%s) values (%s) returning %s`,
-				table,
-				recordColumnList(collection, payload.Columns),
-				valuePlaceholders(collection, payload.Columns, fieldByName(collection.Fields), 1),
-				recordSelectList(collection, columns),
-			)
-		}
-		record, err := queryOneRecord(ctx, tx, query, columns, payload.Values...)
-		if err != nil {
-			return err
-		}
-		out = record
-		return nil
-	})
-	if err != nil {
-		return nil, err
+	var query string
+	if len(payload.Columns) == 0 {
+		query = fmt.Sprintf(`insert into %s default values returning %s`, table, recordSelectList(collection, columns))
+	} else {
+		query = fmt.Sprintf(`insert into %s (%s) values (%s) returning %s`,
+			table,
+			recordColumnList(collection, payload.Columns),
+			valuePlaceholders(collection, payload.Columns, fieldByName(collection.Fields), 1),
+			recordSelectList(collection, columns),
+		)
 	}
-	return out, nil
+	return queryOneRecord(ctx, tx, query, columns, payload.Values...)
 }
 
-func GetRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
-	return GetRecordWithOptions(ctx, pool, auth, collectionName, id, "")
-}
-
-func GetRecordWithOptions(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string, expand string) (Record, error) {
-	collection, err := recordCollection(ctx, pool, auth.Project.Slug, collectionName)
-	if err != nil {
-		return nil, err
-	}
+func getRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collection *Collection, id string) (Record, error) {
 	if err := validateRecordKey(collection, id); err != nil {
 		return nil, err
 	}
@@ -180,16 +174,24 @@ func GetRecordWithOptions(ctx context.Context, pool *pgxpool.Pool, auth *RecordA
 	if err != nil {
 		return nil, err
 	}
+	query := fmt.Sprintf(`select %s from %s where %s`, recordSelectList(collection, columns), table, where)
+	return queryOneRecord(ctx, tx, query, columns, whereArgs...)
+}
 
+func GetRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
+	return GetRecordWithOptions(ctx, pool, auth, collectionName, id, "")
+}
+
+func GetRecordWithOptions(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string, expand string) (Record, error) {
+	collection, err := recordCollection(ctx, pool, auth.Project.Slug, collectionName)
+	if err != nil {
+		return nil, err
+	}
 	var out Record
 	err = withRecordTxForCollection(ctx, pool, auth, collection, "view", func(tx pgx.Tx) error {
-		query := fmt.Sprintf(`select %s from %s where %s`, recordSelectList(collection, columns), table, where)
-		record, err := queryOneRecord(ctx, tx, query, columns, whereArgs...)
-		if err != nil {
-			return err
-		}
+		record, err := getRecordInTx(ctx, tx, auth, collection, id)
 		out = record
-		return nil
+		return err
 	})
 	if err != nil {
 		return nil, err
@@ -302,6 +304,19 @@ func UpdateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	if err != nil {
 		return nil, err
 	}
+	var out Record
+	err = withRecordTxForCollection(ctx, pool, auth, collection, "update", func(tx pgx.Tx) error {
+		record, err := updateRecordInTx(ctx, tx, auth, collection, id, raw)
+		out = record
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func updateRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collection *Collection, id string, raw map[string]json.RawMessage) (Record, error) {
 	if err := validateRecordKey(collection, id); err != nil {
 		return nil, err
 	}
@@ -315,44 +330,31 @@ func UpdateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	if err != nil {
 		return nil, err
 	}
-
-	var out Record
-	err = withRecordTxForCollection(ctx, pool, auth, collection, "update", func(tx pgx.Tx) error {
-		assignments := make([]string, 0, len(payload.Columns)+1)
-		args := make([]any, 0, len(payload.Values)+1)
-		fields := fieldByName(collection.Fields)
-		for i, column := range payload.Columns {
-			assignments = append(assignments, fmt.Sprintf(`%s = %s`, recordColumnSQL(collection, column), valuePlaceholder(fields[column], i+1)))
-			args = append(args, payload.Values[i])
-		}
-		if collectionStandardSystemColumns(collection) {
-			assignments = append(assignments, `updated = now()`)
-		}
-		if len(assignments) == 0 {
-			return fmt.Errorf("%w: patch body is empty", ErrValidation)
-		}
-		where, whereArgs, err := recordPrimaryKeyWhere(collection, id, len(args)+1)
-		if err != nil {
-			return err
-		}
-		args = append(args, whereArgs...)
-		query := fmt.Sprintf(`update %s set %s where %s returning %s`,
-			table,
-			strings.Join(assignments, ", "),
-			where,
-			recordSelectList(collection, columns),
-		)
-		record, err := queryOneRecord(ctx, tx, query, columns, args...)
-		if err != nil {
-			return err
-		}
-		out = record
-		return nil
-	})
+	assignments := make([]string, 0, len(payload.Columns)+1)
+	args := make([]any, 0, len(payload.Values)+1)
+	fields := fieldByName(collection.Fields)
+	for i, column := range payload.Columns {
+		assignments = append(assignments, fmt.Sprintf(`%s = %s`, recordColumnSQL(collection, column), valuePlaceholder(fields[column], i+1)))
+		args = append(args, payload.Values[i])
+	}
+	if collectionStandardSystemColumns(collection) {
+		assignments = append(assignments, `updated = now()`)
+	}
+	if len(assignments) == 0 {
+		return nil, fmt.Errorf("%w: patch body is empty", ErrValidation)
+	}
+	where, whereArgs, err := recordPrimaryKeyWhere(collection, id, len(args)+1)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	args = append(args, whereArgs...)
+	query := fmt.Sprintf(`update %s set %s where %s returning %s`,
+		table,
+		strings.Join(assignments, ", "),
+		where,
+		recordSelectList(collection, columns),
+	)
+	return queryOneRecord(ctx, tx, query, columns, args...)
 }
 
 func DeleteRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
@@ -360,6 +362,19 @@ func DeleteRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	if err != nil {
 		return nil, err
 	}
+	var out Record
+	err = withRecordTxForCollection(ctx, pool, auth, collection, "delete", func(tx pgx.Tx) error {
+		record, err := deleteRecordInTx(ctx, tx, auth, collection, id)
+		out = record
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func deleteRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collection *Collection, id string) (Record, error) {
 	if err := validateRecordKey(collection, id); err != nil {
 		return nil, err
 	}
@@ -372,20 +387,8 @@ func DeleteRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, col
 	if err != nil {
 		return nil, err
 	}
-	var out Record
-	err = withRecordTxForCollection(ctx, pool, auth, collection, "delete", func(tx pgx.Tx) error {
-		query := fmt.Sprintf(`delete from %s where %s returning %s`, table, where, recordSelectList(collection, columns))
-		record, err := queryOneRecord(ctx, tx, query, columns, whereArgs...)
-		if err != nil {
-			return err
-		}
-		out = record
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
+	query := fmt.Sprintf(`delete from %s where %s returning %s`, table, where, recordSelectList(collection, columns))
+	return queryOneRecord(ctx, tx, query, columns, whereArgs...)
 }
 
 func recordCollection(ctx context.Context, pool *pgxpool.Pool, projectSlug string, name string) (*Collection, error) {
@@ -749,6 +752,8 @@ func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		return v, nil
+	case "decimal":
+		return normalizeDecimalInput(field, raw)
 	case "number":
 		var v float64
 		if err := json.Unmarshal(raw, &v); err != nil || math.IsInf(v, 0) || math.IsNaN(v) {
@@ -1109,6 +1114,8 @@ func valuePlaceholder(field Field, pos int) string {
 	switch field.Type {
 	case "number":
 		return p + "::double precision"
+	case "decimal":
+		return p + "::numeric"
 	case "bool":
 		return p + "::boolean"
 	case "date":
@@ -1313,6 +1320,8 @@ func normalizeDBValue(v any) any {
 		return nil
 	case time.Time:
 		return value.UTC().Format(time.RFC3339Nano)
+	case pgtype.Numeric:
+		return formatExactNumeric(value)
 	case pgtype.UUID:
 		if !value.Valid {
 			return nil

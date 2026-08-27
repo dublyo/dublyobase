@@ -35,10 +35,6 @@ func (s *server) batchRecords(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Atomic {
-		writeError(w, http.StatusBadRequest, "validation_error", "atomic batch is not available yet; send atomic=false")
-		return
-	}
 	if len(req.Requests) == 0 {
 		writeError(w, http.StatusBadRequest, "validation_error", "batch requires at least one request")
 		return
@@ -47,11 +43,44 @@ func (s *server) batchRecords(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "batch supports at most 50 requests")
 		return
 	}
+	if req.Atomic {
+		s.runAtomicBatch(w, r, auth, req.Requests)
+		return
+	}
 	results := make([]batchOperationResult, 0, len(req.Requests))
 	for _, op := range req.Requests {
 		results = append(results, s.executeBatchOperation(r, auth, op))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": results})
+}
+
+// runAtomicBatch commits every operation or none. Side effects are published
+// only after the transaction commits, so a rolled-back batch never emits a
+// realtime event or a webhook for a write that does not exist.
+func (s *server) runAtomicBatch(w http.ResponseWriter, r *http.Request, auth *core.RecordAuth, ops []batchOperation) {
+	coreOps := make([]core.BatchOp, 0, len(ops))
+	for _, op := range ops {
+		coreOps = append(coreOps, core.BatchOp{
+			Method:     op.Method,
+			Collection: op.Collection,
+			ID:         op.ID,
+			Body:       op.Body,
+		})
+	}
+	results, err := core.RunAtomicBatch(r.Context(), s.app.Pool, auth, coreOps)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	items := make([]batchOperationResult, 0, len(results))
+	for _, result := range results {
+		if result.Action != "view" {
+			s.publishRealtimeRecord(r.Context(), auth.Project.Slug, result.Collection, result.Action, result.ID, result.Record)
+			s.enqueueRecordWebhooks(r, auth, result.Collection, result.Action, result.Record)
+		}
+		items = append(items, batchOK(result.Status, result.Record))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"atomic": true, "items": items})
 }
 
 func (s *server) executeBatchOperation(r *http.Request, auth *core.RecordAuth, op batchOperation) batchOperationResult {

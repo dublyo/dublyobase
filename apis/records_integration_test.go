@@ -1,10 +1,12 @@
 package apis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -350,5 +352,306 @@ func assertDirectRoleCount(t *testing.T, pool *pgxpool.Pool, role string, schema
 	}
 	if count != want {
 		t.Fatalf("direct role %s count = %d, want %d", role, count, want)
+	}
+}
+
+// TestDecimalRecordsAreExact is the regression for the defect that made this
+// backend unusable for money: `number` is double precision, so individual
+// values round-trip fine while SUM() drifts. These are the exact values that
+// summed to 100001234.85499999 on the live instance.
+func TestDecimalRecordsAreExact(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"deals","type":"base","fields":[
+			{"name":"title","type":"text"},
+			{"name":"amount","type":"decimal","options":{"precision":18,"scale":3}}]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create collection: %d %s", rec.Code, rec.Body.String())
+	}
+
+	for _, amount := range []string{`"0.1"`, `"0.2"`, `"99999999.99"`, `"1234.565"`} {
+		rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/deals/records", slug), token,
+			fmt.Sprintf(`{"title":"m","amount":%s}`, amount))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", amount, rec.Code, rec.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		// The wire value must be a string; a float64 here means precision is
+		// already gone before anyone sums anything.
+		got, ok := body["amount"].(string)
+		if !ok {
+			t.Fatalf("amount came back as %T (%v), want string", body["amount"], body["amount"])
+		}
+		want := strings.Trim(amount, `"`)
+		if !strings.HasPrefix(got, want) {
+			t.Fatalf("amount = %q, want %q", got, want)
+		}
+	}
+
+	schema, _ := core.ProjectNames(slug)
+	var total string
+	if err := app.Pool.QueryRow(context.Background(),
+		fmt.Sprintf(`select sum(amount)::text from %s.deals`, schema)).Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total != "100001234.855" {
+		t.Fatalf("SUM(amount) = %s, want exactly 100001234.855 (float8 gives 100001234.85499999)", total)
+	}
+
+	// An exact filter must match the stored value rather than a float neighbour.
+	rec = getJSON(srv.Handler, fmt.Sprintf(
+		`/api/projects/%s/collections/deals/records?filter={"amount":{"_eq":"1234.565"}}`, slug), token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("filter: %d %s", rec.Code, rec.Body.String())
+	}
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 {
+		t.Fatalf("exact decimal filter matched %d rows, want 1", len(list.Items))
+	}
+}
+
+// TestAtomicBatchRollsBack is the guarantee an ERP write needs: an order and
+// its lines either all land or none do. Before atomic batches existed, request
+// N failing left requests 1..N-1 committed with no way to undo them.
+func TestAtomicBatchRollsBack(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"orders","type":"base","fields":[{"name":"ref","type":"text","required":true}]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create collection: %d %s", rec.Code, rec.Body.String())
+	}
+
+	countOrders := func() int {
+		schema, _ := core.ProjectNames(slug)
+		var n int
+		if err := app.Pool.QueryRow(context.Background(),
+			fmt.Sprintf(`select count(*) from %s.orders`, schema)).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// Two good writes followed by one that violates NOT NULL on ref.
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/batch", slug), token,
+		`{"atomic":true,"requests":[
+			{"method":"POST","collection":"orders","body":{"ref":"SO-1"}},
+			{"method":"POST","collection":"orders","body":{"ref":"SO-2"}},
+			{"method":"POST","collection":"orders","body":{}}]}`)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("atomic batch with a failing op returned 200: %s", rec.Body.String())
+	}
+	if n := countOrders(); n != 0 {
+		t.Fatalf("after rollback there are %d orders, want 0 — the batch was not atomic", n)
+	}
+
+	// The same batch without the bad op must commit all of it.
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/batch", slug), token,
+		`{"atomic":true,"requests":[
+			{"method":"POST","collection":"orders","body":{"ref":"SO-1"}},
+			{"method":"POST","collection":"orders","body":{"ref":"SO-2"}}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("atomic batch: %d %s", rec.Code, rec.Body.String())
+	}
+	if n := countOrders(); n != 2 {
+		t.Fatalf("committed %d orders, want 2", n)
+	}
+
+	// Non-atomic keeps its old partial-write behaviour.
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/batch", slug), token,
+		`{"atomic":false,"requests":[
+			{"method":"POST","collection":"orders","body":{"ref":"SO-3"}},
+			{"method":"POST","collection":"orders","body":{}}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("non-atomic batch: %d %s", rec.Code, rec.Body.String())
+	}
+	if n := countOrders(); n != 3 {
+		t.Fatalf("non-atomic committed %d orders, want 3", n)
+	}
+}
+
+// TestOrgScopedRuleIsolatesTenants is the multi-tenant CRM predicate: two users
+// in different organizations must not see each other's rows, enforced by
+// Postgres RLS rather than by the client sending the right filter.
+func TestOrgScopedRuleIsolatesTenants(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"deals","type":"base","fields":[
+			{"name":"title","type":"text"},
+			{"name":"org","type":"text","required":true}],
+		  "listRule":"org = @request.auth.orgId","viewRule":"org = @request.auth.orgId",
+		  "createRule":"org = @request.auth.orgId"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create org-scoped collection: %d %s", rec.Code, rec.Body.String())
+	}
+
+	userToken := signupAppUserForTest(t, srv.Handler, slug, "a@example.com").Token
+	otherToken := signupAppUserForTest(t, srv.Handler, slug, "b@example.com").Token
+	orgA := createOrgForTest(t, srv.Handler, slug, userToken, "Org A")
+	orgB := createOrgForTest(t, srv.Handler, slug, otherToken, "Org B")
+
+	// Create one deal in each org, each as its own member.
+	mk := func(tok, org, title string) {
+		req := httptest.NewRequest("POST", fmt.Sprintf("/api/projects/%s/collections/deals/records", slug),
+			bytes.NewBufferString(fmt.Sprintf(`{"title":%q,"org":%q}`, title, org)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("X-Org-Id", org)
+		w := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", title, w.Code, w.Body.String())
+		}
+	}
+	mk(userToken, orgA, "A deal")
+	mk(otherToken, orgB, "B deal")
+
+	list := func(tok, org string) []map[string]any {
+		req := httptest.NewRequest("GET", fmt.Sprintf("/api/projects/%s/collections/deals/records", slug), nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		req.Header.Set("X-Org-Id", org)
+		w := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body.Items
+	}
+
+	if items := list(userToken, orgA); len(items) != 1 || items[0]["title"] != "A deal" {
+		t.Fatalf("org A sees %v, want only its own deal", items)
+	}
+	if items := list(otherToken, orgB); len(items) != 1 || items[0]["title"] != "B deal" {
+		t.Fatalf("org B sees %v, want only its own deal", items)
+	}
+
+	// Claiming an org you do not belong to must be refused, not silently ignored.
+	req := httptest.NewRequest("GET", fmt.Sprintf("/api/projects/%s/collections/deals/records", slug), nil)
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	req.Header.Set("X-Org-Id", orgB)
+	w := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("cross-org header: want 403, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func createOrgForTest(t *testing.T, handler http.Handler, slug string, token string, name string) string {
+	t.Helper()
+	rec := postJSON(handler, fmt.Sprintf("/api/projects/%s/orgs", slug), token, fmt.Sprintf(`{"name":%q}`, name))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create org: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.ID == "" {
+		t.Fatalf("org id missing: %s", rec.Body.String())
+	}
+	return body.ID
+}
+
+// TestAggregateRecords covers the reporting primitive: grouped totals computed
+// in Postgres, with decimal sums staying exact.
+func TestAggregateRecords(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"deals","type":"base","fields":[
+			{"name":"stage","type":"text"},
+			{"name":"amount","type":"decimal","options":{"precision":18,"scale":2}}]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create collection: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, row := range []struct{ stage, amount string }{
+		{"won", "100.10"}, {"won", "200.20"}, {"lost", "50.05"},
+	} {
+		rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/deals/records", slug), token,
+			fmt.Sprintf(`{"stage":%q,"amount":%q}`, row.stage, row.amount))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("seed: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	rec = getJSON(srv.Handler, fmt.Sprintf(
+		"/api/projects/%s/collections/deals/records/aggregate?aggregate=sum:amount,count:*&groupBy=stage", slug), token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("aggregate: %d %s", rec.Code, rec.Body.String())
+	}
+	var result struct {
+		Items []struct {
+			Group  map[string]any `json:"group"`
+			Values map[string]any `json:"values"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("got %d groups, want 2: %s", len(result.Items), rec.Body.String())
+	}
+	byStage := map[string]map[string]any{}
+	for _, item := range result.Items {
+		byStage[fmt.Sprint(item.Group["stage"])] = item.Values
+	}
+	// 100.10 + 200.20 must be exactly 300.30, not 300.29999999999995.
+	if got := fmt.Sprint(byStage["won"]["sum_amount"]); got != "300.30" {
+		t.Fatalf("won sum = %s, want 300.30", got)
+	}
+	if got := fmt.Sprint(byStage["lost"]["sum_amount"]); got != "50.05" {
+		t.Fatalf("lost sum = %s, want 50.05", got)
+	}
+	if got := fmt.Sprint(byStage["won"]["count"]); got != "2" {
+		t.Fatalf("won count = %s, want 2", got)
+	}
+
+	// Unsupported aggregates must be refused, not silently ignored.
+	rec = getJSON(srv.Handler, fmt.Sprintf(
+		"/api/projects/%s/collections/deals/records/aggregate?aggregate=drop:amount", slug), token)
+	if rec.Code != http.StatusUnprocessableEntity && rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad aggregate fn: want 4xx, got %d %s", rec.Code, rec.Body.String())
+	}
+	rec = getJSON(srv.Handler, fmt.Sprintf(
+		"/api/projects/%s/collections/deals/records/aggregate?aggregate=sum:stage", slug), token)
+	if rec.Code != http.StatusUnprocessableEntity && rec.Code != http.StatusBadRequest {
+		t.Fatalf("sum of text: want 4xx, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The list endpoint must now reject these instead of returning plain rows.
+	rec = getJSON(srv.Handler, fmt.Sprintf(
+		"/api/projects/%s/collections/deals/records?aggregate=sum:amount&groupBy=stage", slug), token)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("list with aggregate: want 400, got %d %s", rec.Code, rec.Body.String())
 	}
 }

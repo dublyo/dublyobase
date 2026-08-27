@@ -88,6 +88,10 @@ func compileRecordSearch(raw string, collection *Collection, base int) (*SQLExpr
 			if n, ok := parseSearchNumber(search); ok {
 				parts = append(parts, fmt.Sprintf("%s = %s", column, builder.arg(n)))
 			}
+		case "decimal":
+			if _, err := parseDecimalText(search); err == nil {
+				parts = append(parts, fmt.Sprintf("%s = %s::numeric", column, builder.arg(strings.TrimSpace(search))))
+			}
 		case "bool":
 			if b, ok := parseSearchBool(search); ok {
 				parts = append(parts, fmt.Sprintf("%s = %s", column, builder.arg(b)))
@@ -228,6 +232,12 @@ func (b *recordFilterBuilder) compilePredicate(field Field, operator string, val
 		return "", fmt.Errorf("%w: JSON filter has too many predicates", ErrInvalidFilter)
 	}
 	column := recordColumnSQL(b.collection, field.Name)
+	if field.Type == "decimal" {
+		// Handled before normalizeFilterJSONValue, which would turn a
+		// json.Number into float64 and reintroduce the rounding that decimal
+		// fields exist to prevent.
+		return b.compileDecimalPredicate(column, operator, value)
+	}
 	value = normalizeFilterJSONValue(value)
 	switch operator {
 	case "_eq":
@@ -341,7 +351,7 @@ func fieldCanSearch(field Field) bool {
 		return false
 	}
 	switch field.Type {
-	case "text", "editor", "email", "url", "select", "number", "bool", "date", "autodate", "relation":
+	case "text", "editor", "email", "url", "select", "number", "decimal", "bool", "date", "autodate", "relation":
 		return true
 	default:
 		return false
@@ -355,6 +365,85 @@ func sortedMapKeys(m map[string]any) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// decimalFilterText extracts the exact literal from a filter value without
+// letting it pass through float64.
+func decimalFilterText(value any) (string, bool) {
+	switch v := value.(type) {
+	case json.Number:
+		return v.String(), true
+	case string:
+		return strings.TrimSpace(v), true
+	default:
+		return "", false
+	}
+}
+
+func (b *recordFilterBuilder) decimalArg(value any) (string, error) {
+	text, ok := decimalFilterText(value)
+	if !ok {
+		return "", fmt.Errorf("%w: decimal filter value must be a number or decimal string", ErrInvalidFilter)
+	}
+	if _, err := parseDecimalText(text); err != nil {
+		return "", fmt.Errorf("%w: decimal filter value must be a number or decimal string", ErrInvalidFilter)
+	}
+	return b.arg(text) + "::numeric", nil
+}
+
+func (b *recordFilterBuilder) compileDecimalPredicate(column string, operator string, value any) (string, error) {
+	switch operator {
+	case "_null", "_nnull":
+		isNull := filterBool(value)
+		if operator == "_nnull" {
+			isNull = !isNull
+		}
+		if isNull {
+			return column + " is null", nil
+		}
+		return column + " is not null", nil
+	case "_in", "_nin":
+		items, ok := value.([]any)
+		if !ok {
+			return "", fmt.Errorf("%w: %s requires an array", ErrInvalidFilter, operator)
+		}
+		if len(items) == 0 {
+			if operator == "_in" {
+				return "false", nil
+			}
+			return "true", nil
+		}
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			arg, err := b.decimalArg(item)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, arg)
+		}
+		op := "in"
+		if operator == "_nin" {
+			op = "not in"
+		}
+		return column + " " + op + " (" + strings.Join(parts, ", ") + ")", nil
+	}
+	if value == nil {
+		if operator == "_eq" {
+			return column + " is null", nil
+		}
+		if operator == "_neq" {
+			return column + " is not null", nil
+		}
+	}
+	sqlOp, ok := map[string]string{"_eq": "=", "_neq": "<>", "_gt": ">", "_gte": ">=", "_lt": "<", "_lte": "<="}[operator]
+	if !ok {
+		return "", fmt.Errorf("%w: operator %q is not supported on decimal fields", ErrInvalidFilter, operator)
+	}
+	arg, err := b.decimalArg(value)
+	if err != nil {
+		return "", err
+	}
+	return column + " " + sqlOp + " " + arg, nil
 }
 
 func normalizeFilterJSONValue(value any) any {

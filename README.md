@@ -33,8 +33,11 @@ installs get the latest tested main build.
 
 - Base, auth, and view collection types.
 - REST endpoints for collection and record CRUD.
-- Field types: text, rich editor, password, number, bool, date, autodate, email,
-  URL, select, JSON, relation, and file.
+- Field types: text, rich editor, password, number, decimal, bool, date,
+  autodate, email, URL, select, JSON, relation, and file.
+- `decimal` fields are real `numeric(precision,scale)` columns carried over the
+  wire as JSON strings, so money and quantities stay exact. Use them instead of
+  `number`, which is `double precision` and will drift when summed.
 - Required, hidden, presentable, help text, validation options, and rule-driven
   access.
 - Query support for list filters, Directus-style JSON filters, selected-field
@@ -281,7 +284,8 @@ can also be managed from the admin panel after setup.
 | `GET /api/projects/{slug}/collections/{name}/records/{id}` | Get a record. |
 | `PATCH /api/projects/{slug}/collections/{name}/records/{id}` | Update a record. |
 | `DELETE /api/projects/{slug}/collections/{name}/records/{id}` | Delete a record. |
-| `POST /api/projects/{slug}/batch` | Run up to 50 bounded record operations sequentially. |
+| `POST /api/projects/{slug}/batch` | Run up to 50 bounded record operations. Send `atomic: true` to run them all in one transaction, so a failure rolls the whole batch back. |
+| `GET /api/projects/{slug}/collections/{name}/records/aggregate` | Grouped aggregates (`count`, `sum`, `avg`, `min`, `max`) under the caller's rules. |
 | `GET /api/projects/{slug}/realtime` | SSE stream for record create/update/delete events. |
 | `GET /api/projects/{slug}/realtime/ws` | WebSocket stream for record events, presence, and broadcast. |
 | `GET /admin/api/projects/{slug}/collections/export` | Export collection schema JSON. |
@@ -302,6 +306,31 @@ GET /api/projects/app/collections/posts/records?filter[title][_icontains]=hello
 
 The `search` parameter only scans fields marked `searchable` in the collection
 editor.
+
+Aggregates are a separate endpoint; passing `aggregate` or `groupBy` to the
+record list is rejected rather than silently ignored:
+
+```text
+GET /api/projects/app/collections/deals/records/aggregate?aggregate=sum:amount,count:*&groupBy=stage
+```
+
+Sums over `decimal` fields are exact — `100.10 + 200.20` returns `"300.30"`,
+not `300.29999999999995`.
+
+### Organization-scoped rules
+
+Send `X-Org-Id` with a request to act inside one organization. Membership is
+verified server-side on every request, so the header is a claim by the client
+and never trusted on its own; a user who is not a member of that organization
+gets `403`. The active organization is then available to rules:
+
+```text
+listRule:   org = @request.auth.orgId
+createRule: org = @request.auth.orgId && @request.auth.orgRole != "viewer"
+```
+
+Browser `EventSource` clients that cannot set headers may pass `org=...` in the
+realtime query string instead.
 
 Realtime accepts `collection`, `collections`, `event`, and `events` query
 parameters. Values can be repeated or comma-separated:

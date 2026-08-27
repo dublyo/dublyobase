@@ -145,7 +145,7 @@ const ApexChart = dynamic(() => import("react-apexcharts"), { ssr: false });
 const TOKEN_KEY = "dublyobase.adminToken.v1";
 const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
 const recordPageSizes = [10, 25, 100, 250, 500] as const;
-const fieldTypes: FieldType[] = ["text", "editor", "password", "number", "bool", "date", "autodate", "email", "url", "select", "json", "relation", "file"];
+const fieldTypes: FieldType[] = ["text", "editor", "password", "number", "decimal", "bool", "date", "autodate", "email", "url", "select", "json", "relation", "file"];
 const reservedDataFieldNames = new Set(["cmax", "cmin", "created", "ctid", "id", "information_schema", "oid", "public", "tableoid", "updated", "xmax", "xmin"]);
 type FieldTypeChoice = {
   type?: FieldType;
@@ -157,6 +157,7 @@ const fieldTypeChoices: FieldTypeChoice[] = [
   { type: "text", label: "Plain text", icon: Type },
   { type: "editor", label: "Rich editor", icon: PencilLine },
   { type: "number", label: "Number", icon: Hash },
+  { type: "decimal", label: "Decimal (exact)", icon: Hash },
   { type: "bool", label: "Bool", icon: ToggleLeft },
   { type: "email", label: "Email", icon: Mail },
   { type: "url", label: "URL", icon: Link2 },
@@ -3471,6 +3472,32 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
         </label>
       </div>
     );
+  } else if (field.type === "decimal") {
+    return (
+      <div className="pb-field-options">
+        <p className="pb-field-hint">
+          Stored as Postgres <code>numeric</code> and sent as a JSON string, so totals stay exact. Use this for money, quantities and rates — not <code>number</code>, which is floating point.
+        </p>
+        <div className="pb-field-grid">
+          <label>
+            <span>Precision</span>
+            <input type="number" min={1} max={38} value={numberOptionValue(field.options, "precision")} onChange={(event) => onChange(setNumberFieldOption(field, "precision", event.target.value))} placeholder="18" disabled={readOnly} />
+          </label>
+          <label>
+            <span>Scale</span>
+            <input type="number" min={0} max={38} value={numberOptionValue(field.options, "scale")} onChange={(event) => onChange(setNumberFieldOption(field, "scale", event.target.value))} placeholder="2" disabled={readOnly} />
+          </label>
+          <label>
+            <span>Min</span>
+            <input value={stringOptionValue(field.options, "min")} onChange={(event) => onChange(setStringFieldOption(field, "min", event.target.value))} placeholder="No min" disabled={readOnly} />
+          </label>
+          <label>
+            <span>Max</span>
+            <input value={stringOptionValue(field.options, "max")} onChange={(event) => onChange(setStringFieldOption(field, "max", event.target.value))} placeholder="No max" disabled={readOnly} />
+          </label>
+        </div>
+      </div>
+    );
   } else if (field.type === "number") {
     typeOptions = (
       <div className="pb-field-options three">
@@ -3729,6 +3756,21 @@ function RecordFieldInput({ field, value, editing, onChange }: { field: Field; v
       <label className="pb-checkline record-checkline">
         <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} />
         {label}
+      </label>
+    );
+  }
+  if (field.type === "decimal") {
+    // inputMode=decimal rather than type=number: the value must never round-trip
+    // through a JS number, so it is kept as the typed string.
+    return (
+      <label className="pb-field record-field">
+        <span>{label}</span>
+        <input
+          inputMode="decimal"
+          value={typeof value === "string" ? value : value === undefined || value === null ? "" : String(value)}
+          onChange={(event) => onChange(event.target.value === "" ? undefined : event.target.value)}
+          placeholder="0.00"
+        />
       </label>
     );
   }
@@ -7724,6 +7766,7 @@ function sampleUpdatePayload(collection: Collection): RecordItem {
 
 function sampleValueForField(field: Field): unknown {
   if (field.type === "number") return field.options?.onlyInt ? 10 : 10.5;
+  if (field.type === "decimal") return "1234.56";
   if (field.type === "bool") return true;
   if (field.type === "date") return "2026-07-04T00:00:00Z";
   if (field.type === "email") return "user@example.com";
@@ -8427,6 +8470,24 @@ function setNumberFieldOption(field: Field, key: string, value: string): Field {
 function numberOptionValue(options: Record<string, unknown> = {}, key: string) {
   const value = options[key];
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+}
+
+// Decimal bounds stay strings end to end — parsing them as JS numbers would
+// reintroduce the float rounding the decimal field type exists to avoid.
+function setStringFieldOption(field: Field, key: string, value: string): Field {
+  const trimmed = value.trim();
+  const options = { ...(field.options ?? {}) };
+  if (trimmed === "") {
+    delete options[key];
+  } else {
+    options[key] = trimmed;
+  }
+  return { ...field, options: defaultOptionsForType(field.type, options) };
+}
+
+function stringOptionValue(options: Record<string, unknown> = {}, key: string) {
+  const value = options[key];
+  return typeof value === "string" ? value : "";
 }
 
 function optionValuesText(options: Record<string, unknown> = {}, key = "values") {

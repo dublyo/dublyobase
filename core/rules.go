@@ -479,11 +479,15 @@ func (c *ruleCompiler) compileCompare(n compareNode) (string, error) {
 	return fmt.Sprintf("(%s %s %s)", left, op, right), nil
 }
 
-// isAuthIDRef reports whether the node is @request.auth.id, the one request
-// reference that compiles to a uuid-typed expression rather than text.
+// isAuthIDRef reports whether the node is one of the uuid-typed request
+// references. Text-typed refs (role, collection, orgRole) compare to strings
+// natively; these do not, and need the rewrite in compileAuthIDCompare.
 func isAuthIDRef(node ruleNode) bool {
 	ref, ok := node.(requestNode)
-	return ok && ref.name == "@request.auth.id"
+	if !ok {
+		return false
+	}
+	return ref.name == "@request.auth.id" || ref.name == "@request.auth.orgId"
 }
 
 func stringLiteralValue(node ruleNode) (string, bool) {
@@ -496,7 +500,7 @@ func stringLiteralValue(node ruleNode) (string, bool) {
 
 // compileAuthIDCompare fixes comparisons of @request.auth.id against string
 // literals. _dbo.request_auth_id() returns uuid, so the canonical PocketBase
-// "is anyone signed in" idiom `@request.auth.id != ""` would emit `uuid <> ''`
+// "is anyone signed in" idiom `@request.auth.id != ""` would emit `uuid <> ”`
 // — which Postgres rejects at CREATE POLICY time with "invalid input syntax for
 // type uuid". The empty string is rewritten to the IS [NOT] NULL test it
 // actually means, and any other non-uuid literal is refused up front so the
@@ -510,12 +514,27 @@ func (c *ruleCompiler) compileAuthIDCompare(n compareNode) (string, bool, error)
 	if !isAuthIDRef(ref) {
 		ref, other = n.right, n.left
 	}
+	// A uuid-typed ref compared against a text column (the usual shape for an
+	// `org` column holding an organization id) has no operator in Postgres.
+	// Cast the ref, never the column, so any index on the column still applies.
+	if c.identIsTextTyped(other) {
+		refSQL, err := c.compile(ref)
+		if err != nil {
+			return "", false, err
+		}
+		otherSQL, err := c.compile(other)
+		if err != nil {
+			return "", false, err
+		}
+		return fmt.Sprintf("(%s::text %s %s)", refSQL, n.op, otherSQL), true, nil
+	}
 	text, ok := stringLiteralValue(other)
 	if !ok {
 		return "", false, nil
 	}
+	refName := ref.(requestNode).name
 	if n.op != "=" && n.op != "!=" {
-		return "", false, fmt.Errorf("%w: @request.auth.id only supports = and != against a string", ErrInvalidRule)
+		return "", false, fmt.Errorf("%w: %s only supports = and != against a string", ErrInvalidRule, refName)
 	}
 	refSQL, err := c.compile(ref)
 	if err != nil {
@@ -528,9 +547,30 @@ func (c *ruleCompiler) compileAuthIDCompare(n compareNode) (string, bool, error)
 		return fmt.Sprintf("(%s is not null)", refSQL), true, nil
 	}
 	if err := ValidateUUID(text); err != nil {
-		return "", false, fmt.Errorf(`%w: @request.auth.id can only be compared to "" or a UUID literal`, ErrInvalidRule)
+		return "", false, fmt.Errorf(`%w: %s can only be compared to "" or a UUID literal`, ErrInvalidRule, refName)
 	}
 	return "", false, nil
+}
+
+// identIsTextTyped reports whether the node names a column stored as text.
+// Relation and id columns are uuid and must not be cast.
+func (c *ruleCompiler) identIsTextTyped(node ruleNode) bool {
+	ident, ok := node.(identNode)
+	if !ok || c.collection == nil {
+		return false
+	}
+	for _, field := range c.collection.Fields {
+		if field.Name != ident.name {
+			continue
+		}
+		switch field.Type {
+		case "text", "email", "url", "editor", "select":
+			return !fieldIsMultiple(field)
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func (c *ruleCompiler) validateField(name string) error {
@@ -553,6 +593,10 @@ func compileRequestRef(name string) (string, error) {
 		return "(select _dbo.request_role())", nil
 	case "@request.auth.collection":
 		return "(select _dbo.request_claim('collection'))", nil
+	case "@request.auth.orgId":
+		return "(select _dbo.request_org_id())", nil
+	case "@request.auth.orgRole":
+		return "(select _dbo.request_org_role())", nil
 	default:
 		return "", fmt.Errorf("%w: unsupported request reference %q", ErrInvalidRule, name)
 	}

@@ -112,6 +112,9 @@ func tsFieldType(field Field) string {
 	switch field.Type {
 	case "number":
 		return "number"
+	case "decimal":
+		// exact decimal, carried as a string so JSON parsing cannot round it
+		return "string"
 	case "bool":
 		return "boolean"
 	case "json":

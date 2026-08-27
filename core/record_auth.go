@@ -25,10 +25,54 @@ type RecordAuth struct {
 	RoleName   string
 	Subject    string
 	Collection string
+	OrgID      string
+	OrgRole    string
 	Claims     map[string]any
 }
 
+// ResolveRecordAuth resolves the caller without an active organization.
 func ResolveRecordAuth(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, token string, now time.Time) (*RecordAuth, error) {
+	return ResolveRecordAuthForOrg(ctx, pool, cfg, projectSlug, token, "", now)
+}
+
+// ResolveRecordAuthForOrg additionally binds the request to one organization,
+// supplied by the caller as X-Org-Id. Membership is verified here on every
+// request — the header is a claim by the client and is never trusted on its
+// own — and the resulting org id and role are published as request claims so
+// policies can be written as `org = @request.auth.orgId`.
+func ResolveRecordAuthForOrg(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, token string, orgID string, now time.Time) (*RecordAuth, error) {
+	auth, err := resolveRecordAuthBase(ctx, pool, cfg, projectSlug, token, now)
+	if err != nil {
+		return nil, err
+	}
+	orgID = strings.TrimSpace(orgID)
+	if orgID == "" {
+		return auth, nil
+	}
+	if err := ValidateUUID(orgID); err != nil {
+		return nil, fmt.Errorf("%w: X-Org-Id must be a UUID", ErrValidation)
+	}
+	switch auth.Role {
+	case RecordRoleAuthenticated:
+		// A signed-in user may only act inside an organization they belong to.
+		role, err := getOrganizationRoleRow(ctx, pool, &auth.Project, orgID, auth.Subject)
+		if err != nil {
+			return nil, err
+		}
+		auth.OrgID, auth.OrgRole = orgID, role
+	case RecordRoleService:
+		// Service callers are already trusted with the whole project; they may
+		// scope themselves to an org to exercise tenant-shaped rules.
+		auth.OrgID, auth.OrgRole = orgID, OrgRoleOwner
+	default:
+		return nil, ErrForbidden
+	}
+	auth.Claims["org"] = auth.OrgID
+	auth.Claims["org_role"] = auth.OrgRole
+	return auth, nil
+}
+
+func resolveRecordAuthBase(ctx context.Context, pool *pgxpool.Pool, cfg *Config, projectSlug string, token string, now time.Time) (*RecordAuth, error) {
 	project, err := GetProject(ctx, pool, projectSlug)
 	if err != nil {
 		return nil, err

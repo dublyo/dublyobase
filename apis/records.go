@@ -2,6 +2,7 @@ package apis
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -23,6 +24,16 @@ func (s *server) listRecords(w http.ResponseWriter, r *http.Request) {
 	filter := r.URL.Query().Get("filter")
 	if strings.TrimSpace(filter) == "" {
 		filter = directusFilterQuery(r)
+	}
+	// Aggregation used to be accepted and silently dropped here, so a caller
+	// asking for sum/groupBy got a plain page of rows back and could read it as
+	// a report. Point them at the endpoint that actually does it.
+	for _, param := range []string{"aggregate", "groupBy", "group_by"} {
+		if r.URL.Query().Has(param) {
+			writeError(w, http.StatusBadRequest, "validation_error",
+				fmt.Sprintf("%q is not supported on the records list; use GET .../records/aggregate", param))
+			return
+		}
 	}
 	opts := core.RecordListOptions{
 		Page:      queryInt(r, "page", 1),
@@ -223,7 +234,7 @@ func (s *server) resolveRecordAuth(w http.ResponseWriter, r *http.Request) (*cor
 	if !s.checkProjectQuota(w, r, r.PathValue("slug"), false) {
 		return nil, false
 	}
-	auth, err := core.ResolveRecordAuth(r.Context(), s.app.Pool, s.app.Config, r.PathValue("slug"), bearerToken(r), time.Now())
+	auth, err := core.ResolveRecordAuthForOrg(r.Context(), s.app.Pool, s.app.Config, r.PathValue("slug"), bearerToken(r), activeOrgID(r), time.Now())
 	if err != nil {
 		writeCoreError(w, err)
 		return nil, false
@@ -232,6 +243,16 @@ func (s *server) resolveRecordAuth(w http.ResponseWriter, r *http.Request) (*cor
 		return nil, false
 	}
 	return auth, true
+}
+
+// activeOrgID reads the organization the caller wants to act in. Browser
+// EventSource clients cannot set headers, so realtime also accepts it as a
+// query parameter; membership is verified server-side either way.
+func activeOrgID(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("X-Org-Id")); v != "" {
+		return v
+	}
+	return strings.TrimSpace(r.URL.Query().Get("org"))
 }
 
 func queryInt(r *http.Request, name string, def int) int {
@@ -249,4 +270,43 @@ func queryInt(r *http.Request, name string, def int) int {
 func queryBool(r *http.Request, name string) bool {
 	raw := strings.ToLower(strings.TrimSpace(r.URL.Query().Get(name)))
 	return raw == "1" || raw == "true" || raw == "yes"
+}
+
+// aggregateRecords answers grouped aggregate queries:
+//
+//	GET .../records/aggregate?aggregate=sum:amount,count:*&groupBy=stage
+//
+// It runs under the caller's role, so the numbers only ever cover rows the
+// caller may read.
+func (s *server) aggregateRecords(w http.ResponseWriter, r *http.Request) {
+	auth, ok := s.resolveRecordAuth(w, r)
+	if !ok {
+		return
+	}
+	query := r.URL.Query()
+	input := core.AggregateInput{
+		Aggregates: splitAggregateParam(query["aggregate"]),
+		GroupBy:    splitAggregateParam(query["groupBy"]),
+		Filter:     query.Get("filter"),
+		Search:     query.Get("search"),
+		Limit:      queryInt(r, "limit", 0),
+	}
+	result, err := core.AggregateRecords(r.Context(), s.app.Pool, auth, r.PathValue("name"), input)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func splitAggregateParam(values []string) []string {
+	out := []string{}
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				out = append(out, part)
+			}
+		}
+	}
+	return out
 }

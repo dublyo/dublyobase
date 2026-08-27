@@ -53,6 +53,10 @@ type DiscoveredColumn struct {
 	PrimaryKey bool   `json:"primaryKey"`
 	Supported  bool   `json:"supported"`
 	Reason     string `json:"reason,omitempty"`
+	// NumericPrecision/NumericScale are only set for numeric columns, so an
+	// imported decimal keeps the exactness the column was declared with.
+	NumericPrecision int `json:"numericPrecision,omitempty"`
+	NumericScale     int `json:"numericScale,omitempty"`
 }
 
 type DiscoveredForeignKey struct {
@@ -414,7 +418,8 @@ func discoverOneTable(ctx context.Context, pool *pgxpool.Pool, project *Project,
 
 func discoverColumns(ctx context.Context, pool *pgxpool.Pool, schemaName string, tableName string) ([]discoveredColumnInternal, error) {
 	rows, err := pool.Query(ctx, `
-		select column_name, data_type, udt_name, is_nullable = 'YES', column_default is not null, ordinal_position
+		select column_name, data_type, udt_name, is_nullable = 'YES', column_default is not null, ordinal_position,
+			coalesce(numeric_precision, 0), coalesce(numeric_scale, 0)
 		from information_schema.columns
 		where table_schema = $1 and table_name = $2
 		order by ordinal_position`,
@@ -428,7 +433,7 @@ func discoverColumns(ctx context.Context, pool *pgxpool.Pool, schemaName string,
 	columns := []discoveredColumnInternal{}
 	for rows.Next() {
 		var col discoveredColumnInternal
-		if err := rows.Scan(&col.Name, &col.DataType, &col.UDTName, &col.Nullable, &col.HasDefault, &col.Ordinal); err != nil {
+		if err := rows.Scan(&col.Name, &col.DataType, &col.UDTName, &col.Nullable, &col.HasDefault, &col.Ordinal, &col.NumericPrecision, &col.NumericScale); err != nil {
 			return nil, err
 		}
 		col.UDTName = strings.ToLower(strings.TrimSpace(col.UDTName))
@@ -637,8 +642,16 @@ func postgresFieldType(col discoveredColumnInternal) (string, map[string]any, bo
 	case "int2", "int4", "int8":
 		options["onlyInt"] = true
 		return "number", options, true, ""
-	case "float4", "float8", "numeric":
+	case "float4", "float8":
 		return "number", options, true, ""
+	case "numeric":
+		// numeric columns become decimal, not number: mapping them to float8
+		// would defeat the exactness the column was chosen for.
+		if col.NumericPrecision > 0 {
+			options["precision"] = col.NumericPrecision
+			options["scale"] = col.NumericScale
+		}
+		return "decimal", options, true, ""
 	case "timestamptz", "timestamp", "date":
 		return "date", options, true, ""
 	case "json", "jsonb":
