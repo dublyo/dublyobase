@@ -43,6 +43,12 @@ type CollectionIndex struct {
 // setting, which is neither immutable nor meaningful at write time, so they are
 // refused rather than silently evaluated against an empty claim set.
 func compileImmutableExpr(expr string, collection *Collection, kind string) (string, error) {
+	return compileImmutableExprExact(expr, collection, kind, false)
+}
+
+// compileImmutableExprExact compiles with numeric (not float) arithmetic when
+// the value being produced is a decimal.
+func compileImmutableExprExact(expr string, collection *Collection, kind string, exact bool) (string, error) {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
 		return "", fmt.Errorf("%w: %s expression is required", ErrValidation, kind)
@@ -58,7 +64,7 @@ func compileImmutableExpr(expr string, collection *Collection, kind string) (str
 	if err := assertImmutableNode(node, kind); err != nil {
 		return "", err
 	}
-	compiler := &ruleCompiler{collection: collection, mode: compilePolicy}
+	compiler := &ruleCompiler{collection: collection, mode: compilePolicy, exactArithmetic: exact}
 	sql, err := compiler.compile(node)
 	if err != nil {
 		return "", fmt.Errorf("%w: %s expression: %s", ErrValidation, kind,
@@ -105,7 +111,7 @@ func ComputedColumnSQL(collection *Collection, field Field) (string, error) {
 	if field.Required {
 		return "", fmt.Errorf("%w: computed field %q cannot also be required — the database supplies its value", ErrValidation, field.Name)
 	}
-	sql, err := compileImmutableExpr(raw, collection, "computed")
+	sql, err := compileImmutableExprExact(raw, collection, "computed", field.Type == "decimal")
 	if err != nil {
 		return "", err
 	}

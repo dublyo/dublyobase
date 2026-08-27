@@ -421,6 +421,12 @@ type ruleCompiler struct {
 	collection *Collection
 	mode       ruleCompileMode
 	args       []any
+	// exactArithmetic casts float-typed columns to numeric so a computed
+	// decimal is not silently evaluated in floating point. Postgres has no
+	// `double precision * numeric` operator, so without this it resolves the
+	// other way — casting the numeric down to float — and the money value is
+	// computed exactly as inexactly as if decimal had never been used.
+	exactArithmetic bool
 }
 
 func CompileFilter(filter string, collection *Collection) (*SQLExpression, error) {
@@ -497,6 +503,9 @@ func (c *ruleCompiler) compile(node ruleNode) (string, error) {
 	case identNode:
 		if err := c.validateField(n.name); err != nil {
 			return "", err
+		}
+		if c.exactArithmetic && c.identIsFloatTyped(n.name) {
+			return quoteIdent(n.name) + "::numeric", nil
 		}
 		return quoteIdent(n.name), nil
 	case requestNode:
@@ -657,6 +666,18 @@ func (c *ruleCompiler) identIsTextTyped(node ruleNode) bool {
 	return false
 }
 
+func (c *ruleCompiler) identIsFloatTyped(name string) bool {
+	if c.collection == nil {
+		return false
+	}
+	for _, field := range c.collection.Fields {
+		if field.Name == name {
+			return field.Type == "number"
+		}
+	}
+	return false
+}
+
 func (c *ruleCompiler) validateField(name string) error {
 	if name == "id" || name == "created" || name == "updated" {
 		return nil
@@ -695,6 +716,9 @@ func (c *ruleCompiler) compileLiteral(n literalNode) (string, error) {
 	case tokString:
 		return quoteLiteral(n.text), nil
 	case tokNumber:
+		if c.exactArithmetic {
+			return n.text + "::numeric", nil
+		}
 		return n.text, nil
 	case tokBool:
 		if n.value.(bool) {

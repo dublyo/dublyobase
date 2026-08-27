@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -575,5 +576,49 @@ func TestAddComputedToExistingField(t *testing.T) {
 	}
 	if len(list.Items) != 1 || list.Items[0]["line_total"] != "20.000" {
 		t.Fatalf("line_total = %v, want 20.000 recomputed", list.Items)
+	}
+}
+
+// TestComputedDecimalUsesNumericArithmetic: Postgres has no
+// `double precision * numeric` operator, so an unguarded `qty * unit_price`
+// resolved by casting the numeric DOWN to float — computing money in floating
+// point inside a column that exists to avoid exactly that.
+func TestComputedDecimalUsesNumericArithmetic(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+	schema, _ := core.ProjectNames(slug)
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"lines","type":"base","fields":[
+			{"name":"qty","type":"number","options":{"onlyInt":true}},
+			{"name":"unit_price","type":"decimal","options":{"precision":18,"scale":3}},
+			{"name":"line_total","type":"decimal","options":{"precision":18,"scale":3,"computed":"qty * unit_price"}}]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	var expr string
+	if err := app.Pool.QueryRow(context.Background(), `
+		select generation_expression from information_schema.columns
+		where table_schema=$1 and table_name='lines' and column_name='line_total'`, schema).Scan(&expr); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(expr), "double precision") {
+		t.Fatalf("generated expression computes in float: %s", expr)
+	}
+
+	// A magnitude float64 cannot represent exactly.
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/lines/records", slug), token,
+		`{"qty":999,"unit_price":"999999999999.999"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create record: %d %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["line_total"] != "998999999999999.001" {
+		t.Fatalf("line_total = %v, want 998999999999999.001 (float gives ...999.000)", got["line_total"])
 	}
 }
