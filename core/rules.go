@@ -25,6 +25,7 @@ const (
 	tokAnd
 	tokOr
 	tokCompare
+	tokArith
 )
 
 type ruleToken struct {
@@ -66,6 +67,9 @@ func (l *ruleLexer) next() (ruleToken, error) {
 		if l.match("||") {
 			return ruleToken{kind: tokOr, text: "||"}, nil
 		}
+	case '+', '*', '/', '%':
+		l.pos++
+		return ruleToken{kind: tokArith, text: string(ch)}, nil
 	case '=', '!', '>', '<':
 		return l.scanCompare()
 	case '"':
@@ -73,7 +77,14 @@ func (l *ruleLexer) next() (ruleToken, error) {
 	case '@':
 		return l.scanRequest()
 	}
-	if ch == '-' || unicode.IsDigit(rune(ch)) {
+	if ch == '-' {
+		if l.pos+1 < len(l.input) && unicode.IsDigit(rune(l.input[l.pos+1])) {
+			return l.scanNumber()
+		}
+		l.pos++
+		return ruleToken{kind: tokArith, text: "-"}, nil
+	}
+	if unicode.IsDigit(rune(ch)) {
 		return l.scanNumber()
 	}
 	if isIdentStart(ch) {
@@ -208,6 +219,11 @@ type compareNode struct {
 	left, right ruleNode
 }
 
+type arithNode struct {
+	op          string
+	left, right ruleNode
+}
+
 type identNode struct{ name string }
 type requestNode struct{ name string }
 
@@ -288,7 +304,7 @@ func (p *ruleParser) parseAnd(depth int) (ruleNode, error) {
 }
 
 func (p *ruleParser) parseCompare(depth int) (ruleNode, error) {
-	left, err := p.parsePrimary(depth)
+	left, err := p.parseAdd(depth)
 	if err != nil {
 		return nil, err
 	}
@@ -296,11 +312,51 @@ func (p *ruleParser) parseCompare(depth int) (ruleNode, error) {
 		return left, nil
 	}
 	op := p.next().text
-	right, err := p.parsePrimary(depth)
+	right, err := p.parseAdd(depth)
 	if err != nil {
 		return nil, err
 	}
 	return compareNode{op: op, left: left, right: right}, nil
+}
+
+// parseAdd / parseMul give arithmetic the usual precedence so a computed
+// column reads the way an accountant would write it: qty * unit_price - discount.
+func (p *ruleParser) parseAdd(depth int) (ruleNode, error) {
+	left, err := p.parseMul(depth)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		tok := p.peek()
+		if tok.kind != tokArith || (tok.text != "+" && tok.text != "-") {
+			return left, nil
+		}
+		p.next()
+		right, err := p.parseMul(depth)
+		if err != nil {
+			return nil, err
+		}
+		left = arithNode{op: tok.text, left: left, right: right}
+	}
+}
+
+func (p *ruleParser) parseMul(depth int) (ruleNode, error) {
+	left, err := p.parsePrimary(depth)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		tok := p.peek()
+		if tok.kind != tokArith || (tok.text != "*" && tok.text != "/" && tok.text != "%") {
+			return left, nil
+		}
+		p.next()
+		right, err := p.parsePrimary(depth)
+		if err != nil {
+			return nil, err
+		}
+		left = arithNode{op: tok.text, left: left, right: right}
+	}
 }
 
 func (p *ruleParser) parsePrimary(depth int) (ruleNode, error) {
@@ -419,6 +475,21 @@ func (c *ruleCompiler) compile(node ruleNode) (string, error) {
 		right, err := c.compile(n.right)
 		if err != nil {
 			return "", err
+		}
+		return fmt.Sprintf("((%s) %s (%s))", left, n.op, right), nil
+	case arithNode:
+		left, err := c.compile(n.left)
+		if err != nil {
+			return "", err
+		}
+		right, err := c.compile(n.right)
+		if err != nil {
+			return "", err
+		}
+		if n.op == "/" || n.op == "%" {
+			// A zero divisor in a generated column aborts the whole INSERT with
+			// a division error; nullif turns it into NULL instead.
+			return fmt.Sprintf("((%s) %s nullif((%s), 0))", left, n.op, right), nil
 		}
 		return fmt.Sprintf("((%s) %s (%s))", left, n.op, right), nil
 	case compareNode:

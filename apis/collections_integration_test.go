@@ -428,3 +428,152 @@ func TestCollectionAuthIDRulePolicyApplies(t *testing.T) {
 		t.Fatalf("non-uuid literal: want 422, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestComputedAndConstraints is the invariants slice: a line total the client
+// cannot forge, a check the database refuses to break, and a unique document
+// number. Previously all three lived in whatever client wrote to the API.
+func TestComputedAndConstraints(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"quote_items","type":"base","fields":[
+			{"name":"doc_no","type":"text"},
+			{"name":"qty","type":"number","options":{"onlyInt":true}},
+			{"name":"unit_price","type":"decimal","options":{"precision":18,"scale":3}},
+			{"name":"line_total","type":"decimal","options":{"precision":18,"scale":3,"computed":"qty * unit_price"}}],
+		  "options":{
+			"checks":[{"name":"qty_positive","expression":"qty > 0"},
+			          {"name":"price_non_negative","expression":"unit_price >= 0"}],
+			"indexes":[{"name":"doc_no_unique","fields":["doc_no"],"unique":true}]}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The database computes the total; the client never supplies it.
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/quote_items/records", slug), token,
+		`{"doc_no":"Q-1","qty":3,"unit_price":"2312.500"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create record: %d %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["line_total"] != "6937.500" {
+		t.Fatalf("line_total = %v, want 6937.500", got["line_total"])
+	}
+
+	// A forged total must be refused outright, not silently ignored.
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/quote_items/records", slug), token,
+		`{"doc_no":"Q-2","qty":1,"unit_price":"100.000","line_total":"1.000"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("forged computed value: want 422, got %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Check constraint.
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/quote_items/records", slug), token,
+		`{"doc_no":"Q-3","qty":0,"unit_price":"10.000"}`)
+	if rec.Code < 400 {
+		t.Fatalf("qty=0 violates a check but returned %d", rec.Code)
+	}
+
+	// Unique document number.
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/quote_items/records", slug), token,
+		`{"doc_no":"Q-1","qty":1,"unit_price":"5.000"}`)
+	if rec.Code < 400 {
+		t.Fatalf("duplicate doc_no returned %d, want a conflict", rec.Code)
+	}
+}
+
+// TestComputedExpressionsAreSandboxed: these expressions land in DDL, so the
+// grammar must refuse anything that is not pure arithmetic over this row.
+func TestComputedExpressionsAreSandboxed(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	for _, expr := range []string{
+		`@request.auth.id`, // not immutable
+		`(select 1)`,       // subquery
+		`now()`,            // function call
+		`qty) stored, x int; drop table users;--`, // injection attempt
+		`missing_field * 2`,                       // unknown column
+		`line_total * 2`,                          // self-reference
+	} {
+		body := fmt.Sprintf(`{"name":"probe","type":"base","fields":[
+			{"name":"qty","type":"number"},
+			{"name":"line_total","type":"decimal","options":{"computed":%q}}]}`, expr)
+		rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token, body)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("expression %q: want 422, got %d %s", expr, rec.Code, rec.Body.String())
+		}
+	}
+	// The users table must still exist.
+	if rec := getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/users", slug), token); rec.Code != http.StatusOK {
+		t.Fatalf("users collection missing after injection attempts: %d", rec.Code)
+	}
+}
+
+// TestAddComputedToExistingField: adding `computed` to a field that already
+// exists used to return 200 and change nothing, leaving the metadata claiming a
+// database-owned value while the column stayed writable.
+func TestAddComputedToExistingField(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+	schema, _ := core.ProjectNames(slug)
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"lines","type":"base","fields":[
+			{"name":"qty","type":"number","options":{"onlyInt":true}},
+			{"name":"unit_price","type":"decimal","options":{"precision":18,"scale":3}},
+			{"name":"line_total","type":"decimal","options":{"precision":18,"scale":3}}]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/lines/records", slug), token,
+		`{"qty":2,"unit_price":"10.000","line_total":"999.000"}`)
+
+	upgrade := `{"fields":[
+		{"name":"qty","type":"number","options":{"onlyInt":true}},
+		{"name":"unit_price","type":"decimal","options":{"precision":18,"scale":3}},
+		{"name":"line_total","type":"decimal","options":{"precision":18,"scale":3,"computed":"qty * unit_price"}}]`
+
+	// Unconfirmed: must refuse rather than silently no-op.
+	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/lines", slug), token, upgrade+`}`)
+	if rec.Code < 400 {
+		t.Fatalf("unconfirmed computed change: want 4xx, got %d %s", rec.Code, rec.Body.String())
+	}
+	// Confirmed: the column is rebuilt as generated.
+	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/lines", slug), token,
+		upgrade+`,"dropMissingFields":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirmed computed change: %d %s", rec.Code, rec.Body.String())
+	}
+	var isGenerated string
+	if err := app.Pool.QueryRow(context.Background(), `
+		select is_generated from information_schema.columns
+		where table_schema = $1 and table_name = 'lines' and column_name = 'line_total'`,
+		schema).Scan(&isGenerated); err != nil {
+		t.Fatal(err)
+	}
+	if isGenerated != "ALWAYS" {
+		t.Fatalf("is_generated = %q, want ALWAYS — the column was not actually converted", isGenerated)
+	}
+	// And the forged 999.000 is gone, recomputed to 20.000.
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/lines/records", slug), token)
+	var list struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 || list.Items[0]["line_total"] != "20.000" {
+		t.Fatalf("line_total = %v, want 20.000 recomputed", list.Items)
+	}
+}

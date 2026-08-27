@@ -156,6 +156,9 @@ func CreateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	if err := syncCollectionPolicies(ctx, tx, project, collection); err != nil {
 		return nil, err
 	}
+	if err := syncCollectionConstraints(ctx, tx, project, collection); err != nil {
+		return nil, err
+	}
 	if err := InsertAudit(ctx, tx, AuditEvent{
 		AdminID:    &adminID,
 		Action:     "collection.create",
@@ -184,6 +187,13 @@ func createCollectionTable(ctx context.Context, tx pgx.Tx, schemaName string, ta
 		ddl, err := ColumnDDL(field)
 		if err != nil {
 			return err
+		}
+		generated, err := ComputedColumnSQL(&Collection{Name: tableName, Fields: fields}, field)
+		if err != nil {
+			return err
+		}
+		if generated != "" {
+			ddl += " " + generated
 		}
 		columns = append(columns, fmt.Sprintf(`%s %s`, quoteIdent(field.Name), ddl))
 	}
@@ -578,8 +588,13 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 		if err := rejectRulesOnImportedCollection(&next); err != nil {
 			return nil, err
 		}
-	} else if err := syncCollectionPolicies(ctx, tx, project, &next); err != nil {
-		return nil, err
+	} else {
+		if err := syncCollectionPolicies(ctx, tx, project, &next); err != nil {
+			return nil, err
+		}
+		if err := syncCollectionConstraints(ctx, tx, project, &next); err != nil {
+			return nil, err
+		}
 	}
 	if err := InsertAudit(ctx, tx, AuditEvent{
 		AdminID:    &adminID,
@@ -634,8 +649,39 @@ func applyFieldDiff(ctx context.Context, tx pgx.Tx, schemaName string, tableName
 			if err != nil {
 				return err
 			}
+			// The generated clause is part of a column's identity. Leaving it out
+			// of this comparison made adding `computed` to an existing field a
+			// silent no-op: the metadata claimed the value was database-owned
+			// while the column stayed writable and unconstrained.
+			currentGen := computedExpressionOf(existing)
+			nextGen := computedExpressionOf(field)
 			if currentDDL != nextDDL {
 				return fmt.Errorf("%w: field %q requires a manual migration", ErrDestructiveChange, field.Name)
+			}
+			if currentGen == nextGen {
+				continue
+			}
+			// Postgres cannot ALTER a column into (or out of) GENERATED, so the
+			// column is rebuilt. That is lossless in the direction that matters:
+			// a generated column's value is derived, so it is recomputed on the
+			// spot. Going the other way keeps the computed values as plain data.
+			if !dropMissing {
+				return fmt.Errorf("%w: changing the computed expression on %q rebuilds the column; resend with dropMissingFields to confirm", ErrDestructiveChange, field.Name)
+			}
+			generated, err := ComputedColumnSQL(&Collection{Name: tableName, Fields: nextFields}, field)
+			if err != nil {
+				return err
+			}
+			ddl := nextDDL
+			if generated != "" {
+				ddl += " " + generated
+			}
+			table := quoteIdent(schemaName, tableName)
+			if _, err := tx.Exec(ctx, fmt.Sprintf(`alter table %s drop column %s`, table, quoteIdent(field.Name))); err != nil {
+				return mapSchemaSyncError(err)
+			}
+			if _, err := tx.Exec(ctx, fmt.Sprintf(`alter table %s add column %s %s`, table, quoteIdent(field.Name), ddl)); err != nil {
+				return mapConstraintError(err, field.Name)
 			}
 			continue
 		}
@@ -972,6 +1018,11 @@ func rejectRulesOnImportedCollection(collection *Collection) error {
 		}
 	}
 	return nil
+}
+
+func computedExpressionOf(field Field) string {
+	raw, _ := field.Options["computed"].(string)
+	return strings.TrimSpace(raw)
 }
 
 func mapSchemaSyncError(err error) error {

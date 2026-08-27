@@ -670,6 +670,9 @@ func isAuthUsersHiddenField(collection *Collection, name string) bool {
 }
 
 func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {
+	if FieldIsComputed(field) {
+		return nil, fmt.Errorf("%w: field %q is computed by the database and cannot be written", ErrValidation, field.Name)
+	}
 	if string(raw) == "null" {
 		if fieldCanBeNull(field) {
 			return nil, nil

@@ -3503,6 +3503,21 @@ function FieldOptionsEditor({ field, collections, onChange, readOnly }: { field:
             <input value={stringOptionValue(field.options, "max")} onChange={(event) => onChange(setStringFieldOption(field, "max", event.target.value))} placeholder="No max" disabled={readOnly} />
           </label>
         </div>
+        <label className="pb-field">
+          <span>Computed from</span>
+          <input
+            value={stringOptionValue(field.options, "computed")}
+            onChange={(event) => onChange(setStringFieldOption(field, "computed", event.target.value))}
+            placeholder="qty * unit_price"
+            disabled={readOnly}
+          />
+        </label>
+        <p className="pb-field-hint">
+          Leave empty for a normal field. With an expression, PostgreSQL computes and stores the
+          value on every write and the API rejects any attempt to set it, so the number cannot
+          disagree with the columns it is derived from. Arithmetic over this row&rsquo;s own
+          columns only.
+        </p>
       </div>
     );
   } else if (field.type === "number") {
@@ -8362,11 +8377,13 @@ function defaultOptionsForType(type: FieldType, options: Record<string, unknown>
       ...withNumber("scale"),
       ...withString("min"),
       ...withString("max"),
+      ...withString("computed"),
     };
   }
   if (type === "number") {
     return {
       ...sourceOptions,
+      ...withString("computed"),
       ...withNumber("min"),
       ...withNumber("max"),
       ...withBool("onlyInt"),
