@@ -459,6 +459,11 @@ func (c *ruleCompiler) compileCompare(n compareNode) (string, error) {
 		}
 		return fmt.Sprintf("(%s is not null)", sql), nil
 	}
+	if isAuthIDRef(n.left) || isAuthIDRef(n.right) {
+		if sql, handled, err := c.compileAuthIDCompare(n); handled || err != nil {
+			return sql, err
+		}
+	}
 	left, err := c.compile(n.left)
 	if err != nil {
 		return "", err
@@ -472,6 +477,60 @@ func (c *ruleCompiler) compileCompare(n compareNode) (string, error) {
 		op = "="
 	}
 	return fmt.Sprintf("(%s %s %s)", left, op, right), nil
+}
+
+// isAuthIDRef reports whether the node is @request.auth.id, the one request
+// reference that compiles to a uuid-typed expression rather than text.
+func isAuthIDRef(node ruleNode) bool {
+	ref, ok := node.(requestNode)
+	return ok && ref.name == "@request.auth.id"
+}
+
+func stringLiteralValue(node ruleNode) (string, bool) {
+	lit, ok := node.(literalNode)
+	if !ok || lit.kind != tokString {
+		return "", false
+	}
+	return lit.text, true
+}
+
+// compileAuthIDCompare fixes comparisons of @request.auth.id against string
+// literals. _dbo.request_auth_id() returns uuid, so the canonical PocketBase
+// "is anyone signed in" idiom `@request.auth.id != ""` would emit `uuid <> ''`
+// — which Postgres rejects at CREATE POLICY time with "invalid input syntax for
+// type uuid". The empty string is rewritten to the IS [NOT] NULL test it
+// actually means, and any other non-uuid literal is refused up front so the
+// caller gets a 422 naming the problem instead of a 500 from the DDL.
+//
+// Comparisons against a column are left alone: relation and id columns are uuid,
+// so `owner = @request.auth.id` stays uuid = uuid and keeps using the index.
+// The bool reports whether this path produced the comparison.
+func (c *ruleCompiler) compileAuthIDCompare(n compareNode) (string, bool, error) {
+	ref, other := n.left, n.right
+	if !isAuthIDRef(ref) {
+		ref, other = n.right, n.left
+	}
+	text, ok := stringLiteralValue(other)
+	if !ok {
+		return "", false, nil
+	}
+	if n.op != "=" && n.op != "!=" {
+		return "", false, fmt.Errorf("%w: @request.auth.id only supports = and != against a string", ErrInvalidRule)
+	}
+	refSQL, err := c.compile(ref)
+	if err != nil {
+		return "", false, err
+	}
+	if text == "" {
+		if n.op == "=" {
+			return fmt.Sprintf("(%s is null)", refSQL), true, nil
+		}
+		return fmt.Sprintf("(%s is not null)", refSQL), true, nil
+	}
+	if err := ValidateUUID(text); err != nil {
+		return "", false, fmt.Errorf(`%w: @request.auth.id can only be compared to "" or a UUID literal`, ErrInvalidRule)
+	}
+	return "", false, nil
 }
 
 func (c *ruleCompiler) validateField(name string) error {
@@ -601,8 +660,25 @@ func syncCollectionPolicies(ctx context.Context, tx pgx.Tx, project *Project, co
 	)
 	for _, stmt := range statements {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
-			return err
+			return mapPolicySyncError(err)
 		}
 	}
 	return nil
+}
+
+// mapPolicySyncError turns a Postgres rejection of a compiled rule into a 422
+// invalid_rule instead of a bare 500. A rule that type-checks in the compiler
+// can still be refused by the planner — comparing a uuid to a text column on an
+// imported table, for example — and the operator needs to see which rule is at
+// fault, not "internal server error".
+func mapPolicySyncError(err error) error {
+	switch pgErrCode(err) {
+	case "22P02", // invalid_text_representation, e.g. uuid <> ''
+		"42883", // undefined_function: no operator for these operand types
+		"42804", // datatype_mismatch
+		"42P17": // invalid_object_definition
+		return fmt.Errorf("%w: %s", ErrInvalidRule, pgErrMessage(err))
+	default:
+		return err
+	}
 }

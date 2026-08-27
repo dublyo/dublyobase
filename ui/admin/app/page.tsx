@@ -506,10 +506,31 @@ export default function AdminApp() {
     [collectionExport, selectedExportItems, selectedProject],
   );
 
+  // Success confirmations can fade; errors must not. A validation message like
+  // `invalid_rule: unknown field "x"` is something the operator has to read and
+  // act on, and a 4.2s timer routinely expired while they were still looking at
+  // the form that caused it. Errors now stay until dismissed or superseded.
+  const noticeTimer = useRef<number | null>(null);
   const showNotice = useCallback((type: "success" | "error", message: string) => {
+    if (noticeTimer.current !== null) {
+      window.clearTimeout(noticeTimer.current);
+      noticeTimer.current = null;
+    }
     setNotice({ type, message });
-    window.setTimeout(() => setNotice(null), 4200);
+    if (type === "success") {
+      noticeTimer.current = window.setTimeout(() => {
+        noticeTimer.current = null;
+        setNotice(null);
+      }, 4200);
+    }
   }, []);
+
+  useEffect(
+    () => () => {
+      if (noticeTimer.current !== null) window.clearTimeout(noticeTimer.current);
+    },
+    [],
+  );
 
   const handleError = useCallback(
     (error: unknown) => {
@@ -1861,9 +1882,14 @@ export default function AdminApp() {
       {accountOpen ? <AccountModal admin={admin} busy={busy} onEmailSubmit={submitEmailChange} onPasswordSubmit={submitPasswordChange} onClose={() => setAccountOpen(false)} onLogout={signOut} /> : null}
 
       {notice ? (
-        <div className={`pb-toast ${notice.type === "error" ? "danger" : "success"}`}>
-          {notice.type === "error" ? <AlertCircle className="h-4 w-4" /> : <Check className="h-4 w-4" />}
-          {notice.message}
+        <div className={`pb-toast ${notice.type === "error" ? "danger" : "success"}`} role="status" aria-live="polite">
+          {notice.type === "error" ? <AlertCircle className="h-4 w-4 shrink-0" /> : <Check className="h-4 w-4 shrink-0" />}
+          <span className="pb-toast-message">{notice.message}</span>
+          {notice.type === "error" ? (
+            <button type="button" className="pb-toast-close" onClick={() => setNotice(null)} aria-label="Dismiss error">
+              <X className="h-4 w-4" />
+            </button>
+          ) : null}
         </div>
       ) : null}
 

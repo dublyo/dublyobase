@@ -102,3 +102,48 @@ func TestAPIKeyGeneration(t *testing.T) {
 		t.Fatal("API key hash must not equal plaintext")
 	}
 }
+
+// TestCompilePolicyRuleAuthIDAgainstString covers the canonical PocketBase
+// "is anyone signed in" idiom. request_auth_id() returns uuid, so comparing it
+// to a string literal used to emit `uuid <> ''` and only fail later, at
+// CREATE POLICY time, as a 500.
+func TestCompilePolicyRuleAuthIDAgainstString(t *testing.T) {
+	c := testRuleCollection()
+	cases := []struct {
+		rule string
+		want string
+	}{
+		{`@request.auth.id != ""`, `((select _dbo.request_auth_id()) is not null)`},
+		{`@request.auth.id = ""`, `((select _dbo.request_auth_id()) is null)`},
+		{`"" != @request.auth.id`, `((select _dbo.request_auth_id()) is not null)`},
+		// a column comparison must stay uuid = uuid so the index is still usable
+		{`owner = @request.auth.id`, `("owner" = (select _dbo.request_auth_id()))`},
+	}
+	for _, tc := range cases {
+		rule := tc.rule
+		got, err := compilePolicyRule(&rule, c)
+		if err != nil {
+			t.Fatalf("rule %q: unexpected error: %v", tc.rule, err)
+		}
+		if got != tc.want {
+			t.Fatalf("rule %q = %q, want %q", tc.rule, got, tc.want)
+		}
+	}
+}
+
+func TestCompilePolicyRuleRejectsNonUUIDAuthIDLiteral(t *testing.T) {
+	c := testRuleCollection()
+	for _, rule := range []string{
+		`@request.auth.id = "not-a-uuid"`,
+		`@request.auth.id != "abc"`,
+	} {
+		r := rule
+		if _, err := compilePolicyRule(&r, c); !errors.Is(err, ErrInvalidRule) {
+			t.Fatalf("rule %q: expected ErrInvalidRule, got %v", rule, err)
+		}
+	}
+	valid := `@request.auth.id = "b7c8f0f2-3a1e-4b8e-9c2d-5f6a7b8c9d0e"`
+	if _, err := compilePolicyRule(&valid, c); err != nil {
+		t.Fatalf("valid uuid literal rejected: %v", err)
+	}
+}

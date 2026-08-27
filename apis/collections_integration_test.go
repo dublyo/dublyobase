@@ -394,3 +394,37 @@ func assertCollectionAuditExists(t *testing.T, pool *pgxpool.Pool, action string
 		t.Fatalf("audit action %q for %s.%s missing", action, slug, collection)
 	}
 }
+
+// TestCollectionAuthIDRulePolicyApplies is the coverage that was missing: every
+// prior rule test used `owner = @request.auth.id` (uuid = uuid), so nothing
+// exercised the `!= ""` idiom the admin UI shows as its own placeholder. It
+// used to reach CREATE POLICY and fail there as a 500.
+func TestCollectionAuthIDRulePolicyApplies(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"posts","type":"base","fields":[{"name":"title","type":"text"}],
+		  "listRule":"@request.auth.id != \"\"","viewRule":"@request.auth.id != \"\""}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create with @request.auth.id rule: want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// The rule must be a live policy, not just stored metadata.
+	rec = patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/posts", slug), token,
+		`{"updateRule":"@request.auth.id != \"\""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch rule: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// A literal that can never be a uuid must be a 422 naming the problem,
+	// never a 500 from the database.
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"bad","type":"base","fields":[{"name":"title","type":"text"}],
+		  "listRule":"@request.auth.id = \"nope\""}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("non-uuid literal: want 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

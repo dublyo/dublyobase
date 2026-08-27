@@ -281,3 +281,14 @@ func pgErrCode(err error) string {
 	}
 	return ""
 }
+
+// pgErrMessage returns the bare Postgres message for errors that are safe to
+// surface — rule and schema rejections the operator authored themselves. It
+// never includes Detail or Hint, which can echo row values.
+func pgErrMessage(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Message
+	}
+	return "rule was rejected by the database"
+}

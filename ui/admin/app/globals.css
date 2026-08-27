@@ -240,6 +240,31 @@ button:disabled {
   color: var(--primary-txt);
 }
 
+.pb-toast-message {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Error toasts persist until dismissed, so they need a visible close control. */
+.pb-toast-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin: -4px -4px -4px 4px;
+  padding: 4px;
+  border-radius: var(--radius);
+  color: inherit;
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.pb-toast-close:hover {
+  opacity: 1;
+  background: rgb(0 0 0 / 0.15);
+}
+
 .pb-toast.success {
   background: var(--success-color);
 }
