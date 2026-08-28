@@ -1155,19 +1155,22 @@ export default function AdminApp() {
 
   // Exports what is on screen: the same filter, search, sort and page size the
   // list is using, so the file matches the view rather than the whole table.
-  async function exportRecordsCSV() {
+  async function exportRecordsCSV(format: "csv" | "xlsx" = "csv") {
     if (!token || !selectedProject || !selectedCollectionModel) return;
     setBusy(true);
     try {
       const search = selectedCollectionModel.fields.some((field) => field.searchable && canSearchField(field))
         ? recordSearch
         : "";
-      await downloadRecordsCSV(token, selectedProject, selectedCollectionModel.name, {
-        filter: recordFilter,
-        search,
-        sort: "-created",
-      });
-      showNotice("success", `Exported ${selectedCollectionModel.name} as CSV`);
+      await downloadRecordsCSV(
+        token,
+        selectedProject,
+        selectedCollectionModel.name,
+        { filter: recordFilter, search, sort: "-created" },
+        "export",
+        format,
+      );
+      showNotice("success", `Exported ${selectedCollectionModel.name} as ${format.toUpperCase()}`);
     } catch (error) {
       handleError(error);
     } finally {
@@ -2484,7 +2487,7 @@ function CollectionsWorkspace({
   onOpenCreateCollection: () => void;
   onOpenCollectionSettings: () => void;
   onOpenAPIPreview: () => void;
-  onExportCSV: () => void;
+  onExportCSV: (format?: "csv" | "xlsx") => void;
   onOpenNewRecord: () => void;
   onEditRecord: (record: RecordItem) => void;
   onDeleteRecord: (record: RecordItem) => void;
@@ -2529,9 +2532,13 @@ function CollectionsWorkspace({
             ) : null}
           </div>
           <div className="pb-header-primary-btns">
-            <button type="button" className="pb-btn outline" onClick={onExportCSV} disabled={!selectedCollection} title="Download the rows currently shown, as CSV">
+            <button type="button" className="pb-btn outline" onClick={() => onExportCSV("csv")} disabled={!selectedCollection} title="Download the rows currently shown, as CSV">
               <Download className="h-4 w-4" />
-              <span>Export CSV</span>
+              <span>CSV</span>
+            </button>
+            <button type="button" className="pb-btn outline" onClick={() => onExportCSV("xlsx")} disabled={!selectedCollection} title="Download the rows currently shown, as an Excel workbook">
+              <Download className="h-4 w-4" />
+              <span>Excel</span>
             </button>
             <button type="button" className="pb-btn outline api-preview-btn" onClick={onOpenAPIPreview} disabled={!selectedCollection}>
               <Code2 className="h-4 w-4" />

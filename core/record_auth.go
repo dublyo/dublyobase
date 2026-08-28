@@ -160,7 +160,20 @@ func withRecordTx(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, ope
 	return withRecordTxOptions(ctx, pool, auth, operation, false, fn)
 }
 
+// withRecordTxTimeout runs with a longer statement timeout than the 5s a normal
+// request gets. Only exports use it: streaming a whole collection is one long
+// query by design, and killing it at 5s would make the feature useless, while
+// leaving the cap in place everywhere else keeps a runaway query from pinning a
+// connection.
+func withRecordTxTimeout(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, operation string, timeout string, fn func(pgx.Tx) error) error {
+	return withRecordTxFull(ctx, pool, auth, operation, false, timeout, fn)
+}
+
 func withRecordTxOptions(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, operation string, bypassRole bool, fn func(pgx.Tx) error) error {
+	return withRecordTxFull(ctx, pool, auth, operation, bypassRole, "5s", fn)
+}
+
+func withRecordTxFull(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, operation string, bypassRole bool, timeout string, fn func(pgx.Tx) error) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -177,7 +190,7 @@ func withRecordTxOptions(ctx context.Context, pool *pgxpool.Pool, auth *RecordAu
 			return err
 		}
 	}
-	if _, err := tx.Exec(ctx, `set local statement_timeout = '5s'`); err != nil {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`set local statement_timeout = '%s'`, timeout)); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `select set_config('request.jwt.claims', $1, true)`, string(claimsJSON)); err != nil {

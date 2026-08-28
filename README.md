@@ -336,6 +336,22 @@ readable labels, or as raw ids with `relations=id`. Files begin with a UTF-8
 BOM because Excel otherwise assumes the system codepage and renders non-Latin
 text as mojibake.
 
+Add `format=xlsx` for a real Excel workbook. Numbers are written as numeric
+cells so Excel can sum them; values too long to be exact as a float64, and
+anything with a leading zero (phone numbers, codes), stay as text rather than
+being silently rounded or reformatted.
+
+`fields` accepts dotted paths that walk many-to-one relations up to four deep,
+so a flat report can pull columns from across the schema:
+
+```text
+GET .../records/export?fields=ref,client.full_name,client.city.name,total
+```
+
+Only the many-to-one direction is supported, because walking towards one record
+has a single answer. Flattening a one-to-many — a patient and all their
+appointments — has several, and belongs in an aggregate rather than a column.
+
 Prefer the aggregate export for reports. Summing across two one-to-many
 relations with a flat join multiplies each row by the other side — a patient
 with one 2,885 payment and four appointments totals 11,540 — and the result

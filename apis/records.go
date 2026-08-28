@@ -345,21 +345,40 @@ func (s *server) exportRecords(w http.ResponseWriter, r *http.Request) {
 		Limit:         queryInt(r, "limit", 0),
 		RelationsAsID: strings.EqualFold(query.Get("relations"), "id"),
 	}
-	// Headers must be set before the first byte: once rows start streaming the
-	// status is already committed and an error cannot be reported as one.
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q",
-		fmt.Sprintf("%s-%s.csv", name, time.Now().UTC().Format("20060102-150405"))))
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	if _, err := core.ExportRecordsCSV(r.Context(), s.app.Pool, auth, name, opts, w); err != nil {
-		// If nothing has been written yet this still produces a clean error;
-		// once streaming has begun the client sees a truncated file, which is
-		// why the row cap exists.
+	// Validate before committing to a 200 and a download: once the first byte
+	// is written the status is fixed and an error can only arrive as a corrupt
+	// file.
+	if err := core.ValidateExportOptions(r.Context(), s.app.Pool, auth, name, opts); err != nil {
 		writeCoreError(w, err)
 		return
 	}
+	xlsx := strings.EqualFold(query.Get("format"), "xlsx")
+	setExportHeaders(w, name, "", xlsx)
+	var err error
+	if xlsx {
+		_, err = core.ExportRecordsXLSX(r.Context(), s.app.Pool, auth, name, opts, w)
+	} else {
+		_, err = core.ExportRecordsCSV(r.Context(), s.app.Pool, auth, name, opts, w)
+	}
+	if err != nil {
+		// Clean if nothing was written; once streaming has begun the client
+		// sees a short file, which is why the row cap exists.
+		writeCoreError(w, err)
+		return
+	}
+}
+
+func setExportHeaders(w http.ResponseWriter, name, suffix string, xlsx bool) {
+	ext, mime := "csv", "text/csv; charset=utf-8"
+	if xlsx {
+		ext = "xlsx"
+		mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	}
+	w.Header().Set("Content-Type", mime)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q",
+		fmt.Sprintf("%s%s-%s.%s", name, suffix, time.Now().UTC().Format("20060102-150405"), ext)))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 }
 
 // exportAggregate streams a grouped aggregate as CSV. Totals are computed in
@@ -392,12 +411,15 @@ func (s *server) exportAggregate(w http.ResponseWriter, r *http.Request) {
 		writeCoreError(w, err)
 		return
 	}
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q",
-		fmt.Sprintf("%s-summary-%s.csv", name, time.Now().UTC().Format("20060102-150405"))))
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if _, err := core.ExportAggregateCSV(r.Context(), s.app.Pool, auth, name, input, w); err != nil {
+	xlsx := strings.EqualFold(query.Get("format"), "xlsx")
+	setExportHeaders(w, name, "-summary", xlsx)
+	var err error
+	if xlsx {
+		_, err = core.ExportAggregateXLSX(r.Context(), s.app.Pool, auth, name, input, w)
+	} else {
+		_, err = core.ExportAggregateCSV(r.Context(), s.app.Pool, auth, name, input, w)
+	}
+	if err != nil {
 		writeCoreError(w, err)
 		return
 	}

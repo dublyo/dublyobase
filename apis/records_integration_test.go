@@ -1,11 +1,13 @@
 package apis
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1040,5 +1042,117 @@ func TestCSVExport(t *testing.T) {
 	rec = get("collections/orders/records/aggregate/export?aggregate=sum:ref")
 	if rec.Code < 400 || strings.HasPrefix(rec.Header().Get("Content-Type"), "text/csv") {
 		t.Fatalf("invalid aggregate should error as JSON, got %d %s", rec.Code, rec.Header().Get("Content-Type"))
+	}
+}
+
+// TestExportRelationPathsAndXLSX covers the two things that make an export
+// useful for a real relational schema: walking many-to-one relations into flat
+// columns, and producing a workbook Excel will actually open.
+func TestExportRelationPathsAndXLSX(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+	post := func(path, body string) *httptest.ResponseRecorder {
+		return postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/%s", slug, path), token, body)
+	}
+	idOf := func(r *httptest.ResponseRecorder) string {
+		var m map[string]any
+		json.Unmarshal(r.Body.Bytes(), &m)
+		return fmt.Sprint(m["id"])
+	}
+	// three levels: orders -> clients -> cities
+	post("collections", `{"name":"cities","type":"base","fields":[{"name":"name","type":"text"}]}`)
+	post("collections", `{"name":"clients","type":"base","fields":[
+		{"name":"full_name","type":"text"},
+		{"name":"city","type":"relation","options":{"collection":"cities","displayField":"name"}}]}`)
+	post("collections", `{"name":"orders","type":"base","fields":[
+		{"name":"ref","type":"text"},
+		{"name":"client","type":"relation","options":{"collection":"clients","displayField":"full_name"}},
+		{"name":"total","type":"decimal","options":{"precision":18,"scale":3}}]}`)
+
+	kw := idOf(post("collections/cities/records", `{"name":"الكويت"}`))
+	amal := idOf(post("collections/clients/records", fmt.Sprintf(`{"full_name":"أمل الصباح","city":%q}`, kw)))
+	if r := post("collections/orders/records", fmt.Sprintf(`{"ref":"O-1","client":%q,"total":"1234.500"}`, amal)); r.Code != http.StatusCreated {
+		t.Fatalf("seed order: %d %s", r.Code, r.Body.String())
+	}
+	post("collections/orders/records", `{"ref":"O-2","total":"9.000"}`) // no client at all
+
+	get := func(path string) *httptest.ResponseRecorder {
+		return getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/%s", slug, path), token)
+	}
+
+	// ── dotted paths walk many-to-one, two hops deep ──
+	rec := get("collections/orders/records/export?fields=ref,client.full_name,client.city.name,total&sort=ref")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("path export: %d %s", rec.Code, rec.Body.String())
+	}
+	rows, err := csv.NewReader(strings.NewReader(strings.TrimPrefix(rec.Body.String(), "\xEF\xBB\xBF"))).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(rows[0], "|"); got != "ref|client.full_name|client.city.name|total" {
+		t.Fatalf("header = %q", got)
+	}
+	if rows[1][1] != "أمل الصباح" || rows[1][2] != "الكويت" {
+		t.Fatalf("two-hop path did not resolve: %v", rows[1])
+	}
+	// a row with no relation must produce empty cells, not an error
+	if rows[2][1] != "" || rows[2][2] != "" {
+		t.Fatalf("missing relation should be blank: %v", rows[2])
+	}
+	// walking through a non-relation, or a field that does not exist, is a 422
+	for _, bad := range []string{"ref.name", "client.nope", "client.city.name.deeper.more"} {
+		if r := get("collections/orders/records/export?fields=" + bad); r.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("path %q: want 422, got %d %s", bad, r.Code, r.Body.String())
+		}
+	}
+
+	// ── xlsx is a real workbook ──
+	rec = get("collections/orders/records/export?format=xlsx&fields=ref,client.full_name,total&sort=ref")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("xlsx export: %d %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "spreadsheetml") {
+		t.Fatalf("content-type = %q", ct)
+	}
+	if !strings.HasSuffix(strings.Trim(rec.Header().Get("Content-Disposition"), `"`), `.xlsx"`) &&
+		!strings.Contains(rec.Header().Get("Content-Disposition"), ".xlsx") {
+		t.Fatalf("disposition = %q", rec.Header().Get("Content-Disposition"))
+	}
+	data := rec.Body.Bytes()
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("not a valid zip: %v", err)
+	}
+	parts := map[string]string{}
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(rc)
+		rc.Close()
+		parts[f.Name] = string(body)
+	}
+	for _, required := range []string{"[Content_Types].xml", "_rels/.rels", "xl/workbook.xml", "xl/_rels/workbook.xml.rels", "xl/worksheets/sheet1.xml"} {
+		if _, ok := parts[required]; !ok {
+			t.Fatalf("workbook missing %s", required)
+		}
+	}
+	sheet := parts["xl/worksheets/sheet1.xml"]
+	if !strings.Contains(sheet, "أمل الصباح") {
+		t.Fatal("xlsx lost the Arabic text")
+	}
+	// money must be a NUMBER so Excel can sum it, not an inline string
+	if !strings.Contains(sheet, "<v>1234.500</v>") {
+		t.Fatalf("decimal was not written as a numeric cell: %s", sheet)
+	}
+	// the reference is text, and must not have been coerced to a number
+	if !strings.Contains(sheet, `t="inlineStr"`) {
+		t.Fatal("no inline strings in the sheet")
+	}
+	if !strings.Contains(sheet, "</sheetData></worksheet>") {
+		t.Fatal("sheet was not closed")
 	}
 }

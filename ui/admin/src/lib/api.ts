@@ -351,11 +351,13 @@ export async function downloadRecordsCSV(
   collection: string,
   params: Record<string, string>,
   path: "export" | "aggregate/export" = "export",
+  format: "csv" | "xlsx" = "csv",
 ) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value.trim()) query.set(key, value.trim());
   }
+  if (format === "xlsx") query.set("format", "xlsx");
   const response = await fetch(
     `/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection)}/records/${path}?${query}`,
     { headers: { Authorization: `Bearer ${token}` } },
@@ -368,7 +370,7 @@ export async function downloadRecordsCSV(
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${collection}-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = `${collection}-${new Date().toISOString().slice(0, 10)}.${format}`;
   document.body.appendChild(link);
   link.click();
   link.remove();
