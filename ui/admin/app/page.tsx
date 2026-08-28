@@ -18,7 +18,7 @@ import { isDangerousSQL, loadSQLHistory, saveSQLHistory, sqlResultToCSV } from "
 import { quotasToDraft, settingsToCORSDraft, settingsToLogDraft, settingsToSMTPDraft, settingsToStorageDraft, splitDraftList } from "./lib/settings-drafts";
 import { emptyAdminDraft, emptyAuditFilters, emptyBackupDraft, emptyCORSDraft, emptyCollectionDraft, emptyCronDraft, emptyLogDraft, emptyMCPDraft, emptyQuotaDraft, emptyRequestFilters, emptyRules, emptySMTPDraft, emptyStorageDraft, emptyWebhookDraft, navItems, recordPageSizes, settingsItems, TOKEN_KEY } from "./lib/constants";
 import type { CollectionModalMode, InsightsRangeHours, InsightsTab, Notice, RuleDraft, SettingsSection, View } from "./lib/view-types";
-import { defaultInsightCollection, formatCount, formatDate, parseHeadersJSON } from "./lib/format";
+import { defaultInsightCollection, formatApiError, formatCount, formatDate, parseHeadersJSON } from "./lib/format";
 import type { APIKey, Admin, ApiEnvelope, AuditEntry, BackupJob, BackupRun, Collection, CollectionExport, CollectionIconOption, CollectionImportResult, CollectionInsights, CronJob, CronRun, DiscoveredTable, Field, FieldType, Health, InstanceSettings, MCPToken, OpsAlert, Project, ProjectAuthSettings, ProjectInsights, ProjectMetrics, ProjectQuotas, RecordItem, RecordList, RequestLogEntry, RestoreJob, SchemaImportItem, SQLResult, Webhook, WebhookDelivery } from "../src/lib/types";
 
 export default function AdminApp() {
@@ -181,7 +181,7 @@ export default function AdminApp() {
           setToken(null);
           setAdmin(null);
         }
-        showNotice("error", `${error.code}: ${error.message}`);
+        showNotice("error", formatApiError(error.code, error.message));
         return;
       }
       showNotice("error", error instanceof Error ? error.message : "Request failed");

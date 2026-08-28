@@ -135,3 +135,17 @@ export function findFiles(records: RecordItem[], fields: Field[]): FileMeta[] {
   }
   return out;
 }
+
+// The server's error code and its message often say the same thing — a failed
+// validation arrived as "validation_failed: validation failed: outbound host
+// must not target private or local addresses", and a bad route as "not found:
+// route not found". The code is only worth prepending when the sentence does
+// not already carry it.
+export function formatApiError(code: string, message: string): string {
+  const text = (message || "").trim();
+  const label = (code || "").replace(/_/g, " ").trim();
+  if (!text) return label || "Request failed";
+  if (!label) return text;
+  if (text.toLowerCase().includes(label.toLowerCase())) return text;
+  return `${label}: ${text}`;
+}
