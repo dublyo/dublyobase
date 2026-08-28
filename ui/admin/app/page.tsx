@@ -7820,17 +7820,39 @@ function relationExpandParam(collection?: Collection | null): string {
 // there is genuinely nothing else to show.
 function relationLabelFor(record: RecordItem | undefined, target?: Collection, displayField?: string): string {
   if (!record) return "";
-  const tryField = (name?: string) => {
+  const read = (name?: string) => {
     if (!name) return "";
     const v = record[name];
     return typeof v === "string" || typeof v === "number" ? String(v) : "";
   };
-  const presentable = target?.fields.find((f) => f.presentable && !f.hidden)?.name;
-  const conventional = target?.fields.find(
-    (f) => !f.hidden && f.type === "text" && /name|title|label|subject|full_name|mrn|number/.test(f.name),
-  )?.name;
-  const label = tryField(displayField) || tryField(presentable) || tryField(conventional);
+  const named = (re: RegExp) =>
+    target?.fields.find((f) => !f.hidden && (f.type === "text" || f.type === "email") && re.test(f.name))?.name;
+  // A human name beats an identifier: someone who searched "Fahad" and is shown
+  // "MRN-2026003" cannot confirm they picked the right person, which is the
+  // whole reason for having a picker. Identifiers are still used when the
+  // collection has no name-like column (invoice_no, sku, code).
+  const label =
+    read(displayField) ||
+    read(target?.fields.find((f) => f.presentable && !f.hidden)?.name) ||
+    read(named(/^(full_?name|name|display_?name|title|label|subject)$/)) ||
+    read(named(/name|title|label|subject/)) ||
+    read(named(/(^|_)(no|number|code|ref|reference|sku|mrn)$/)) ||
+    read(named(/mrn|code|reference|sku|email/));
   if (label) return label;
+  const id = typeof record.id === "string" ? record.id : "";
+  return id ? id.slice(0, 8) + "…" : "";
+}
+
+// The muted text on the right of a picker row. An identifier the operator would
+// recognise is far more use for disambiguation than a slice of a uuid.
+function relationSecondaryFor(record: RecordItem | undefined, target?: Collection, primary?: string): string {
+  if (!record) return "";
+  const idish = target?.fields.find(
+    (f) => !f.hidden && f.type === "text" && /(^|_)(no|number|code|ref|reference|sku|mrn)$/.test(f.name),
+  )?.name;
+  const value = idish ? record[idish] : undefined;
+  const text = typeof value === "string" || typeof value === "number" ? String(value) : "";
+  if (text && text !== primary) return text;
   const id = typeof record.id === "string" ? record.id : "";
   return id ? id.slice(0, 8) + "…" : "";
 }
@@ -8028,7 +8050,7 @@ function RelationPicker({
             return (
               <button type="button" role="option" aria-selected={false} key={id} className="pb-relation-option" onClick={() => pick(id)}>
                 <span className="pb-relation-label">{labelOf(id)}</span>
-                <span className="pb-relation-id">{id.slice(0, 8)}…</span>
+                <span className="pb-relation-id">{relationSecondaryFor(item, target, labelOf(id))}</span>
               </button>
             );
           })}
