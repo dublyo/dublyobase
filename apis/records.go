@@ -1,6 +1,7 @@
 package apis
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -172,6 +173,7 @@ func (s *server) createRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishRealtimeRecord(r.Context(), auth.Project.Slug, r.PathValue("name"), realtimeActionCreate, "", record)
 	s.enqueueRecordWebhooks(r, auth, r.PathValue("name"), realtimeActionCreate, record)
+	s.markDelivered(r.Context(), auth, r.PathValue("name"), "insert", fmt.Sprint(record["id"]))
 	writeJSON(w, http.StatusCreated, record)
 }
 
@@ -205,6 +207,7 @@ func (s *server) updateRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishRealtimeRecord(r.Context(), auth.Project.Slug, r.PathValue("name"), realtimeActionUpdate, r.PathValue("id"), record)
 	s.enqueueRecordWebhooks(r, auth, r.PathValue("name"), realtimeActionUpdate, record)
+	s.markDelivered(r.Context(), auth, r.PathValue("name"), "update", r.PathValue("id"))
 	writeJSON(w, http.StatusOK, record)
 }
 
@@ -221,6 +224,7 @@ func (s *server) deleteRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishRealtimeRecord(r.Context(), auth.Project.Slug, r.PathValue("name"), realtimeActionDelete, r.PathValue("id"), deleted)
 	s.enqueueRecordWebhooks(r, auth, r.PathValue("name"), realtimeActionDelete, deleted)
+	s.markDelivered(r.Context(), auth, r.PathValue("name"), "delete", r.PathValue("id"))
 	if id, _ := deleted["id"].(string); id != "" {
 		storageCfg, err := core.EffectiveStorageConfig(r.Context(), s.app.Pool, s.app.Config)
 		if err != nil {
@@ -450,5 +454,20 @@ func (s *server) exportAggregate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeCoreError(w, err)
 		return
+	}
+}
+
+// markDelivered tells the outbox this event went out on the request path, so
+// the sweep leaves it alone. Best effort: if it fails, the sweep republishes,
+// which is the safe direction to be wrong in — a duplicate event is recoverable,
+// a lost one is not.
+func (s *server) markDelivered(ctx context.Context, auth *core.RecordAuth, collection, action, id string) {
+	if s.app.Pool == nil || id == "" || id == "<nil>" {
+		return
+	}
+	markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if outboxID, ok := core.LatestOutboxID(markCtx, s.app.Pool, auth.Project.SchemaName, collection, id, action); ok {
+		_ = core.MarkOutboxPublished(markCtx, s.app.Pool, auth.Project.SchemaName, outboxID)
 	}
 }

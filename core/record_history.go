@@ -41,6 +41,9 @@ type RecordHistoryEntry struct {
 // ensureProjectHistory creates the history table and the shared trigger
 // function for a project. Safe to call repeatedly.
 func ensureProjectHistory(ctx context.Context, tx pgx.Tx, project *Project) error {
+	if err := ensureProjectOutbox(ctx, tx, project); err != nil {
+		return err
+	}
 	schema := quoteIdent(project.SchemaName)
 	table := quoteIdent(project.SchemaName, historyTable)
 	_, roles := ProjectNames(project.Slug)
@@ -114,10 +117,23 @@ begin
     before_row,
     after_row
   );
+
+  -- The outbox row is written here, in the same transaction as the write it
+  -- describes. Publishing after COMMIT can lose an event with nothing left to
+  -- say it was owed; a row that exists is an event that must eventually go out.
+  insert into %s (collection, record_id, action, payload)
+  values (
+    tg_table_name,
+    coalesce(after_row ->> 'id', before_row ->> 'id', ''),
+    lower(tg_op),
+    coalesce(after_row, before_row)
+  );
+
   if tg_op = 'DELETE' then return old; end if;
   return new;
 end
-$fn$;`, quoteIdent(project.SchemaName, historyTable+"_fn"), schema, table),
+$fn$;`, quoteIdent(project.SchemaName, historyTable+"_fn"), schema, table,
+			quoteIdent(project.SchemaName, outboxTable)),
 	}
 	for _, stmt := range statements {
 		if _, err := tx.Exec(ctx, stmt); err != nil {

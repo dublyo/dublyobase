@@ -35,6 +35,14 @@ func runOpsTick(ctx context.Context, app *App) {
 	if err := RunDueWebhookDeliveries(runCtx, app.Pool, app.Config, time.Now().UTC()); err != nil {
 		app.Log.Warn("webhook worker failed", "err", err)
 	}
+	// Sweep events whose creating request never marked them delivered. The age
+	// threshold keeps this off events a live request is about to publish
+	// normally, so the sweep only ever picks up genuine casualties.
+	if app.OutboxPublish != nil {
+		if err := SweepOutbox(runCtx, app.Pool, app.Log, app.OutboxPublish, 60*time.Second); err != nil {
+			app.Log.Warn("outbox sweep failed", "err", err)
+		}
+	}
 	logSettings, err := EffectiveLogSettings(runCtx, app.Pool)
 	if err != nil {
 		app.Log.Warn("log retention settings failed", "err", err)

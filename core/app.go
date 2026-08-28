@@ -17,6 +17,10 @@ type App struct {
 	Log    *slog.Logger
 	Mailer Mailer // optional test override; nil uses runtime SMTP settings
 
+	// OutboxPublish delivers a swept event. The HTTP layer sets it, because
+	// realtime fanout and webhook enqueue live there; core only decides when.
+	OutboxPublish OutboxPublisher
+
 	ready atomic.Bool
 }
 

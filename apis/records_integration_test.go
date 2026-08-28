@@ -1288,3 +1288,116 @@ func TestRecordHistoryAndOptimisticLocking(t *testing.T) {
 		t.Logf("admin SQL can prune history (owner role), as designed")
 	}
 }
+
+// TestTransactionalOutbox proves the property the old design could not offer:
+// an event written by a transaction that committed is delivered even if the
+// process that would have published it never got the chance.
+func TestTransactionalOutbox(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+	schema, _ := core.ProjectNames(slug)
+
+	if r := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"orders","type":"base","fields":[{"name":"ref","type":"text"}]}`); r.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", r.Code, r.Body.String())
+	}
+
+	countPending := func() int {
+		var n int
+		if err := app.Pool.QueryRow(context.Background(), fmt.Sprintf(
+			`select count(*) from %s.dbo_event_outbox where published_at is null`, schema)).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// ── the write path marks its own event delivered ──
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/orders/records", slug), token,
+		`{"ref":"O-1"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create record: %d %s", rec.Code, rec.Body.String())
+	}
+	var total int
+	if err := app.Pool.QueryRow(context.Background(), fmt.Sprintf(
+		`select count(*) from %s.dbo_event_outbox`, schema)).Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("outbox has %d rows after one write, want 1", total)
+	}
+	if pending := countPending(); pending != 0 {
+		t.Fatalf("the request should have marked its own event delivered, %d still pending", pending)
+	}
+
+	// ── simulate the crash: a committed write whose event was never published ──
+	// Writing straight to the table exercises exactly the path a dying process
+	// leaves behind — the row exists, nobody marked it.
+	if _, err := app.Pool.Exec(context.Background(), fmt.Sprintf(
+		`insert into %s.orders (ref) values ('O-CRASH')`, schema)); err != nil {
+		t.Fatal(err)
+	}
+	if pending := countPending(); pending != 1 {
+		t.Fatalf("a direct write should leave an unpublished event, got %d", pending)
+	}
+
+	// the sweep must ignore events too young to be casualties, or it would race
+	// the request that is about to publish them
+	delivered := 0
+	publisher := func(ctx context.Context, p core.Project, e core.OutboxEvent) error {
+		delivered++
+		return nil
+	}
+	if err := core.SweepOutbox(context.Background(), app.Pool, app.Log, publisher, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if delivered != 0 {
+		t.Fatalf("sweep delivered %d young events; it must leave them to the request path", delivered)
+	}
+	if countPending() != 1 {
+		t.Fatal("the young event should still be pending")
+	}
+
+	// with no age threshold the casualty is picked up and delivered
+	if err := core.SweepOutbox(context.Background(), app.Pool, app.Log, publisher, 0); err != nil {
+		t.Fatal(err)
+	}
+	if delivered != 1 {
+		t.Fatalf("sweep delivered %d events, want 1", delivered)
+	}
+	if pending := countPending(); pending != 0 {
+		t.Fatalf("the swept event should be marked delivered, %d still pending", pending)
+	}
+
+	// ── a failing publisher must not lose the event ──
+	if _, err := app.Pool.Exec(context.Background(), fmt.Sprintf(
+		`insert into %s.orders (ref) values ('O-FAIL')`, schema)); err != nil {
+		t.Fatal(err)
+	}
+	failing := func(ctx context.Context, p core.Project, e core.OutboxEvent) error {
+		return fmt.Errorf("downstream unavailable")
+	}
+	if err := core.SweepOutbox(context.Background(), app.Pool, app.Log, failing, 0); err != nil {
+		t.Fatal(err)
+	}
+	if countPending() != 1 {
+		t.Fatal("a failed delivery must leave the event pending for the next sweep")
+	}
+	var lastErr string
+	var attempts int
+	if err := app.Pool.QueryRow(context.Background(), fmt.Sprintf(
+		`select last_error, attempts from %s.dbo_event_outbox where published_at is null`, schema)).Scan(&lastErr, &attempts); err != nil {
+		t.Fatal(err)
+	}
+	if lastErr == "" || attempts != 1 {
+		t.Fatalf("failure not recorded: err=%q attempts=%d", lastErr, attempts)
+	}
+	// and it succeeds on a later sweep
+	if err := core.SweepOutbox(context.Background(), app.Pool, app.Log, publisher, 0); err != nil {
+		t.Fatal(err)
+	}
+	if countPending() != 0 {
+		t.Fatal("the retried event should now be delivered")
+	}
+}

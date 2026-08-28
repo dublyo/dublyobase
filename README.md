@@ -381,6 +381,24 @@ needs no extra column and cannot drift from the row. Send it back as `If-Match`
 else got there first, returning `409` if they did. Omitting it keeps the
 previous last-write-wins behaviour.
 
+### Event delivery
+
+Realtime events and webhook deliveries were published after the record
+transaction committed, so a crash in that window lost the event with nothing
+left to say it was owed. The event row is now written by the same trigger that
+records history, inside the same transaction as the write: if the row exists,
+the event exists.
+
+Delivery is unchanged in the normal case — the request publishes immediately
+after commit and marks its own row done. A sweep on the ops worker picks up
+rows nobody marked, which in practice means the process died between COMMIT and
+publish. The sweep ignores events younger than a minute so it never races a
+live request, retries a failed delivery on the next pass, records the last
+error, and gives up after ten attempts rather than looping forever. Delivered
+rows are pruned after seven days; undelivered rows are never pruned, because an
+event nobody could deliver is a fault to look at rather than litter to sweep
+away.
+
 ### Cross-row invariants
 
 A `CHECK` constraint only sees the row being written, so two kinds of rule need

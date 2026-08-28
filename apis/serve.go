@@ -178,6 +178,20 @@ func NewServer(app *core.App) *http.Server {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+	// Deliver a swept event exactly as the request path would have.
+	app.OutboxPublish = func(ctx context.Context, project core.Project, event core.OutboxEvent) error {
+		var record core.Record
+		if len(event.Payload) > 0 {
+			_ = json.Unmarshal(event.Payload, &record)
+		}
+		action := map[string]string{"insert": realtimeActionCreate, "update": realtimeActionUpdate, "delete": realtimeActionDelete}[event.Action]
+		if action == "" {
+			return nil
+		}
+		s.publishRealtimeRecord(ctx, project.Slug, event.Collection, action, event.RecordID, record)
+		return core.EnqueueRecordWebhookDeliveries(ctx, s.app.Pool, project.Slug, event.Collection, action, event.RecordID, record)
+	}
+
 	fanoutCtx, cancelFanout := context.WithCancel(context.Background())
 	srv.RegisterOnShutdown(cancelFanout)
 	go s.runRealtimeFanout(fanoutCtx)
