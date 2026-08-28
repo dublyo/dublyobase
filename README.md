@@ -414,6 +414,50 @@ rows are pruned after seven days; undelivered rows are never pruned, because an
 event nobody could deliver is a fault to look at rather than litter to sweep
 away.
 
+### Computed columns, checks, and unique indexes
+
+Three collection options push single-row invariants into PostgreSQL itself, so a
+direct SQL session or a batch cannot get around them either.
+
+A `computed` field is a stored generated column: the database owns the value, so
+it cannot be forged by a client and cannot drift from its inputs. It is
+supported on `decimal`, `number`, `bool`, and `text`, may not reference itself,
+and may not also be `required` — the database supplies the value.
+
+`checks` are named row-level `CHECK` constraints. `indexes` create lookup or
+unique indexes over one or more fields.
+
+```json
+{
+  "name": "quote_items",
+  "fields": [
+    { "name": "doc_no", "type": "text" },
+    { "name": "qty", "type": "number", "options": { "onlyInt": true } },
+    { "name": "unit_price", "type": "decimal", "options": { "precision": 18, "scale": 3 } },
+    { "name": "line_total", "type": "decimal",
+      "options": { "precision": 18, "scale": 3, "computed": "qty * unit_price" } }
+  ],
+  "options": {
+    "checks": [
+      { "name": "qty_positive", "expression": "qty > 0" },
+      { "name": "price_non_negative", "expression": "unit_price >= 0" }
+    ],
+    "indexes": [
+      { "name": "doc_no_unique", "fields": ["doc_no"], "unique": true }
+    ]
+  }
+}
+```
+
+Expressions here are compiled more strictly than API rules: they live inside
+DDL, so a `@request` reference, a subquery, or a call to `now()` is refused
+rather than silently evaluated. Arithmetic over a `decimal` stays exact — it is
+not widened to floating point. A violated constraint returns `422` (or `409` for
+a uniqueness collision) naming the rule, not a `500`.
+
+Adding `computed` to a field that already exists rebuilds the column, so it is
+only applied when the request opts into dropping and recreating fields.
+
 ### Cross-row invariants
 
 A `CHECK` constraint only sees the row being written, so two kinds of rule need
@@ -532,6 +576,8 @@ avoid logging those URLs.
 | `POST /admin/api/settings/storage/test` | Test storage write/read/delete. |
 | `GET /admin/api/cron-jobs` | List cron jobs. |
 | `POST /admin/api/cron-jobs` | Create a cron job. |
+| `PATCH /admin/api/cron-jobs/{id}` | Replace every field of a cron job and reschedule it. |
+| `DELETE /admin/api/cron-jobs/{id}` | Delete a cron job and its run history. |
 | `GET /admin/api/cron-jobs/{id}/runs` | List cron runs. |
 | `POST /admin/api/cron-jobs/{id}/run` | Run a cron job immediately. |
 | `GET /admin/api/backups` | List backup jobs. |
@@ -565,10 +611,68 @@ avoid logging those URLs.
 - Scope MCP tokens narrowly and revoke them when no longer needed.
 - Prefer project-scoped backups for app tenants and full backups for instance
   administrators.
+- Cron and webhook targets may not reach private, loopback, or link-local
+  addresses. The check runs twice on purpose: once when the job is saved, which
+  resolves the hostname so a name pointing inward is caught immediately, and
+  again in the dialer at connect time, which is the authoritative one — it
+  catches a public name whose DNS answer changes later. Save-time resolution is
+  best effort, so a name that will not resolve right now is still allowed
+  through and the dialer decides. Set `CRON_ALLOW_PRIVATE_TARGETS=true` only if
+  you deliberately cron an internal service; it is env-only, so an admin API or
+  MCP token cannot turn it on.
 - S3 and SMTP secrets are masked in API responses and audit logs.
 - OAuth provider secrets are encrypted at rest and masked in API responses.
 - For multi-replica realtime, use the same Postgres database so persisted events
   and `LISTEN/NOTIFY` fanout are shared by all replicas.
+
+## Source Layout
+
+| Path | Contents |
+|---|---|
+| `main.go`, `cmd/` | Entry point and CLI verbs (`serve`, `admin`). |
+| `core/` | Everything that touches the database: collections, records, rules, auth, cron, backups, storage, migrations. No HTTP. |
+| `apis/` | HTTP layer — routing, request decoding, error mapping. Handlers stay thin and call `core`. |
+| `ui/admin/` | The embedded Next.js admin panel, compiled and served from `/_/`. |
+
+Rules are compiled to PostgreSQL row-level security rather than checked in Go,
+so a client reaching the database another way is bound by the same rules. When
+adding an enforcement feature, prefer pushing it into the database over adding a
+check in a handler.
+
+### Admin panel layout
+
+`app/page.tsx` was a single 9,000-line file; it is now the app shell and its
+state, with everything it renders imported. Feature code lives beside it:
+
+| Path | Contents |
+|---|---|
+| `app/lib/constants.ts` | Field/icon choices, nav items, and the empty form drafts. |
+| `app/lib/view-types.ts` | View-layer types (`View`, `SettingsSection`, drafts, relation types). |
+| `app/lib/format.ts` | Formatting and small pure data helpers. |
+| `app/lib/fields.ts` | Field definitions, options, and record value handling. |
+| `app/lib/relations.ts` | Relation modelling — cardinality, anchors, labels. |
+| `app/lib/collections.ts` | Collection metadata and schema import. |
+| `app/lib/sql.ts`, `app/lib/settings-drafts.ts` | SQL console helpers; server settings mapped onto form drafts. |
+| `app/components/*.tsx` | One module per feature area: `ui` (shared primitives), `auth`, `collections`, `collection-editor`, `record-editor`, `relation-picker`, `insights`, `logs`, `settings-shell`, `settings-panels`, `ops-views`. |
+
+The library modules form a one-way chain — `fields` → `relations` →
+`collections` — so keep new helpers pointing the same direction rather than
+importing backwards.
+
+### Conventions worth knowing
+
+- **Values crossing the API are rendered, never `fmt.Sprint`ed.** pgx hands back
+  driver types, and printing them produces Go debug output — a uuid as a byte
+  array, a numeric as `{2885000 -3 false finite true}`, jsonb as `map[a:1]`.
+  `numeric` in particular must go through the exact decimal formatter rather
+  than a float, or money loses precision on the way out.
+- **A `decimal` is a string on the wire.** It is `numeric(p,s)` in Postgres and
+  JSON has no exact decimal type, so it is transported as a string. Do not
+  parse it into a float to "clean it up".
+- **Errors carry a code and a message that should not repeat each other.** The
+  panel prepends the code only when the message does not already contain it.
+- **Panel error toasts persist until dismissed.** They used to auto-dismiss,
+  which made failures easy to miss entirely.
 
 ## Local Development
 
@@ -584,9 +688,20 @@ Build and test:
 npm ci --prefix ui/admin
 npm run --prefix ui/admin typecheck
 npm run --prefix ui/admin build
-go test ./...
+createdb dublyobase_test
+TEST_DATABASE_URL="postgres://postgres@localhost:5432/dublyobase_test?sslmode=disable" go test ./...
 go build ./...
 ```
+
+**Set `TEST_DATABASE_URL` or most of the suite silently does nothing.** Every
+test that needs a database skips without it, and `go test ./...` still prints
+`ok` — at the time of writing that is 63 of the 80 tests in `apis`. A green run
+with no database configured says almost nothing. CI sets the variable, so this
+only bites locally. Each integration test creates and drops its own database, so
+the role in that URL needs `CREATEDB`.
+
+The admin panel is compiled into the binary with `go:embed`, so a UI change is
+not visible to `go run .` until `npm run --prefix ui/admin build` has run.
 
 Run locally against your own database:
 
