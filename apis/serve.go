@@ -97,6 +97,8 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("PUT /admin/api/settings/logs", s.requireAdminReady(http.HandlerFunc(s.adminUpdateLogSettings)))
 	mux.Handle("GET /admin/api/cron-jobs", s.requireAdminReady(http.HandlerFunc(s.adminListCronJobs)))
 	mux.Handle("POST /admin/api/cron-jobs", s.requireAdminReady(http.HandlerFunc(s.adminCreateCronJob)))
+	mux.Handle("PATCH /admin/api/cron-jobs/{id}", s.requireAdminReady(http.HandlerFunc(s.adminUpdateCronJob)))
+	mux.Handle("DELETE /admin/api/cron-jobs/{id}", s.requireAdminReady(http.HandlerFunc(s.adminDeleteCronJob)))
 	mux.Handle("GET /admin/api/cron-jobs/{id}/runs", s.requireAdminReady(http.HandlerFunc(s.adminListCronRuns)))
 	mux.Handle("POST /admin/api/cron-jobs/{id}/run", s.requireAdminReady(http.HandlerFunc(s.adminRunCronJob)))
 	mux.Handle("GET /admin/api/backups", s.requireAdminReady(http.HandlerFunc(s.adminListBackupJobs)))

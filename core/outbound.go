@@ -23,6 +23,34 @@ func validatePublicOutboundHost(host string) error {
 	return nil
 }
 
+// validatePublicOutboundTarget adds a DNS check to the literal-address check
+// above, so a name pointing at an internal service is caught when the job is
+// saved rather than failing on every run. Resolution is best effort: a name
+// that does not resolve right now is allowed through, because the dialer
+// re-checks at connect time and a transient DNS failure should not block
+// saving a legitimate job.
+func validatePublicOutboundTarget(ctx context.Context, host string) error {
+	if err := validatePublicOutboundHost(host); err != nil {
+		return err
+	}
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	if net.ParseIP(host) != nil {
+		return nil
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIPAddr(lookupCtx, host)
+	if err != nil {
+		return nil
+	}
+	for _, candidate := range ips {
+		if isBlockedOutboundIP(candidate.IP) {
+			return fmt.Errorf("%w: outbound host resolves to a private or local address", ErrValidation)
+		}
+	}
+	return nil
+}
+
 func publicTCPDialer(timeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network string, address string) (net.Conn, error) {
 		if network != "tcp" && network != "tcp4" && network != "tcp6" {

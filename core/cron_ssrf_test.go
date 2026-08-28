@@ -1,6 +1,10 @@
 package core
 
-import "testing"
+import (
+	"context"
+	"net"
+	"testing"
+)
 
 // A cron job URL is attacker-reachable through the admin API and MCP, so it must
 // not be usable to probe the deployment's own network — cloud metadata endpoints
@@ -22,6 +26,19 @@ func TestValidateCronJobInputRejectsPrivateTargets(t *testing.T) {
 		if err := ValidateCronJobInput(&in); err == nil {
 			t.Errorf("expected %s to be rejected", target)
 		}
+	}
+
+	// A DNS name that resolves inward is caught at save time, not only when the
+	// job runs — otherwise it saves clean and then fails on every execution.
+	// localtest.me is a public name pointing at 127.0.0.1; skip rather than fail
+	// when the test host has no DNS, since the check is best effort by design.
+	if _, err := net.DefaultResolver.LookupIPAddr(context.Background(), "localtest.me"); err == nil {
+		in := CronJobInput{Name: "by-name", Type: "http", Schedule: "@every 1m", Method: "GET", URL: "http://localtest.me/x"}
+		if err := ValidateCronJobInput(&in); err == nil {
+			t.Error("a hostname resolving to loopback should be rejected at save time")
+		}
+	} else {
+		t.Log("skipping DNS-based check: no resolver available")
 	}
 
 	in := CronJobInput{Name: "ok", Type: "http", Schedule: "@every 1m", Method: "GET", URL: "https://example.com/hook"}

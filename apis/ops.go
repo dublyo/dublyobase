@@ -77,6 +77,46 @@ func (s *server) adminCreateCronJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, job)
 }
 
+func (s *server) adminUpdateCronJob(w http.ResponseWriter, r *http.Request) {
+	auth := adminAuth(r)
+	var req cronJobRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	input := core.CronJobInput{
+		ProjectSlug:     req.ProjectSlug,
+		Name:            req.Name,
+		Type:            req.Type,
+		Schedule:        req.Schedule,
+		Timezone:        req.Timezone,
+		TimeoutSeconds:  req.TimeoutSeconds,
+		RetryCount:      req.RetryCount,
+		Method:          req.Method,
+		URL:             req.URL,
+		Headers:         req.Headers,
+		Body:            req.Body,
+		EnabledProvided: req.Enabled != nil,
+	}
+	if req.Enabled != nil {
+		input.Enabled = *req.Enabled
+	}
+	job, err := core.UpdateCronJob(r.Context(), s.app.Pool, auth.Admin.ID, r.PathValue("id"), input, s.clientIP(r), r.UserAgent())
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
+func (s *server) adminDeleteCronJob(w http.ResponseWriter, r *http.Request) {
+	auth := adminAuth(r)
+	if err := core.DeleteCronJob(r.Context(), s.app.Pool, auth.Admin.ID, r.PathValue("id"), s.clientIP(r), r.UserAgent()); err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *server) adminListCronRuns(w http.ResponseWriter, r *http.Request) {
 	runs, err := core.ListCronRuns(r.Context(), s.app.Pool, r.PathValue("id"), 30)
 	if err != nil {

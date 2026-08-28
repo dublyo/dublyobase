@@ -115,7 +115,7 @@ func ValidateCronJobInput(input *CronJobInput) error {
 		return fmt.Errorf("%w: cron URL must be http or https", ErrValidation)
 	}
 	if !cronAllowPrivateTargets {
-		if err := validatePublicOutboundHost(parsed.Hostname()); err != nil {
+		if err := validatePublicOutboundTarget(context.Background(), parsed.Hostname()); err != nil {
 			return err
 		}
 	}
@@ -462,4 +462,105 @@ func nullString(v string) any {
 		return nil
 	}
 	return v
+}
+
+// UpdateCronJob replaces the mutable fields of a job. Without it a job saved
+// with a wrong URL or schedule was permanent, since the API offered no way to
+// correct one.
+func UpdateCronJob(ctx context.Context, pool *pgxpool.Pool, adminID string, jobID string, input CronJobInput, ip string, userAgent string) (*CronJob, error) {
+	existing, err := getCronJob(ctx, pool, jobID)
+	if err != nil {
+		return nil, err
+	}
+	if !input.EnabledProvided {
+		input.Enabled = existing.Enabled
+	}
+	if err := ValidateCronJobInput(&input); err != nil {
+		return nil, err
+	}
+	var projectID *string
+	if input.ProjectSlug != "" {
+		project, err := GetProject(ctx, pool, input.ProjectSlug)
+		if err != nil {
+			return nil, err
+		}
+		projectID = &project.ID
+	}
+	next, err := NextScheduledTime(input.Schedule, input.Timezone, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	headers, err := json.Marshal(input.Headers)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	job, err := scanCronJob(tx.QueryRow(ctx, `
+		update _dbo.cron_jobs set
+			project_id = $2, name = $3, type = $4, schedule = $5, timezone = $6, enabled = $7,
+			timeout_seconds = $8, retry_count = $9, method = $10, url = $11, headers = $12::jsonb,
+			body = $13, next_run_at = $14, updated_at = now()
+		where id = $1
+		returning id, project_id, name, type, schedule, timezone, enabled, timeout_seconds, retry_count, method, url, headers, body, last_run_at, next_run_at, created_at, updated_at`,
+		jobID, projectID, input.Name, input.Type, input.Schedule, input.Timezone, input.Enabled,
+		input.TimeoutSeconds, input.RetryCount, input.Method, input.URL, headers, input.Body, next,
+	))
+	if err != nil {
+		return nil, err
+	}
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		AdminID:    &adminID,
+		Action:     "cron.update",
+		TargetType: "cron_job",
+		TargetID:   job.ID,
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data: map[string]any{
+			"name": job.Name, "schedule": job.Schedule, "enabled": job.Enabled,
+			"previousUrl": existing.URL, "url": job.URL,
+		},
+	}); err != nil {
+		return nil, err
+	}
+	return job, tx.Commit(ctx)
+}
+
+// DeleteCronJob removes a job and its run history. Jobs were previously
+// permanent, so a job pointing somewhere it should not could not be retired.
+func DeleteCronJob(ctx context.Context, pool *pgxpool.Pool, adminID string, jobID string, ip string, userAgent string) error {
+	existing, err := getCronJob(ctx, pool, jobID)
+	if err != nil {
+		return err
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `delete from _dbo.cron_runs where job_id = $1`, jobID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `delete from _dbo.cron_jobs where id = $1`, jobID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: cron job not found", ErrValidation)
+	}
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		AdminID:    &adminID,
+		Action:     "cron.delete",
+		TargetType: "cron_job",
+		TargetID:   jobID,
+		IP:         ip,
+		UserAgent:  userAgent,
+		Data:       map[string]any{"name": existing.Name, "url": existing.URL, "schedule": existing.Schedule},
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
