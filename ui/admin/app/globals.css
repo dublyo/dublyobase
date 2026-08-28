@@ -4366,3 +4366,11 @@ button:disabled {
   border-radius: var(--radius);
   text-align: left;
 }
+
+/* The cron form doubles as the editor, so the row it is editing is marked to
+   tie the two together — otherwise the form silently refers to a row further
+   up the page. */
+.pb-records-table tr.is-editing > td {
+  background: color-mix(in srgb, var(--accent-color) 8%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent-color);
+}

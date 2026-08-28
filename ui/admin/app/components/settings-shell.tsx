@@ -60,6 +60,11 @@ export function SettingsWorkspace(props: {
   onCreateCron: (event: React.FormEvent<HTMLFormElement>) => void;
   onRunCron: (job: CronJob) => void;
   onLoadCronRuns: (job: CronJob) => void;
+  onEditCron: (job: CronJob) => void;
+  onCancelCronEdit: () => void;
+  onToggleCron: (job: CronJob) => void;
+  onDeleteCron: (job: CronJob) => void;
+  editingCronId: string | null;
   backupJobs: BackupJob[];
   backupRuns: Record<string, BackupRun[]>;
   backupDraft: typeof emptyBackupDraft;

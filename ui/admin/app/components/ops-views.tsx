@@ -6,7 +6,7 @@ import { discoveredTableKey, schemaImportNameIssues, tableRelationSummary } from
 import { emptyBackupDraft, emptyCronDraft, emptyMCPDraft, emptyWebhookDraft } from "../lib/constants";
 import { findFiles, formatBytes, formatDate } from "../lib/format";
 import { CompactTable, EmptyState, Info, LabeledInput, RunHistory, SQLResultTable, SchemaStatusChip } from "./ui";
-import { Code2, Copy, Download, FileUp, KeyRound, Plus, RefreshCw, Trash2, Type, UploadCloud, X } from "lucide-react";
+import { Code2, Copy, Download, FileUp, KeyRound, Plus, RefreshCw, Save, Trash2, Type, UploadCloud, X } from "lucide-react";
 import { useRef, useState } from "react";
 
 export function BackupsView(props: {
@@ -197,12 +197,21 @@ export function CronsView(props: {
   onCreateCron: (event: React.FormEvent<HTMLFormElement>) => void;
   onRunCron: (job: CronJob) => void;
   onLoadCronRuns: (job: CronJob) => void;
+  onEditCron: (job: CronJob) => void;
+  onCancelCronEdit: () => void;
+  onToggleCron: (job: CronJob) => void;
+  onDeleteCron: (job: CronJob) => void;
+  editingCronId: string | null;
 }) {
   return (
     <div className="pb-settings-stack">
       <section className="pb-settings-block">
-        <h2>Crons</h2>
-        <div className="pb-inline-alert info">HTTP jobs support cron expressions and @every durations. Retries and response snippets are stored in the run log.</div>
+        <h2>{props.editingCronId ? "Edit cron" : "Crons"}</h2>
+        <div className="pb-inline-alert info">
+          {props.editingCronId
+            ? "Saving replaces every field on this job and reschedules its next run."
+            : "HTTP jobs support cron expressions and @every durations. Retries and response snippets are stored in the run log."}
+        </div>
         <form onSubmit={props.onCreateCron} className="pb-grid-form ops-grid">
           <LabeledInput label="Name" value={props.cronDraft.name} onChange={(value) => props.setCronDraft((draft) => ({ ...draft, name: value }))} placeholder="refresh cache" />
           <label className="pb-field">
@@ -243,10 +252,17 @@ export function CronsView(props: {
             <input type="checkbox" checked={props.cronDraft.enabled} onChange={(event) => props.setCronDraft((draft) => ({ ...draft, enabled: event.target.checked }))} />
             Enabled
           </label>
-          <button type="submit" className="pb-btn primary">
-            <Plus className="h-4 w-4" />
-            Create cron
-          </button>
+          <div className="pb-row-actions tight">
+            <button type="submit" className="pb-btn primary">
+              {props.editingCronId ? <Save className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+              {props.editingCronId ? "Save cron" : "Create cron"}
+            </button>
+            {props.editingCronId ? (
+              <button type="button" className="pb-btn secondary" onClick={props.onCancelCronEdit}>
+                Cancel
+              </button>
+            ) : null}
+          </div>
         </form>
       </section>
       <section className="pb-settings-block">
@@ -267,7 +283,7 @@ export function CronsView(props: {
               {props.cronJobs.map((job) => {
                 const latest = props.cronRuns[job.id]?.[0];
                 return (
-                  <tr key={job.id}>
+                  <tr key={job.id} className={props.editingCronId === job.id ? "is-editing" : undefined}>
                     <td>{job.name}</td>
                     <td>{job.method}</td>
                     <td>{job.schedule}</td>
@@ -280,6 +296,15 @@ export function CronsView(props: {
                         </button>
                         <button type="button" className="pb-btn sm primary" onClick={() => props.onRunCron(job)}>
                           Run
+                        </button>
+                        <button type="button" className="pb-btn sm secondary" onClick={() => props.onEditCron(job)}>
+                          Edit
+                        </button>
+                        <button type="button" className="pb-btn sm secondary" onClick={() => props.onToggleCron(job)}>
+                          {job.enabled ? "Pause" : "Resume"}
+                        </button>
+                        <button type="button" className="pb-btn sm danger" onClick={() => props.onDeleteCron(job)} aria-label={`Delete ${job.name}`}>
+                          <Trash2 className="h-4 w-4" />
                         </button>
                       </div>
                     </td>

@@ -527,6 +527,36 @@ export function createCronJob(
   });
 }
 
+export type CronJobInput = {
+  projectSlug: string;
+  name: string;
+  type: string;
+  schedule: string;
+  timezone: string;
+  enabled: boolean;
+  timeoutSeconds: number;
+  retryCount: number;
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+};
+
+export function updateCronJob(token: string, id: string, input: CronJobInput) {
+  return request<CronJob>(`/admin/api/cron-jobs/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    token,
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteCronJob(token: string, id: string) {
+  return request<void>(`/admin/api/cron-jobs/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    token,
+  });
+}
+
 export function listCronRuns(token: string, id: string) {
   return request<ApiEnvelope<CronRun>>(`/admin/api/cron-jobs/${encodeURIComponent(id)}/runs`, { token }).then(normalizeEnvelope);
 }

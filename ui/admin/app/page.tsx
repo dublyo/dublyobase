@@ -2,7 +2,7 @@
 
 import { AlertCircle, Check, ChevronDown, Copy, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, changeAdminEmail, changeAdminPassword, clearAuditLog, clearRequestLogs, createAdmin, createAPIKey, createBackupJob, createCollection, createCronJob, createFileToken, createMCPToken, createProject, createRecord, downloadRecordsCSV, createWebhook, deleteCollection, deleteRecord, deleteWebhook, discoverSchema, exportCollections, getProjectAuthSettings, getCollectionInsights, getProjectInsights, getProjectMetrics, getProjectQuotas, health, getSettings, importCollections, importSchemaTables, listAdmins, listAPIKeys, listAudit, listBackupJobs, listBackupRuns, listCollections, listCronJobs, listCronRuns, listMCPTokens, listOpsAlerts, listProjects, listRecords, listRequestLogs, listWebhookDeliveries, listWebhooks, login, logout, me, revokeAPIKey, revokeMCPToken, resolveOpsAlert, restoreBackup, runBackupJob, runCronJob, runSQL, testSMTPSettings, testStorageSettings, updateCollection, updateCORSSettings, updateLogSettings, updateProjectAuthSettings, updateProjectCORSSettings, updateProjectQuotas, updateRecord, updateSMTPSettings, updateStorageSettings, uploadFile } from "../src/lib/api";
+import { ApiError, changeAdminEmail, changeAdminPassword, clearAuditLog, clearRequestLogs, createAdmin, createAPIKey, createBackupJob, createCollection, createCronJob, deleteCronJob, updateCronJob, createFileToken, createMCPToken, createProject, createRecord, downloadRecordsCSV, createWebhook, deleteCollection, deleteRecord, deleteWebhook, discoverSchema, exportCollections, getProjectAuthSettings, getCollectionInsights, getProjectInsights, getProjectMetrics, getProjectQuotas, health, getSettings, importCollections, importSchemaTables, listAdmins, listAPIKeys, listAudit, listBackupJobs, listBackupRuns, listCollections, listCronJobs, listCronRuns, listMCPTokens, listOpsAlerts, listProjects, listRecords, listRequestLogs, listWebhookDeliveries, listWebhooks, login, logout, me, revokeAPIKey, revokeMCPToken, resolveOpsAlert, restoreBackup, runBackupJob, runCronJob, runSQL, testSMTPSettings, testStorageSettings, updateCollection, updateCORSSettings, updateLogSettings, updateProjectAuthSettings, updateProjectCORSSettings, updateProjectQuotas, updateRecord, updateSMTPSettings, updateStorageSettings, uploadFile } from "../src/lib/api";
 import { SettingsWorkspace } from "./components/settings-shell";
 import { LogsView } from "./components/logs";
 import { InsightsWorkspace } from "./components/insights";
@@ -93,6 +93,7 @@ export default function AdminApp() {
   const [storageDraft, setStorageDraft] = useState(emptyStorageDraft);
   const [corsDraft, setCORSDraft] = useState(emptyCORSDraft);
   const [cronDraft, setCronDraft] = useState(emptyCronDraft);
+  const [editingCronId, setEditingCronId] = useState<string | null>(null);
   const [backupDraft, setBackupDraft] = useState(emptyBackupDraft);
   const [mcpDraft, setMCPDraft] = useState(emptyMCPDraft);
   const [keyDraft, setKeyDraft] = useState({ name: "", type: "service" as "anon" | "service" });
@@ -1112,10 +1113,10 @@ export default function AdminApp() {
     setBusy(true);
     try {
       const projectSlug = cronDraft.projectSlug || selectedProject;
-      const created = await createCronJob(token, {
+      const input = {
         projectSlug,
         name: cronDraft.name,
-        type: "http",
+        type: "http" as const,
         schedule: cronDraft.schedule,
         timezone: cronDraft.timezone,
         enabled: cronDraft.enabled,
@@ -1125,11 +1126,88 @@ export default function AdminApp() {
         url: cronDraft.url,
         headers,
         body: cronDraft.body,
-      });
+      };
+      const saved = editingCronId
+        ? await updateCronJob(token, editingCronId, input)
+        : await createCronJob(token, input);
       setCronDraft({ ...emptyCronDraft, projectSlug });
-      showNotice("success", `Cron ${created.name} created`);
+      setEditingCronId(null);
+      showNotice("success", `Cron ${saved.name} ${editingCronId ? "updated" : "created"}`);
       const response = await listCronJobs(token);
       setCronJobs(response.items);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // The form doubles as the editor: loading a job into it keeps one set of
+  // inputs and one validation path for both create and update.
+  function editCron(job: CronJob) {
+    setEditingCronId(job.id);
+    setCronDraft({
+      projectSlug: projects.find((project) => project.id === job.projectId)?.slug ?? "",
+      name: job.name,
+      schedule: job.schedule,
+      timezone: job.timezone,
+      enabled: job.enabled,
+      timeoutSeconds: String(job.timeoutSeconds ?? 30),
+      retryCount: String(job.retryCount ?? 0),
+      method: job.method,
+      url: job.url,
+      headersJSON: JSON.stringify(job.headers ?? {}, null, 2),
+      body: job.body ?? "",
+    });
+  }
+
+  function cancelCronEdit() {
+    setEditingCronId(null);
+    setCronDraft({ ...emptyCronDraft, projectSlug: selectedProject });
+  }
+
+  // Pausing sends the whole job back, since update replaces every field.
+  async function toggleCronEnabled(job: CronJob) {
+    if (!token) return;
+    setBusy(true);
+    try {
+      const updated = await updateCronJob(token, job.id, {
+        projectSlug: projects.find((project) => project.id === job.projectId)?.slug ?? "",
+        name: job.name,
+        type: "http" as const,
+        schedule: job.schedule,
+        timezone: job.timezone,
+        enabled: !job.enabled,
+        timeoutSeconds: job.timeoutSeconds ?? 30,
+        retryCount: job.retryCount ?? 0,
+        method: job.method,
+        url: job.url,
+        headers: job.headers ?? {},
+        body: job.body ?? "",
+      });
+      setCronJobs((current) => current.map((item) => (item.id === job.id ? updated : item)));
+      showNotice("success", `Cron ${updated.name} ${updated.enabled ? "resumed" : "paused"}`);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeCron(job: CronJob) {
+    if (!token) return;
+    if (!window.confirm(`Delete cron "${job.name}"? Its run history goes with it.`)) return;
+    setBusy(true);
+    try {
+      await deleteCronJob(token, job.id);
+      setCronJobs((current) => current.filter((item) => item.id !== job.id));
+      setCronRuns((current) => {
+        const next = { ...current };
+        delete next[job.id];
+        return next;
+      });
+      if (editingCronId === job.id) cancelCronEdit();
+      showNotice("success", `Cron ${job.name} deleted`);
     } catch (error) {
       handleError(error);
     } finally {
@@ -1724,6 +1802,11 @@ export default function AdminApp() {
           onCreateCron={submitCronJob}
           onRunCron={runCron}
           onLoadCronRuns={loadCronRuns}
+          onEditCron={editCron}
+          onCancelCronEdit={cancelCronEdit}
+          onToggleCron={toggleCronEnabled}
+          onDeleteCron={removeCron}
+          editingCronId={editingCronId}
           backupJobs={backupJobs}
           backupRuns={backupRuns}
           backupDraft={backupDraft}
