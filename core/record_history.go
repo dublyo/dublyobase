@@ -89,9 +89,9 @@ begin
     after_row  := to_jsonb(new);
     -- record which columns actually moved, so a diff does not have to be
     -- recomputed by every reader
-    -- `updated` is maintained by the platform and moves on every write, so
-    -- listing it would drown the field that actually changed. It is still in
-    -- before/after; only the summary omits it.
+    -- the updated column is maintained by the platform and moves on every
+    -- write, so listing it would drown the field that actually changed. It is
+    -- still in before/after; only this summary omits it.
     for key in select jsonb_object_keys(after_row) loop
       if key <> 'updated' and before_row -> key is distinct from after_row -> key then
         changed_keys := array_append(changed_keys, key);
