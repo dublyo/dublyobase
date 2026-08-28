@@ -16,6 +16,9 @@ func Execute() error {
 		Use:          "dublyobase",
 		Short:        "Postgres-backed BaaS — auth, realtime, storage and an admin UI in one binary.",
 		SilenceUsage: true,
+		// main already prints the error; without this cobra prints it too and
+		// every failure appears twice.
+		SilenceErrors: true,
 	}
 
 	root.AddCommand(newServeCmd())
