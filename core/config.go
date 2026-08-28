@@ -74,6 +74,13 @@ type Config struct {
 
 	EnablePgvector bool // ENABLE_PGVECTOR (default false)
 
+	// CRON_ALLOW_PRIVATE_TARGETS (default false). Cron jobs may otherwise not
+	// reach private or loopback addresses, which stops a job URL being used to
+	// read cloud metadata or a service bound to localhost. Self-hosters who
+	// deliberately cron an internal service turn this on at deploy time — it is
+	// not settable through the API, so an MCP token cannot enable it.
+	CronAllowPrivateTargets bool
+
 	SMTPHost     string // SMTP_HOST (optional; email flows skipped if unset)
 	SMTPPort     string // SMTP_PORT (default 587)
 	SMTPUser     string // SMTP_USER
@@ -145,7 +152,8 @@ func LoadConfig() (*Config, error) {
 		LogLevel:  env("LOG_LEVEL", "info"),
 		LogFormat: env("LOG_FORMAT", "json"),
 
-		EnablePgvector: boolVar("ENABLE_PGVECTOR", false),
+		EnablePgvector:          boolVar("ENABLE_PGVECTOR", false),
+		CronAllowPrivateTargets: boolVar("CRON_ALLOW_PRIVATE_TARGETS", false),
 
 		SMTPHost:     strings.TrimSpace(os.Getenv("SMTP_HOST")),
 		SMTPPort:     env("SMTP_PORT", "587"),

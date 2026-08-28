@@ -65,6 +65,14 @@ type CronRun struct {
 	Output     string     `json:"output"`
 }
 
+// cronAllowPrivateTargets mirrors Config.CronAllowPrivateTargets. Cron
+// validation and execution are reached from places without a Config in hand, so
+// the setting is latched at startup rather than threaded through every call.
+var cronAllowPrivateTargets bool
+
+// SetCronAllowPrivateTargets is called once during boot.
+func SetCronAllowPrivateTargets(v bool) { cronAllowPrivateTargets = v }
+
 func ValidateCronJobInput(input *CronJobInput) error {
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
@@ -100,6 +108,16 @@ func ValidateCronJobInput(input *CronJobInput) error {
 	parsed, err := url.ParseRequestURI(strings.TrimSpace(input.URL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("%w: cron URL must be absolute", ErrValidation)
+	}
+	// Reject at save time as well as dial time, so a bad target is a validation
+	// error on the form rather than a failed run discovered later.
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("%w: cron URL must be http or https", ErrValidation)
+	}
+	if !cronAllowPrivateTargets {
+		if err := validatePublicOutboundHost(parsed.Hostname()); err != nil {
+			return err
+		}
 	}
 	input.URL = parsed.String()
 	if _, err := NextScheduledTime(input.Schedule, input.Timezone, time.Now().UTC()); err != nil {
@@ -358,7 +376,14 @@ func executeHTTPJob(ctx context.Context, job *CronJob) (string, *int, string, er
 	for key, value := range job.Headers {
 		req.Header.Set(key, value)
 	}
+	// Cron was the last outbound path calling out with the default dialer, so a
+	// job URL could reach the cloud metadata endpoint or a service bound to
+	// localhost and return up to 4KB of it in the run output. Webhooks, OAuth,
+	// SMTP and S3 all already routed through this guard.
 	client := &http.Client{Timeout: timeout}
+	if !cronAllowPrivateTargets {
+		client.Transport = &http.Transport{DialContext: publicTCPDialer(timeout)}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "error", nil, "", err

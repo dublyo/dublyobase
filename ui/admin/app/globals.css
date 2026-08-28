@@ -4337,3 +4337,32 @@ button:disabled {
   color: inherit; opacity: .75; font-size: 12.5px;
 }
 .pb-relation-scope button:hover { opacity: 1; }
+
+/* The recovery instructions replace a button that did nothing. It is a details
+   element so the login screen stays uncluttered until someone needs it. */
+.pb-link-hint > summary {
+  cursor: pointer;
+  list-style: none;
+  display: inline-block;
+}
+.pb-link-hint > summary::-webkit-details-marker { display: none; }
+.pb-link-hint > summary:hover { text-decoration: underline; text-underline-offset: 3px; }
+.pb-link-hint[open] > summary { margin-bottom: 8px; font-weight: 600; }
+.pb-link-hint p {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  opacity: .85;
+  text-align: left;
+}
+.pb-link-hint code {
+  display: block;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+  background: rgb(127 127 127 / .12);
+  border: 1px solid rgb(127 127 127 / .22);
+  border-radius: var(--radius);
+  text-align: left;
+}

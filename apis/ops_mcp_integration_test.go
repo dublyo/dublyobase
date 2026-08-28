@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/dublyo/dublyobase/core"
 )
 
 func TestAdminOpsAndMCP(t *testing.T) {
@@ -36,6 +38,10 @@ func TestAdminOpsAndMCP(t *testing.T) {
 		"headers": {"X-Dublyobase-Test": "yes"},
 		"body": "ping"
 	}`, projectSlug, target.URL)
+	// The target is an httptest server on loopback, which cron now refuses by
+	// default. Self-hosters reaching an internal service opt in the same way.
+	core.SetCronAllowPrivateTargets(true)
+	t.Cleanup(func() { core.SetCronAllowPrivateTargets(false) })
 	rec := postJSON(srv.Handler, "/admin/api/cron-jobs", adminToken, cronBody)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create cron status=%d body=%s", rec.Code, rec.Body.String())

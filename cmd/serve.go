@@ -56,6 +56,7 @@ func runServe() error {
 	}
 	defer pool.Close()
 
+	core.SetCronAllowPrivateTargets(cfg.CronAllowPrivateTargets)
 	app := core.NewApp(cfg, pool, log)
 
 	// 3. Migrate + seed before binding the public listener. This avoids any

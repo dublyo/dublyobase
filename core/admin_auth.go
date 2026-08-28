@@ -515,3 +515,68 @@ func ChangeAdminEmail(ctx context.Context, pool *pgxpool.Pool, adminID string, c
 	}
 	return &admin, nil
 }
+
+// ResetAdminPasswordByEmail sets a new password for an admin without needing
+// the old one. It exists because an admin who forgets their password otherwise
+// has no route back in but hand-editing the database — the operation everyone
+// reaches for and nobody audits.
+//
+// It is deliberately not an HTTP endpoint. Recovery needs proof of control over
+// the deployment rather than proof of control over an inbox, so it runs from
+// the CLI, where reaching it already means shell access to the container. Every
+// use is written to the audit log, and all existing sessions are revoked, so a
+// reset cannot be used quietly to shadow a live session.
+func ResetAdminPasswordByEmail(ctx context.Context, pool *pgxpool.Pool, email, newPassword string, bcryptCost int) (*Admin, error) {
+	email = NormalizeEmail(email)
+	if email == "" {
+		return nil, fmt.Errorf("%w: email is required", ErrValidation)
+	}
+	if len(newPassword) < minAdminPasswordSize {
+		return nil, fmt.Errorf("%w: password must be at least %d characters", ErrValidation, minAdminPasswordSize)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcryptCost)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var admin Admin
+	if err := tx.QueryRow(ctx, `
+		update _dbo.admins
+		set password_hash = $1, must_change_password = true, updated_at = now()
+		where lower(email) = $2
+		returning id, email, role, must_change_password`,
+		string(hash), email,
+	).Scan(&admin.ID, &admin.Email, &admin.Role, &admin.MustChangePassword); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: no admin with that email", ErrValidation)
+		}
+		return nil, err
+	}
+	// Revoke every session: whoever asked for this reset should have to use it,
+	// and anyone already signed in as this admin should not stay signed in.
+	if _, err := tx.Exec(ctx,
+		`update _dbo.admin_sessions set revoked_at = now() where admin_id = $1 and revoked_at is null`,
+		admin.ID); err != nil {
+		return nil, err
+	}
+	if err := InsertAudit(ctx, tx, AuditEvent{
+		AdminID:    &admin.ID,
+		Action:     "admin.password.reset_cli",
+		TargetType: "admin",
+		TargetID:   admin.ID,
+		IP:         "cli",
+		UserAgent:  "dublyobase admin reset-password",
+		Data:       map[string]any{"email": admin.Email, "sessionsRevoked": true},
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return &admin, nil
+}

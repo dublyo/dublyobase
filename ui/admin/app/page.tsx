@@ -784,20 +784,34 @@ export default function AdminApp() {
     setFileDraft((draft) => ({ ...draft, field: selectedCollectionModel.fields.find((field) => field.type === "file")?.name ?? "" }));
   }, [selectedCollectionModel]);
 
+  // The hash was read once on mount, which is before the session is restored
+  // and the app shell replaces the login screen — so a cold deep link was read
+  // and then overwritten. Re-applying when the token settles fixes the cold
+  // link, and listening for hashchange makes browser back and forward work,
+  // which they previously did not.
   useEffect(() => {
-    const hash = window.location.hash.replace("#", "");
-    const [primary, secondary] = hash.split("/");
-    if (navItems.some((item) => item.id === primary)) {
-      setView(primary as View);
-    }
-    if (primary === "settings" && settingsItems.some((item) => item.id === secondary)) {
-      setSettingsSection(secondary as SettingsSection);
-    }
-  }, []);
+    const applyHash = () => {
+      const hash = window.location.hash.replace("#", "");
+      const [primary, secondary] = hash.split("/");
+      if (navItems.some((item) => item.id === primary)) {
+        setView(primary as View);
+      }
+      if (primary === "settings" && settingsItems.some((item) => item.id === secondary)) {
+        setSettingsSection(secondary as SettingsSection);
+      }
+    };
+    applyHash();
+    window.addEventListener("hashchange", applyHash);
+    return () => window.removeEventListener("hashchange", applyHash);
+  }, [token]);
 
   function changeView(next: View) {
     setView(next);
-    window.history.replaceState(null, "", `#${next}`);
+    // pushState, not replaceState: replacing left the back button with nothing
+    // to go back to, so navigation inside the panel was a one-way trip.
+    if (window.location.hash !== `#${next}`) {
+      window.history.pushState(null, "", `#${next}`);
+    }
   }
 
   function changeSettings(next: SettingsSection) {
@@ -2272,9 +2286,18 @@ function AuthScreen({
               {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </label>
-          <button type="button" className="pb-link-hint">
-            Forgotten password
-          </button>
+          <details className="pb-link-hint">
+            <summary>Forgotten password</summary>
+            <p>
+              Admin passwords are reset from the server, not by email — recovery requires access to
+              the deployment rather than to an inbox. Run:
+            </p>
+            <code>dublyobase admin reset-password --email you@example.com</code>
+            <p>
+              It prints a one-time password, revokes that admin&rsquo;s sessions, and records the
+              reset in the audit log.
+            </p>
+          </details>
           <button type="submit" disabled={busy} className="pb-btn primary lg block">
             {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
             Login
@@ -4491,7 +4514,8 @@ function InsightsWorkspace({
   ];
 
   return (
-    <section className="pb-module pb-insights-module">
+    <section className="pb-page single">
+      <div className="pb-page-content full-height pb-insights-module">
       <header className="pb-module-header">
         <div>
           <p className="pb-kicker">Insights</p>
@@ -4738,6 +4762,7 @@ function InsightsWorkspace({
         </div>
       )}
       <PageFooter left="Insights" version={version} />
+      </div>
     </section>
   );
 }

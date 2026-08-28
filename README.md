@@ -240,6 +240,21 @@ can also be managed from the admin panel after setup.
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error`. |
 | `LOG_FORMAT` | No | `json` | `json` or `text`. |
 | `ENABLE_PGVECTOR` | No | `false` | Enables pgvector-related migrations when configured. |
+| `CRON_ALLOW_PRIVATE_TARGETS` | No | `false` | Lets cron jobs call private, loopback, and link-local addresses. Off by default so a job URL cannot be pointed at cloud metadata or a service bound to localhost. Turn it on only if you deliberately cron an internal service. |
+
+### Recovering a locked-out admin
+
+There is no password reset by email — admin recovery requires access to the
+deployment rather than to an inbox. From the server (or `docker exec` into the
+container):
+
+```bash
+dublyobase admin reset-password --email you@example.com
+```
+
+It prints a one-time password, forces a change at next login, revokes that
+admin's existing sessions, and records the reset in the audit log. Pass
+`--password` to choose the password yourself.
 
 ## API Overview
 
