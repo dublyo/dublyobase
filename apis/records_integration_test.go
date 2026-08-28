@@ -1246,8 +1246,10 @@ func TestRecordHistoryAndOptimisticLocking(t *testing.T) {
 	if newest.Action != "update" || newest.Before["body"] != "second" || newest.After["body"] != "fourth" {
 		t.Fatalf("newest entry wrong: %+v", newest)
 	}
-	if len(newest.Changed) == 0 || newest.Changed[0] != "body" {
-		t.Fatalf("changed fields = %v, want [body]", newest.Changed)
+	// `updated` moves on every write and is excluded from the summary, so the
+	// changed list names only what the caller actually changed
+	if len(newest.Changed) != 1 || newest.Changed[0] != "body" {
+		t.Fatalf("changed fields = %v, want exactly [body]", newest.Changed)
 	}
 	if newest.TxID == 0 || newest.Actor == "" {
 		t.Fatalf("entry missing txId/actor: %+v", newest)
