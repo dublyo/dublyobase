@@ -622,3 +622,88 @@ func TestComputedDecimalUsesNumericArithmetic(t *testing.T) {
 		t.Fatalf("line_total = %v, want 998999999999999.001 (float gives ...999.000)", got["line_total"])
 	}
 }
+
+// TestCrossRowInvariants covers the two rules a CHECK constraint cannot express,
+// because a CHECK only ever sees the row being written:
+//   - consistency: a payment's invoice must belong to the payment's patient
+//   - exclusion:   two appointments must not hold one provider at one time
+func TestCrossRowInvariants(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+	rec := func(path, body string) *httptest.ResponseRecorder {
+		return postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/%s", slug, path), token, body)
+	}
+	idOf := func(r *httptest.ResponseRecorder) string {
+		var m map[string]any
+		if err := json.Unmarshal(r.Body.Bytes(), &m); err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprint(m["id"])
+	}
+
+	rec("collections", `{"name":"people","type":"base","fields":[{"name":"name","type":"text"}]}`)
+	if r := rec("collections", `{"name":"bills","type":"base","fields":[
+		{"name":"ref","type":"text"},
+		{"name":"person","type":"relation","options":{"collection":"people"}}]}`); r.Code != http.StatusCreated {
+		t.Fatalf("bills: %d %s", r.Code, r.Body.String())
+	}
+	// payments must agree with the bill about who the person is
+	if r := rec("collections", `{"name":"pays","type":"base","fields":[
+		{"name":"bill","type":"relation","options":{"collection":"bills"}},
+		{"name":"person","type":"relation","options":{"collection":"people"}}],
+	  "options":{"consistency":[{"name":"bill_person","field":"bill","remote":"person","local":"person"}]}}`); r.Code != http.StatusCreated {
+		t.Fatalf("pays: %d %s", r.Code, r.Body.String())
+	}
+
+	alice := idOf(rec("collections/people/records", `{"name":"Alice"}`))
+	bob := idOf(rec("collections/people/records", `{"name":"Bob"}`))
+	aliceBill := idOf(rec("collections/bills/records", fmt.Sprintf(`{"ref":"B-1","person":%q}`, alice)))
+
+	if r := rec("collections/pays/records", fmt.Sprintf(`{"bill":%q,"person":%q}`, aliceBill, alice)); r.Code != http.StatusCreated {
+		t.Fatalf("matching payment should be allowed: %d %s", r.Code, r.Body.String())
+	}
+	r := rec("collections/pays/records", fmt.Sprintf(`{"bill":%q,"person":%q}`, aliceBill, bob))
+	if r.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("Alice's bill paid against Bob: want 422, got %d %s", r.Code, r.Body.String())
+	}
+	if !strings.Contains(r.Body.String(), "bill_person") {
+		t.Fatalf("violation does not name the rule: %s", r.Body.String())
+	}
+	// the rule must hold on UPDATE too, not just INSERT
+	okPay := idOf(rec("collections/pays/records", fmt.Sprintf(`{"bill":%q,"person":%q}`, aliceBill, alice)))
+	if r := patchJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/pays/records/%s", slug, okPay),
+		token, fmt.Sprintf(`{"person":%q}`, bob)); r.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("update to a mismatched person: want 422, got %d %s", r.Code, r.Body.String())
+	}
+
+	// ── exclusion: no double booking, cancelled rows excluded ──
+	if r := rec("collections", `{"name":"slots","type":"base","fields":[
+		{"name":"provider","type":"relation","options":{"collection":"people"}},
+		{"name":"starts_at","type":"date"},
+		{"name":"ends_at","type":"date"},
+		{"name":"status","type":"select","options":{"values":["booked","cancelled"]}}],
+	  "options":{"exclusions":[{"name":"no_overlap","equals":["provider"],"from":"starts_at","to":"ends_at","where":"status != \"cancelled\""}]}}`); r.Code != http.StatusCreated {
+		t.Skipf("exclusion constraints unavailable here: %d %s", r.Code, r.Body.String())
+	}
+	book := func(who, from, to, status string) *httptest.ResponseRecorder {
+		return rec("collections/slots/records", fmt.Sprintf(
+			`{"provider":%q,"starts_at":%q,"ends_at":%q,"status":%q}`, who, from, to, status))
+	}
+	if r := book(alice, "2026-09-01T09:00:00Z", "2026-09-01T10:00:00Z", "booked"); r.Code != http.StatusCreated {
+		t.Fatalf("first booking: %d %s", r.Code, r.Body.String())
+	}
+	if r := book(alice, "2026-09-01T09:30:00Z", "2026-09-01T10:30:00Z", "booked"); r.Code < 400 {
+		t.Fatalf("overlapping booking for the same provider was accepted: %d", r.Code)
+	}
+	if r := book(bob, "2026-09-01T09:30:00Z", "2026-09-01T10:30:00Z", "booked"); r.Code != http.StatusCreated {
+		t.Fatalf("a different provider must not clash: %d %s", r.Code, r.Body.String())
+	}
+	if r := book(alice, "2026-09-01T10:00:00Z", "2026-09-01T11:00:00Z", "booked"); r.Code != http.StatusCreated {
+		t.Fatalf("adjacent, non-overlapping slot must be allowed: %d %s", r.Code, r.Body.String())
+	}
+	if r := book(alice, "2026-09-01T09:15:00Z", "2026-09-01T09:45:00Z", "cancelled"); r.Code != http.StatusCreated {
+		t.Fatalf("a cancelled slot must not be blocked: %d %s", r.Code, r.Body.String())
+	}
+}

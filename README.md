@@ -321,6 +321,36 @@ Aggregates accept the same filter forms as the record list, including the
 bracket form (`filter[stage][_eq]=won`). `min`/`max` are rejected on boolean,
 UUID and relation fields, which have no Postgres aggregate.
 
+### Cross-row invariants
+
+A `CHECK` constraint only sees the row being written, so two kinds of rule need
+more than one. Both are enforced by PostgreSQL inside the writing transaction,
+so a second client, a direct SQL session or a batch cannot get around them.
+
+`consistency` requires that a related record agrees with this row — a payment's
+invoice must belong to the payment's patient:
+
+```json
+"consistency": [
+  { "name": "invoice_patient", "field": "invoice", "remote": "patient", "local": "patient" }
+]
+```
+
+`exclusions` forbid two rows that agree on `equals` from overlapping between
+`from` and `to`, with an optional `where` so a cancelled booking does not block
+the slot it released:
+
+```json
+"exclusions": [
+  { "name": "no_double_booking", "equals": ["provider", "location"],
+    "from": "starts_at", "to": "ends_at", "where": "status != \"cancelled\"" }
+]
+```
+
+Exclusions need the `btree_gist` extension; if the database role cannot create
+it, saving the collection fails with that reason rather than silently skipping
+the rule.
+
 ### Imported collections and rules
 
 Collection API rules are compiled into PostgreSQL row-level security on tables

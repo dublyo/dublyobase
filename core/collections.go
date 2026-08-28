@@ -159,6 +159,9 @@ func CreateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	if err := syncCollectionConstraints(ctx, tx, project, collection); err != nil {
 		return nil, err
 	}
+	if err := syncCrossRowRules(ctx, tx, project, collection); err != nil {
+		return nil, err
+	}
 	if err := InsertAudit(ctx, tx, AuditEvent{
 		AdminID:    &adminID,
 		Action:     "collection.create",
@@ -593,6 +596,9 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 			return nil, err
 		}
 		if err := syncCollectionConstraints(ctx, tx, project, &next); err != nil {
+			return nil, err
+		}
+		if err := syncCrossRowRules(ctx, tx, project, &next); err != nil {
 			return nil, err
 		}
 	}
