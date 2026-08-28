@@ -4281,3 +4281,45 @@ button:disabled {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Relation picker ────────────────────────────────────────────────────
+   Relations are chosen by browsing the related collection, not by pasting a
+   uuid, so the control needs room for chips, a search box and a result list. */
+.pb-relation { display: flex; flex-direction: column; gap: 8px; }
+
+.pb-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pb-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 6px 3px 10px; border-radius: var(--radius);
+  background: var(--surface-alt, rgb(127 127 127 / .12));
+  border: 1px solid var(--base-alt-3, rgb(127 127 127 / .28));
+  font-size: 13px; max-width: 100%;
+}
+.pb-chip > button {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 2px; border-radius: var(--radius); cursor: pointer;
+  color: inherit; opacity: .6;
+}
+.pb-chip > button:hover { opacity: 1; background: rgb(127 127 127 / .2); }
+
+.pb-relation-search { display: flex; gap: 8px; align-items: center; }
+.pb-relation-search input { flex: 1; min-width: 0; }
+
+.pb-relation-list {
+  max-height: 260px; overflow-y: auto;
+  border: 1px solid var(--base-alt-3, rgb(127 127 127 / .28));
+  border-radius: var(--radius);
+  background: var(--base, rgb(255 255 255 / .04));
+}
+.pb-relation-option {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  width: 100%; padding: 8px 11px; cursor: pointer; text-align: left;
+  border-bottom: 1px solid rgb(127 127 127 / .14);
+}
+.pb-relation-option:last-child { border-bottom: 0; }
+.pb-relation-option:hover, .pb-relation-option:focus-visible { background: rgb(127 127 127 / .12); }
+.pb-relation-label { font-size: 14px; overflow-wrap: anywhere; }
+.pb-relation-id { font-size: 11px; opacity: .55; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.pb-relation-empty { padding: 10px 11px; font-size: 13px; opacity: .7; }
+.pb-relation-empty.danger { color: var(--danger-color, #c0392b); opacity: 1; }
+.pb-relation-hint { padding: 9px 11px; font-size: 12px; opacity: .7; border-top: 1px solid rgb(127 127 127 / .14); }

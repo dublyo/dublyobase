@@ -342,6 +342,13 @@ export function listRecords(token: string, project: string, collection: string, 
   );
 }
 
+export function getRecord(token: string, project: string, collection: string, id: string) {
+  return request<RecordItem>(
+    `/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`,
+    { token },
+  );
+}
+
 export function createRecord(token: string, project: string, collection: string, input: RecordItem) {
   return request<RecordItem>(`/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection)}/records`, {
     method: "POST",

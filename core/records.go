@@ -237,7 +237,44 @@ func expandRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, co
 		if targetName == "" {
 			continue
 		}
+
+		// Collect every id this page references before touching the database.
+		// The previous implementation fetched one related record at a time, and
+		// each fetch opened its own transaction with SET LOCAL ROLE and three
+		// set_config calls — so a 500-row page with one relation column cost 500
+		// transactions. Now it is one query per relation field per page.
 		multiple := fieldIsMultiple(field)
+		unique := make([]string, 0, len(records))
+		seen := map[string]struct{}{}
+		for _, record := range records {
+			value, ok := record[field.Name]
+			if !ok || value == nil {
+				continue
+			}
+			var ids []string
+			if multiple {
+				ids = relationIDSlice(value)
+			} else if id, ok := value.(string); ok && id != "" {
+				ids = []string{id}
+			}
+			for _, id := range ids {
+				if id == "" {
+					continue
+				}
+				if _, dup := seen[id]; dup {
+					continue
+				}
+				seen[id] = struct{}{}
+				unique = append(unique, id)
+			}
+		}
+		if len(unique) == 0 {
+			continue
+		}
+		byID, err := getRecordsByIDs(ctx, pool, auth, targetName, unique)
+		if err != nil {
+			return err
+		}
 		for _, record := range records {
 			value, ok := record[field.Name]
 			if !ok || value == nil {
@@ -245,11 +282,9 @@ func expandRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, co
 			}
 			expanded := ensureRecordExpand(record)
 			if multiple {
-				ids := relationIDSlice(value)
-				items := make([]Record, 0, len(ids))
-				for _, id := range ids {
-					related, err := GetRecordWithOptions(ctx, pool, auth, targetName, id, "")
-					if err == nil {
+				items := make([]Record, 0)
+				for _, id := range relationIDSlice(value) {
+					if related, ok := byID[id]; ok {
 						items = append(items, related)
 					}
 				}
@@ -260,13 +295,76 @@ func expandRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, co
 			if !ok || id == "" {
 				continue
 			}
-			related, err := GetRecordWithOptions(ctx, pool, auth, targetName, id, "")
-			if err == nil {
+			if related, ok := byID[id]; ok {
 				expanded[field.Name] = related
 			}
 		}
 	}
 	return nil
+}
+
+// getRecordsByIDs loads many records from one collection in a single query,
+// under the caller's role so row-level security still decides what comes back:
+// an id the caller may not read is simply absent from the result, exactly as it
+// was when each row was fetched separately.
+func getRecordsByIDs(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, ids []string) (map[string]Record, error) {
+	collection, err := recordCollection(ctx, pool, auth.Project.Slug, collectionName)
+	if err != nil {
+		// A relation pointing at a collection that no longer exists should not
+		// fail the whole list request; the expand is simply omitted.
+		if errors.Is(err, ErrCollectionNotFound) {
+			return map[string]Record{}, nil
+		}
+		return nil, err
+	}
+	if collectionHasCompositePrimaryKey(collection) {
+		// Composite keys cannot be matched with a single = ANY, and they are
+		// rare enough that the per-record path stays correct here.
+		out := make(map[string]Record, len(ids))
+		for _, id := range ids {
+			related, err := GetRecordWithOptions(ctx, pool, auth, collectionName, id, "")
+			if err == nil {
+				out[id] = related
+			}
+		}
+		return out, nil
+	}
+	valid := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if err := validateRecordKey(collection, id); err == nil {
+			valid = append(valid, id)
+		}
+	}
+	if len(valid) == 0 {
+		return map[string]Record{}, nil
+	}
+	columns := allRecordColumns(collection)
+	table, err := recordTable(auth, collection)
+	if err != nil {
+		return nil, err
+	}
+	pk := recordColumnSQL(collection, collectionPrimaryKeyField(collection))
+	query := fmt.Sprintf(`select %s from %s where %s::text = any($1)`,
+		recordSelectList(collection, columns), table, pk)
+
+	out := make(map[string]Record, len(valid))
+	err = withRecordTxForCollection(ctx, pool, auth, collection, "view", func(tx pgx.Tx) error {
+		rows, err := queryRecords(ctx, tx, query, columns, valid)
+		if err != nil {
+			return err
+		}
+		pkField := collectionPrimaryKeyField(collection)
+		for _, row := range rows {
+			if key, ok := row[pkField].(string); ok {
+				out[key] = row
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func ensureRecordExpand(record Record) map[string]any {

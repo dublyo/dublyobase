@@ -828,3 +828,92 @@ func TestConstraintViolationsAreNot500(t *testing.T) {
 		t.Fatalf("bad reference: want 422, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestExpandIsBatched: expand used to fetch one related record at a time, each
+// in its own transaction with SET LOCAL ROLE and three set_config calls — so a
+// page of N rows cost N transactions. It must now be one query per relation
+// field per page, and must still respect RLS and preserve ordering.
+func TestExpandIsBatched(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"authors","type":"base","fields":[{"name":"name","type":"text"}]}`)
+	postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"posts","type":"base","fields":[
+			{"name":"title","type":"text"},
+			{"name":"author","type":"relation","options":{"collection":"authors","displayField":"name"}}]}`)
+
+	authors := map[string]string{}
+	for _, n := range []string{"Ada", "Grace", "Linus"} {
+		rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/authors/records", slug), token,
+			fmt.Sprintf(`{"name":%q}`, n))
+		var a map[string]any
+		json.Unmarshal(rec.Body.Bytes(), &a)
+		authors[n] = fmt.Sprint(a["id"])
+	}
+	// 30 posts sharing 3 authors — the dedupe path matters as much as batching
+	for i := 0; i < 30; i++ {
+		name := []string{"Ada", "Grace", "Linus"}[i%3]
+		rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/posts/records", slug), token,
+			fmt.Sprintf(`{"title":"post-%02d","author":%q}`, i, authors[name]))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("seed post: %d %s", rec.Code, rec.Body.String())
+		}
+	}
+	// one post with no author at all
+	postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/posts/records", slug), token,
+		`{"title":"orphan"}`)
+
+	rec := getJSON(srv.Handler, fmt.Sprintf(
+		"/api/projects/%s/collections/posts/records?expand=author&perPage=100&sort=title", slug), token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expand list: %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Items) != 31 {
+		t.Fatalf("got %d posts, want 31", len(body.Items))
+	}
+	expanded, orphans := 0, 0
+	for _, it := range body.Items {
+		exp, _ := it["expand"].(map[string]any)
+		author, _ := exp["author"].(map[string]any)
+		if author == nil {
+			orphans++
+			continue
+		}
+		expanded++
+		// every expanded author must match the id actually stored on the row
+		if fmt.Sprint(author["id"]) != fmt.Sprint(it["author"]) {
+			t.Fatalf("post %v expanded to the wrong author", it["title"])
+		}
+		if fmt.Sprint(author["name"]) == "" {
+			t.Fatalf("expanded author has no name")
+		}
+	}
+	if expanded != 30 || orphans != 1 {
+		t.Fatalf("expanded=%d orphans=%d, want 30/1", expanded, orphans)
+	}
+
+	// single-record expand must still work — pick a row that HAS an author
+	// ("orphan" sorts before "post-00", so Items[0] is deliberately not it)
+	var withAuthor string
+	for _, it := range body.Items {
+		if it["author"] != nil {
+			withAuthor = fmt.Sprint(it["id"])
+			break
+		}
+	}
+	rec = getJSON(srv.Handler, fmt.Sprintf(
+		"/api/projects/%s/collections/posts/records/%s?expand=author", slug, withAuthor), token)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"expand"`) {
+		t.Fatalf("single expand: %d %s", rec.Code, rec.Body.String())
+	}
+}

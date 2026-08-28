@@ -84,6 +84,7 @@ import {
   createMCPToken,
   createProject,
   createRecord,
+  getRecord,
   createWebhook,
   deleteCollection,
   deleteRecord,
@@ -596,6 +597,7 @@ export default function AdminApp() {
           perPage: recordPerPage,
           filter: recordFilter,
           search: activeSearch,
+          expand: relationExpandParam(nextCollectionModel),
         });
         setRecords(recordsResponse);
       } else {
@@ -693,7 +695,7 @@ export default function AdminApp() {
     let cancelled = false;
     const { filter, search, perPage } = recordQueryRef.current;
     const activeSearch = selectedCollectionModel?.fields.some((field) => field.searchable && canSearchField(field)) ? search : "";
-    listRecords(token, selectedProject, selectedCollection, { page: 1, perPage, filter, search: activeSearch })
+    listRecords(token, selectedProject, selectedCollection, { page: 1, perPage, filter, search: activeSearch, expand: relationExpandParam(selectedCollectionModel) })
       .then((response) => {
         if (!cancelled) setRecords(response);
       })
@@ -1211,6 +1213,7 @@ export default function AdminApp() {
         perPage,
         filter: recordFilter,
         search: selectedCollectionModel.fields.some((field) => field.searchable && canSearchField(field)) ? recordSearch : "",
+        expand: relationExpandParam(selectedCollectionModel),
       });
       setRecords(response);
     } catch (error) {
@@ -2188,6 +2191,9 @@ export default function AdminApp() {
       {recordEditorOpen && selectedCollectionModel ? (
         <RecordModal
           collection={selectedCollectionModel}
+          collections={collections}
+          token={token}
+          project={selectedProject}
           selectedRecordId={selectedRecordId}
           recordJSON={recordJSON}
           setRecordJSON={setRecordJSON}
@@ -2572,11 +2578,16 @@ function CollectionsWorkspace({
                         <td className="col-bulk">
                           <input type="checkbox" aria-label={`Select record ${recordKey}`} />
                         </td>
-                        {columns.map((column) => (
-                          <td key={column} className="truncate-cell">
-                            {renderValue(record[column])}
-                          </td>
-                        ))}
+                        {columns.map((column) => {
+                          const columnField = selectedCollection?.fields.find((f) => f.name === column);
+                          return (
+                            <td key={column} className="truncate-cell">
+                              {columnField?.type === "relation"
+                                ? renderRelationCell(record, columnField, collections)
+                                : renderValue(record[column])}
+                            </td>
+                          );
+                        })}
                         <td className="row-actions">
                           <button type="button" className="pb-btn sm transparent secondary" onClick={() => onEditRecord(record)}>
                             Edit
@@ -3634,6 +3645,9 @@ function RuleTextarea({ label, value, onChange }: { label: string; value: string
 
 function RecordModal({
   collection,
+  collections,
+  token,
+  project,
   selectedRecordId,
   recordJSON,
   setRecordJSON,
@@ -3641,6 +3655,9 @@ function RecordModal({
   onSave,
 }: {
   collection: Collection;
+  collections: Collection[];
+  token: string | null;
+  project: string;
   selectedRecordId: string;
   recordJSON: string;
   setRecordJSON: (value: string) => void;
@@ -3678,7 +3695,16 @@ function RecordModal({
           {parsed.ok ? (
             <div className="pb-record-form">
               {collection.fields.filter(isRecordFormField).map((field) => (
-                <RecordFieldInput key={field.name} field={field} value={draft[field.name]} editing={Boolean(selectedRecordId)} onChange={(value) => updateDraft(field, value)} />
+                <RecordFieldInput
+                  key={field.name}
+                  field={field}
+                  value={draft[field.name]}
+                  editing={Boolean(selectedRecordId)}
+                  collections={collections}
+                  token={token}
+                  project={project}
+                  onChange={(value) => updateDraft(field, value)}
+                />
               ))}
             </div>
           ) : (
@@ -3705,7 +3731,23 @@ function RecordModal({
   );
 }
 
-function RecordFieldInput({ field, value, editing, onChange }: { field: Field; value: unknown; editing: boolean; onChange: (value: unknown) => void }) {
+function RecordFieldInput({
+  field,
+  value,
+  editing,
+  onChange,
+  collections,
+  token,
+  project,
+}: {
+  field: Field;
+  value: unknown;
+  editing: boolean;
+  onChange: (value: unknown) => void;
+  collections: Collection[];
+  token: string | null;
+  project: string;
+}) {
   const label = field.name;
   const multiple = fieldIsMultiple(field);
   if (field.type === "file") {
@@ -3758,19 +3800,11 @@ function RecordFieldInput({ field, value, editing, onChange }: { field: Field; v
     );
   }
   if (field.type === "relation") {
-    if (multiple) {
-      return (
-        <label className="pb-field record-field full">
-          <span>{label}</span>
-          <textarea value={Array.isArray(value) ? value.map(String).join("\n") : ""} onChange={(event) => onChange(splitOptionValues(event.target.value))} rows={3} placeholder="One record id per line" />
-        </label>
-      );
-    }
     return (
-      <label className="pb-field record-field">
+      <div className="pb-field record-field full">
         <span>{label}</span>
-        <input value={typeof value === "string" ? value : ""} onChange={(event) => onChange(event.target.value || undefined)} placeholder="Record id" />
-      </label>
+        <RelationPicker field={field} value={value} collections={collections} token={token} project={project} onChange={onChange} />
+      </div>
     );
   }
   if (field.type === "bool") {
@@ -7763,6 +7797,250 @@ function PageFooter({ left, version }: { left: string; version: string }) {
         </a>
       </span>
     </footer>
+  );
+}
+
+// Relation columns used to render as bare UUIDs. Expanding them costs one
+// extra query per relation field per page (the backend batches by id), so it is
+// worth it for every relation that has a display field configured.
+function expandableRelationFields(collection?: Collection | null): string[] {
+  if (!collection) return [];
+  return collection.fields
+    .filter((field) => field.type === "relation" && !field.hidden && typeof field.options?.collection === "string")
+    .map((field) => field.name);
+}
+
+function relationExpandParam(collection?: Collection | null): string {
+  return expandableRelationFields(collection).join(",");
+}
+
+// The label a related record should show. Falls back through the configured
+// display field, then any presentable field, then common name-ish columns, and
+// finally a shortened id — so a relation is never rendered as a raw UUID unless
+// there is genuinely nothing else to show.
+function relationLabelFor(record: RecordItem | undefined, target?: Collection, displayField?: string): string {
+  if (!record) return "";
+  const tryField = (name?: string) => {
+    if (!name) return "";
+    const v = record[name];
+    return typeof v === "string" || typeof v === "number" ? String(v) : "";
+  };
+  const presentable = target?.fields.find((f) => f.presentable && !f.hidden)?.name;
+  const conventional = target?.fields.find(
+    (f) => !f.hidden && f.type === "text" && /name|title|label|subject|full_name|mrn|number/.test(f.name),
+  )?.name;
+  const label = tryField(displayField) || tryField(presentable) || tryField(conventional);
+  if (label) return label;
+  const id = typeof record.id === "string" ? record.id : "";
+  return id ? id.slice(0, 8) + "…" : "";
+}
+
+function renderRelationCell(record: RecordItem, field: Field, collections: Collection[]) {
+  const targetName = typeof field.options?.collection === "string" ? field.options.collection : "";
+  const target = collections.find((c) => c.name === targetName);
+  const displayField = typeof field.options?.displayField === "string" ? field.options.displayField : undefined;
+  const expand = (record.expand as Record<string, unknown> | undefined)?.[field.name];
+  if (Array.isArray(expand)) {
+    if (expand.length === 0) return "-";
+    return expand.map((item) => relationLabelFor(item as RecordItem, target, displayField)).join(", ");
+  }
+  if (expand && typeof expand === "object") {
+    return relationLabelFor(expand as RecordItem, target, displayField) || "-";
+  }
+  return renderValue(record[field.name]);
+}
+
+
+// ── Relation picker ──────────────────────────────────────────────────────
+// Relations used to be a text box asking for a UUID, and a textarea asking for
+// one UUID per line. Both invited exactly the mistake they look like: pasting a
+// plausible-but-wrong id, with nothing to confirm what it points at. This
+// browses the related collection instead — searching it through the same record
+// list API, so RLS decides what is offered — and stores the id underneath.
+function RelationPicker({
+  field,
+  value,
+  collections,
+  token,
+  project,
+  onChange,
+  disabled,
+}: {
+  field: Field;
+  value: unknown;
+  collections: Collection[];
+  token: string | null;
+  project: string;
+  onChange: (value: unknown) => void;
+  disabled?: boolean;
+}) {
+  const targetName = typeof field.options?.collection === "string" ? field.options.collection : "";
+  const target = collections.find((c) => c.name === targetName);
+  const displayField = typeof field.options?.displayField === "string" ? field.options.displayField : undefined;
+  const multiple = Boolean(field.options?.multiple) || Number(field.options?.maxSelect ?? 1) > 1;
+
+  const selectedIds = useMemo<string[]>(() => {
+    if (multiple) return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+    return typeof value === "string" && value ? [value] : [];
+  }, [value, multiple]);
+
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [options, setOptions] = useState<RecordItem[]>([]);
+  const [labels, setLabels] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const searchable = useMemo(
+    () => Boolean(target?.fields.some((f) => f.searchable && canSearchField(f))),
+    [target],
+  );
+
+  // Resolve labels for ids already stored on the record, so an existing value
+  // never renders as a bare uuid while the user is looking at it.
+  useEffect(() => {
+    let cancelled = false;
+    const missing = selectedIds.filter((id) => !labels[id]);
+    if (!token || !targetName || missing.length === 0) return;
+    (async () => {
+      const found: Record<string, string> = {};
+      for (const id of missing.slice(0, 25)) {
+        try {
+          const record = await getRecord(token, project, targetName, id);
+          found[id] = relationLabelFor(record, target, displayField) || id.slice(0, 8) + "…";
+        } catch {
+          found[id] = "(not found)";
+        }
+      }
+      if (!cancelled && Object.keys(found).length) setLabels((prev) => ({ ...prev, ...found }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedIds, labels, token, project, targetName, target, displayField]);
+
+  // Debounced browse of the target collection.
+  useEffect(() => {
+    if (!open || !token || !targetName) return;
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    const handle = window.setTimeout(async () => {
+      try {
+        const response = await listRecords(token, project, targetName, {
+          page: 1,
+          perPage: 25,
+          search: searchable ? query : "",
+          skipTotal: true,
+        });
+        if (cancelled) return;
+        setOptions(response.items);
+        setLabels((prev) => {
+          const next = { ...prev };
+          for (const item of response.items) {
+            const id = typeof item.id === "string" ? item.id : "";
+            if (id) next[id] = relationLabelFor(item, target, displayField) || id.slice(0, 8) + "…";
+          }
+          return next;
+        });
+      } catch (err) {
+        if (!cancelled) setError(err instanceof ApiError ? err.message : "Could not load records");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 220);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [open, query, token, project, targetName, target, displayField, searchable]);
+
+  if (!targetName) {
+    return <div className="pb-inline-alert danger">This relation has no target collection configured.</div>;
+  }
+
+  const pick = (id: string) => {
+    if (multiple) {
+      if (selectedIds.includes(id)) return;
+      onChange([...selectedIds, id]);
+    } else {
+      onChange(id);
+      setOpen(false);
+    }
+    setQuery("");
+  };
+  const remove = (id: string) => {
+    if (multiple) onChange(selectedIds.filter((x) => x !== id).length ? selectedIds.filter((x) => x !== id) : undefined);
+    else onChange(undefined);
+  };
+  const labelOf = (id: string) => labels[id] || id.slice(0, 8) + "…";
+  const filtered = options.filter((o) => {
+    const id = typeof o.id === "string" ? o.id : "";
+    if (!id) return false;
+    if (multiple && selectedIds.includes(id)) return false;
+    // when the target has no searchable field the API cannot filter, so filter here
+    if (!searchable && query) return labelOf(id).toLowerCase().includes(query.toLowerCase());
+    return true;
+  });
+
+  return (
+    <div className="pb-relation">
+      {selectedIds.length > 0 ? (
+        <div className="pb-chips">
+          {selectedIds.map((id) => (
+            <span key={id} className="pb-chip" title={id}>
+              {labelOf(id)}
+              {disabled ? null : (
+                <button type="button" aria-label={`Remove ${labelOf(id)}`} onClick={() => remove(id)}>
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {disabled ? null : (
+        <div className="pb-relation-search">
+          <input
+            value={query}
+            onFocus={() => setOpen(true)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setOpen(true);
+            }}
+            placeholder={multiple || selectedIds.length === 0 ? `Search ${targetName}…` : `Replace selection…`}
+            aria-label={`Search ${targetName}`}
+          />
+          <button type="button" className="pb-btn sm transparent secondary" onClick={() => setOpen((v) => !v)}>
+            {open ? "Close" : "Browse"}
+          </button>
+        </div>
+      )}
+      {open && !disabled ? (
+        <div className="pb-relation-list" role="listbox">
+          {loading ? <div className="pb-relation-empty">Loading…</div> : null}
+          {error ? <div className="pb-relation-empty danger">{error}</div> : null}
+          {!loading && !error && filtered.length === 0 ? (
+            <div className="pb-relation-empty">No matching records in {targetName}.</div>
+          ) : null}
+          {filtered.map((item) => {
+            const id = String(item.id);
+            return (
+              <button type="button" role="option" aria-selected={false} key={id} className="pb-relation-option" onClick={() => pick(id)}>
+                <span className="pb-relation-label">{labelOf(id)}</span>
+                <span className="pb-relation-id">{id.slice(0, 8)}…</span>
+              </button>
+            );
+          })}
+          {!searchable && target ? (
+            <div className="pb-relation-hint">
+              No field in <b>{targetName}</b> is marked searchable, so this list shows the most recent 25. Mark a field
+              searchable in the collection editor to search it.
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
