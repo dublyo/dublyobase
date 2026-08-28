@@ -1,4 +1,4 @@
-import type { Collection, CollectionIconOption, CollectionOptions, Field } from "../../src/lib/types";
+import type { Collection, CollectionIconOption, Field } from "../../src/lib/types";
 import type { navItems, settingsItems } from "./constants";
 
 // View-layer types shared across the panel, split out of page.tsx.

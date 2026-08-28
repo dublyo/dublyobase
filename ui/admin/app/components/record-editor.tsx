@@ -551,6 +551,7 @@ POST ${authBase}/request-password-reset
       title: "JavaScript fetch",
       detail: "Drop-in browser/server example with list, view, create, update, delete, realtime, and batch helpers. Use service keys only on trusted servers.",
       code: `const base = "${typeof window !== "undefined" ? window.location.origin : ""}/api/projects/${project}";
+
 export async function list${pascalCase(collection.name)}(token) {
   const params = new URLSearchParams({
     page: "1",

@@ -1,6 +1,6 @@
 import type { Collection, Field, RecordItem } from "../../src/lib/types";
 import type { RelationAnchor, RelationCardinality, RelationConstraint, RelationEdge } from "./view-types";
-import { canSearchField, defaultOptionsForType, fieldIsMultiple, optionValues, relationOptionType } from "./fields";
+import { canSearchField, defaultOptionsForType, fieldIsMultiple, optionValues } from "./fields";
 
 // Relation modelling helpers, split out of page.tsx.
 

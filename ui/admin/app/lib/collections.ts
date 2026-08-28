@@ -1,6 +1,5 @@
 import type { Collection, CollectionIconOption, CollectionOptions, DiscoveredTable, Field, RecordItem } from "../../src/lib/types";
-import { collectionIconChoices, collectionIconMap } from "./constants";
-import { relationTargetName } from "./relations";
+import { collectionIconMap } from "./constants";
 import { fieldIsMultiple, isRecordFormField, optionValues } from "./fields";
 
 // Collection metadata and schema-import helpers, split out of page.tsx.
