@@ -7914,6 +7914,12 @@ type RelationAnchor = {
   collection: string;
   value: string;
   sourceField: string;
+  // set only for explicit anchors: the field ON THIS FORM that supplied the
+  // value. Derived anchors leave it unset, because their sourceField names a
+  // column on another collection and may coincidentally match a field here —
+  // `payments.patient` and `invoices.patient` share a name but are not the
+  // same field, and treating them as one silently disabled the scope.
+  formField?: string;
   viaCollection?: string;
 };
 
@@ -7944,7 +7950,7 @@ function useRelationAnchors(
       const value = draft[field.name];
       const target = typeof field.options?.collection === "string" ? field.options.collection : "";
       if (typeof value === "string" && value && target) {
-        out.push({ collection: target, value, sourceField: field.name });
+        out.push({ collection: target, value, sourceField: field.name, formField: field.name });
       }
     }
     return out;
@@ -8020,7 +8026,7 @@ function buildRelationConstraint(
   const clauses: Record<string, unknown>[] = [];
   const reasons: string[] = [];
 
-  const identity = anchors.find((a) => a.collection === targetName && a.sourceField !== field.name);
+  const identity = anchors.find((a) => a.collection === targetName && a.formField !== field.name);
   if (identity) {
     clauses.push({ id: { _eq: identity.value } });
     reasons.push(
@@ -8030,6 +8036,7 @@ function buildRelationConstraint(
     );
   } else {
     for (const anchor of anchors) {
+      if (anchor.formField === field.name) continue;
       const links = linksTo(target, anchor.collection);
       if (links.length !== 1) continue;
       clauses.push({ [links[0].name]: { _eq: anchor.value } });
