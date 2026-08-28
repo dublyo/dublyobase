@@ -163,6 +163,32 @@ func createRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collecti
 	return queryOneRecord(ctx, tx, query, columns, payload.Values...)
 }
 
+// assertRecordVersion locks the row and compares its current version. The
+// SELECT ... FOR UPDATE matters: without it two callers could both read the
+// same version, both pass this check, and both write.
+func assertRecordVersion(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collection *Collection, id string, expected string) error {
+	table, err := recordTable(auth, collection)
+	if err != nil {
+		return err
+	}
+	where, args, err := recordPrimaryKeyWhere(collection, id, 1)
+	if err != nil {
+		return err
+	}
+	var current int64
+	query := fmt.Sprintf(`select xmin::text::bigint from %s where %s for update`, table, where)
+	if err := tx.QueryRow(ctx, query, args...).Scan(&current); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrRecordNotFound
+		}
+		return mapRecordDBError(err)
+	}
+	if fmt.Sprint(current) != strings.TrimSpace(expected) {
+		return fmt.Errorf("%w: the record changed since you loaded it (version %d)", ErrRecordConflict, current)
+	}
+	return nil
+}
+
 func getRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collection *Collection, id string) (Record, error) {
 	if err := validateRecordKey(collection, id); err != nil {
 		return nil, err
@@ -400,12 +426,24 @@ func relationIDSlice(value any) []string {
 }
 
 func UpdateRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string, raw map[string]json.RawMessage) (Record, error) {
+	return UpdateRecordVersioned(ctx, pool, auth, collectionName, id, raw, "")
+}
+
+// UpdateRecordVersioned applies the patch only if the row still carries
+// expectedVersion. An empty expectedVersion keeps the previous last-write-wins
+// behaviour, so existing clients are unaffected.
+func UpdateRecordVersioned(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string, raw map[string]json.RawMessage, expectedVersion string) (Record, error) {
 	collection, err := recordCollection(ctx, pool, auth.Project.Slug, collectionName)
 	if err != nil {
 		return nil, err
 	}
 	var out Record
 	err = withRecordTxForCollection(ctx, pool, auth, collection, "update", func(tx pgx.Tx) error {
+		if expectedVersion != "" {
+			if err := assertRecordVersion(ctx, tx, auth, collection, id, expectedVersion); err != nil {
+				return err
+			}
+		}
 		record, err := updateRecordInTx(ctx, tx, auth, collection, id, raw)
 		out = record
 		return err
@@ -458,12 +496,21 @@ func updateRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collecti
 }
 
 func DeleteRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
+	return DeleteRecordVersioned(ctx, pool, auth, collectionName, id, "")
+}
+
+func DeleteRecordVersioned(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string, expectedVersion string) (Record, error) {
 	collection, err := recordCollection(ctx, pool, auth.Project.Slug, collectionName)
 	if err != nil {
 		return nil, err
 	}
 	var out Record
 	err = withRecordTxForCollection(ctx, pool, auth, collection, "delete", func(tx pgx.Tx) error {
+		if expectedVersion != "" {
+			if err := assertRecordVersion(ctx, tx, auth, collection, id, expectedVersion); err != nil {
+				return err
+			}
+		}
 		record, err := deleteRecordInTx(ctx, tx, auth, collection, id)
 		out = record
 		return err
@@ -1141,7 +1188,23 @@ func selectList(columns []string) string {
 	return strings.Join(parts, ", ")
 }
 
+// versionColumn is the name the row version is published under.
+const versionColumn = "_version"
+
 func recordSelectList(collection *Collection, columns []string) string {
+	return recordSelectListWithVersion(collection, columns, true)
+}
+
+func recordSelectListWithVersion(collection *Collection, columns []string, withVersion bool) string {
+	list := recordSelectListBase(collection, columns)
+	if withVersion {
+		// cast through text because xid has no direct bigint cast
+		list += `, xmin::text::bigint as ` + quoteIdent(versionColumn)
+	}
+	return list
+}
+
+func recordSelectListBase(collection *Collection, columns []string) string {
 	parts := make([]string, len(columns))
 	for i, column := range columns {
 		expr := recordSelectExpr(collection, column)
@@ -1446,6 +1509,10 @@ func scanRecordValues(rows pgx.Rows, columns []string) (Record, error) {
 			return nil, fmt.Errorf("%w: record scan mismatch", ErrSchemaDrift)
 		}
 		record[column] = normalizeDBValue(values[i])
+	}
+	// the version is appended after the projected columns
+	if len(values) > len(columns) {
+		record[versionColumn] = normalizeDBValue(values[len(columns)])
 	}
 	return record, nil
 }

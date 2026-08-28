@@ -358,6 +358,29 @@ with one 2,885 payment and four appointments totals 11,540 — and the result
 looks entirely plausible. The aggregate endpoint groups in PostgreSQL, so it is
 not subject to that fan-out.
 
+### Record history and optimistic locking
+
+Every managed collection records its writes to `dbo_record_history` in the
+project's own schema — actor, transaction id, which fields changed, and the full
+before/after. Capture is a PostgreSQL trigger, not application code, so a write
+from the admin SQL console or any other client is recorded exactly like an API
+call. The project roles are granted `select` and nothing else: an audit trail a
+caller can edit is not an audit trail.
+
+```text
+GET /api/projects/{slug}/collections/{name}/records/{id}/history
+```
+
+Reading a record's history requires being able to read the record, so the
+endpoint cannot be used to see rows row-level security hides. Set
+`"options": {"history": false}` on a high-churn collection to opt out.
+
+Every record also carries `_version`, taken from PostgreSQL's own `xmin`, so it
+needs no extra column and cannot drift from the row. Send it back as `If-Match`
+(or `?version=`) on an update or delete and the write applies only if nobody
+else got there first, returning `409` if they did. Omitting it keeps the
+previous last-write-wins behaviour.
+
 ### Cross-row invariants
 
 A `CHECK` constraint only sees the row being written, so two kinds of rule need

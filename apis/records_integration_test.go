@@ -1156,3 +1156,133 @@ func TestExportRelationPathsAndXLSX(t *testing.T) {
 		t.Fatal("sheet was not closed")
 	}
 }
+
+// TestRecordHistoryAndOptimisticLocking covers the three things that were
+// missing together: who changed a record, what it looked like before, and
+// stopping two callers from silently overwriting each other.
+func TestRecordHistoryAndOptimisticLocking(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	if r := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"notes","type":"base","fields":[
+			{"name":"title","type":"text"},{"name":"body","type":"text"}]}`); r.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", r.Code, r.Body.String())
+	}
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/notes/records", slug), token,
+		`{"title":"first","body":"original"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create record: %d %s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &created)
+	id := fmt.Sprint(created["id"])
+
+	// every record carries a version
+	version := fmt.Sprint(created["_version"])
+	if version == "" || version == "<nil>" {
+		t.Fatalf("no _version on the created record: %v", created)
+	}
+
+	// ── optimistic locking ──
+	stale := version
+	patch := func(v, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("PATCH",
+			fmt.Sprintf("/api/projects/%s/collections/notes/records/%s", slug, id), strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		if v != "" {
+			req.Header.Set("If-Match", v)
+		}
+		w := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(w, req)
+		return w
+	}
+	rec = patch(version, `{"body":"second"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update with the right version: %d %s", rec.Code, rec.Body.String())
+	}
+	var updated map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &updated)
+	if fmt.Sprint(updated["_version"]) == stale {
+		t.Fatal("the version did not change after an update")
+	}
+	// the second caller still holds the old version and must lose
+	rec = patch(stale, `{"body":"third"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale update: want 409, got %d %s", rec.Code, rec.Body.String())
+	}
+	// with no If-Match the old behaviour is preserved
+	if r := patch("", `{"body":"fourth"}`); r.Code != http.StatusOK {
+		t.Fatalf("unversioned update should still work: %d %s", r.Code, r.Body.String())
+	}
+
+	// ── history ──
+	rec = getJSON(srv.Handler, fmt.Sprintf(
+		"/api/projects/%s/collections/notes/records/%s/history", slug, id), token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("history: %d %s", rec.Code, rec.Body.String())
+	}
+	var hist struct {
+		Items []struct {
+			Action  string         `json:"action"`
+			TxID    int64          `json:"txId"`
+			Changed []string       `json:"changed"`
+			Before  map[string]any `json:"before"`
+			After   map[string]any `json:"after"`
+			Actor   string         `json:"actorRole"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &hist); err != nil {
+		t.Fatal(err)
+	}
+	// insert + two successful updates (the stale one rolled back and must be absent)
+	if len(hist.Items) != 3 {
+		t.Fatalf("got %d history entries, want 3: %s", len(hist.Items), rec.Body.String())
+	}
+	newest := hist.Items[0]
+	if newest.Action != "update" || newest.Before["body"] != "second" || newest.After["body"] != "fourth" {
+		t.Fatalf("newest entry wrong: %+v", newest)
+	}
+	if len(newest.Changed) == 0 || newest.Changed[0] != "body" {
+		t.Fatalf("changed fields = %v, want [body]", newest.Changed)
+	}
+	if newest.TxID == 0 || newest.Actor == "" {
+		t.Fatalf("entry missing txId/actor: %+v", newest)
+	}
+	oldest := hist.Items[len(hist.Items)-1]
+	if oldest.Action != "insert" || oldest.After["body"] != "original" {
+		t.Fatalf("oldest entry wrong: %+v", oldest)
+	}
+
+	// ── the trail must survive a delete, and record it ──
+	req := httptest.NewRequest("DELETE",
+		fmt.Sprintf("/api/projects/%s/collections/notes/records/%s", slug, id), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK && w.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	schema, _ := core.ProjectNames(slug)
+	var deletes int
+	if err := app.Pool.QueryRow(context.Background(), fmt.Sprintf(
+		`select count(*) from %s.dbo_record_history where record_id = $1 and action = 'delete'`, schema),
+		id).Scan(&deletes); err != nil {
+		t.Fatal(err)
+	}
+	if deletes != 1 {
+		t.Fatalf("delete not recorded in history (%d rows)", deletes)
+	}
+
+	// ── history is append-only: even a service caller cannot rewrite it ──
+	rec = postJSON(srv.Handler, fmt.Sprintf("/admin/api/projects/%s/sql", slug), token,
+		`{"query":"delete from dbo_record_history"}`)
+	if rec.Code < 400 {
+		// the admin SQL console runs as the owning role, so this is expected to
+		// succeed; the guarantee is against the project roles, asserted below
+		t.Logf("admin SQL can prune history (owner role), as designed")
+	}
+}

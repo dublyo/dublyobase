@@ -197,7 +197,8 @@ func (s *server) updateRecord(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	record, err := core.UpdateRecord(r.Context(), s.app.Pool, auth, r.PathValue("name"), r.PathValue("id"), body)
+	record, err := core.UpdateRecordVersioned(r.Context(), s.app.Pool, auth,
+		r.PathValue("name"), r.PathValue("id"), body, expectedVersion(r))
 	if err != nil {
 		writeCoreError(w, err)
 		return
@@ -212,7 +213,8 @@ func (s *server) deleteRecord(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	deleted, err := core.DeleteRecord(r.Context(), s.app.Pool, auth, r.PathValue("name"), r.PathValue("id"))
+	deleted, err := core.DeleteRecordVersioned(r.Context(), s.app.Pool, auth,
+		r.PathValue("name"), r.PathValue("id"), expectedVersion(r))
 	if err != nil {
 		writeCoreError(w, err)
 		return
@@ -366,6 +368,32 @@ func (s *server) exportRecords(w http.ResponseWriter, r *http.Request) {
 		writeCoreError(w, err)
 		return
 	}
+}
+
+// expectedVersion reads the row version a caller believes it is updating.
+// If-Match is the HTTP-native spelling; the query parameter exists for clients
+// that cannot set headers.
+func expectedVersion(r *http.Request) string {
+	if v := strings.Trim(strings.TrimSpace(r.Header.Get("If-Match")), `"`); v != "" {
+		return v
+	}
+	return strings.TrimSpace(r.URL.Query().Get("version"))
+}
+
+// recordHistory returns the write trail for one record: who changed it, when,
+// which fields moved, and the full before/after.
+func (s *server) recordHistory(w http.ResponseWriter, r *http.Request) {
+	auth, ok := s.resolveRecordAuth(w, r)
+	if !ok {
+		return
+	}
+	entries, err := core.ListRecordHistory(r.Context(), s.app.Pool, auth,
+		r.PathValue("name"), r.PathValue("id"), queryInt(r, "limit", 0))
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": entries})
 }
 
 func setExportHeaders(w http.ResponseWriter, name, suffix string, xlsx bool) {
