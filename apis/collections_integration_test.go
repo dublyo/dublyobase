@@ -694,8 +694,12 @@ func TestCrossRowInvariants(t *testing.T) {
 	if r := book(alice, "2026-09-01T09:00:00Z", "2026-09-01T10:00:00Z", "booked"); r.Code != http.StatusCreated {
 		t.Fatalf("first booking: %d %s", r.Code, r.Body.String())
 	}
-	if r := book(alice, "2026-09-01T09:30:00Z", "2026-09-01T10:30:00Z", "booked"); r.Code < 400 {
-		t.Fatalf("overlapping booking for the same provider was accepted: %d", r.Code)
+	// must be a conflict, not a 500: an exclusion violation is the row losing a
+	// race with another row, and the caller needs to be told which rule it hit
+	if r := book(alice, "2026-09-01T09:30:00Z", "2026-09-01T10:30:00Z", "booked"); r.Code != http.StatusConflict {
+		t.Fatalf("overlapping booking: want 409, got %d %s", r.Code, r.Body.String())
+	} else if !strings.Contains(r.Body.String(), "no_overlap") {
+		t.Fatalf("conflict does not name the rule: %s", r.Body.String())
 	}
 	if r := book(bob, "2026-09-01T09:30:00Z", "2026-09-01T10:30:00Z", "booked"); r.Code != http.StatusCreated {
 		t.Fatalf("a different provider must not clash: %d %s", r.Code, r.Body.String())

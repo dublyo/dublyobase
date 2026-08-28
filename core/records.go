@@ -1515,6 +1515,10 @@ func mapRecordDBError(err error) error {
 		return ErrRLSDenied
 	case "23505":
 		return fmt.Errorf("%w: duplicate unique field value", ErrRecordConflict)
+	case "23P01":
+		// An exclusion constraint: this row conflicts with another row that is
+		// already there, which is a conflict rather than bad input.
+		return fmt.Errorf("%w: %s", ErrRecordConflict, constraintMessage(err))
 	case "23514":
 		// A collection check the operator authored. Naming it is the whole
 		// point — "internal server error" tells them nothing about which rule
@@ -1547,9 +1551,11 @@ func constraintMessage(err error) string {
 		return "record violates a database constraint"
 	}
 	name := pgErr.ConstraintName
-	if idx := strings.Index(name, "dbo_ck_"); idx == 0 {
-		rest := strings.TrimPrefix(name, "dbo_ck_")
-		if _, after, ok := strings.Cut(rest, "_"); ok {
+	for _, prefix := range []string{"dbo_ck_", "dbo_cs_", "dbo_ex_"} {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		if _, after, ok := strings.Cut(strings.TrimPrefix(name, prefix), "_"); ok {
 			return fmt.Sprintf("record violates the %q rule on this collection", after)
 		}
 	}

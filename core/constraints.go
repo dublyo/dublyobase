@@ -377,10 +377,11 @@ func ownedIndexNames(ctx context.Context, tx pgx.Tx, schemaName string, tableNam
 }
 
 // mapConstraintError turns "existing rows violate this constraint" into a 422
-// naming the constraint, rather than a 500.
+// naming the constraint, rather than a 500. 23P01 is the exclusion case: adding
+// an overlap rule to a table whose existing rows already overlap.
 func mapConstraintError(err error, name string) error {
 	switch pgErrCode(err) {
-	case "23514", "23505", "42P07", "42710", "42601", "42883", "42804", "0A000":
+	case "23514", "23505", "23P01", "42P07", "42710", "42601", "42883", "42804", "0A000":
 		return fmt.Errorf("%w: %q could not be applied: %s", ErrValidation, name, pgErrMessage(err))
 	default:
 		return err
