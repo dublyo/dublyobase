@@ -2,10 +2,14 @@ package core
 
 import (
 	"context"
+	"encoding"
 	"fmt"
+	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -196,9 +200,105 @@ func sqlConsoleValue(value any) any {
 		return float64(v)
 	case float64:
 		return v
-	default:
-		return fmt.Sprint(v)
+	case [16]byte:
+		return formatUUIDBytes(v)
+	case pgtype.Numeric:
+		return formatExactNumeric(v)
+	case *pgtype.Numeric:
+		if v == nil {
+			return nil
+		}
+		return formatExactNumeric(*v)
+	case pgtype.Interval:
+		return formatSQLInterval(v)
 	}
+
+	// Anything left is a driver type or a container. Rendering those with
+	// fmt.Sprint produced Go debug output — a uuid came back as a byte array,
+	// numeric as "{2885000 -3 false finite true}", and jsonb as "map[a:1]" —
+	// so containers are walked and everything else is asked for its own text.
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		out := make([]any, rv.Len())
+		for i := 0; i < rv.Len(); i++ {
+			out[i] = sqlConsoleValue(rv.Index(i).Interface())
+		}
+		return out
+	case reflect.Map:
+		out := make(map[string]any, rv.Len())
+		for _, key := range rv.MapKeys() {
+			out[fmt.Sprint(key.Interface())] = sqlConsoleValue(rv.MapIndex(key).Interface())
+		}
+		return out
+	case reflect.Pointer:
+		if rv.IsNil() {
+			return nil
+		}
+		return sqlConsoleValue(rv.Elem().Interface())
+	}
+	if t, ok := value.(encoding.TextMarshaler); ok {
+		if text, err := t.MarshalText(); err == nil {
+			return string(text)
+		}
+	}
+	if s, ok := value.(fmt.Stringer); ok {
+		return s.String()
+	}
+	return fmt.Sprint(value)
+}
+
+// formatSQLInterval renders an interval the way Postgres writes one, so the
+// value can be pasted back into a query.
+func formatSQLInterval(v pgtype.Interval) any {
+	if !v.Valid {
+		return nil
+	}
+	parts := make([]string, 0, 3)
+	if years := v.Months / 12; years != 0 {
+		parts = append(parts, fmt.Sprintf("%d year%s", years, plural(int(years))))
+	}
+	if months := v.Months % 12; months != 0 {
+		parts = append(parts, fmt.Sprintf("%d mon%s", months, plural(int(months))))
+	}
+	if v.Days != 0 {
+		parts = append(parts, fmt.Sprintf("%d day%s", v.Days, plural(int(v.Days))))
+	}
+	if v.Microseconds != 0 {
+		d := time.Duration(v.Microseconds) * time.Microsecond
+		neg := ""
+		if d < 0 {
+			neg, d = "-", -d
+		}
+		hours := int64(d / time.Hour)
+		d -= time.Duration(hours) * time.Hour
+		minutes := int64(d / time.Minute)
+		d -= time.Duration(minutes) * time.Minute
+		seconds := float64(d) / float64(time.Second)
+		parts = append(parts, fmt.Sprintf("%s%02d:%02d:%s", neg, hours, minutes, trimSeconds(seconds)))
+	}
+	if len(parts) == 0 {
+		return "00:00:00"
+	}
+	return strings.Join(parts, " ")
+}
+
+func plural(n int) string {
+	if n == 1 || n == -1 {
+		return ""
+	}
+	return "s"
+}
+
+func trimSeconds(seconds float64) string {
+	out := strconv.FormatFloat(seconds, 'f', -1, 64)
+	if !strings.Contains(out, ".") && len(out) < 2 {
+		return "0" + out
+	}
+	if idx := strings.Index(out, "."); idx == 1 {
+		return "0" + out
+	}
+	return out
 }
 
 func isReadOnlySQL(query string) bool {
