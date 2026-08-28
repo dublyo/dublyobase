@@ -3701,6 +3701,8 @@ function RecordModal({
                   value={draft[field.name]}
                   editing={Boolean(selectedRecordId)}
                   collections={collections}
+                  ownerCollection={collection}
+                  draft={draft}
                   token={token}
                   project={project}
                   onChange={(value) => updateDraft(field, value)}
@@ -3737,6 +3739,8 @@ function RecordFieldInput({
   editing,
   onChange,
   collections,
+  ownerCollection,
+  draft,
   token,
   project,
 }: {
@@ -3745,6 +3749,8 @@ function RecordFieldInput({
   editing: boolean;
   onChange: (value: unknown) => void;
   collections: Collection[];
+  ownerCollection: Collection;
+  draft: RecordItem;
   token: string | null;
   project: string;
 }) {
@@ -3803,7 +3809,16 @@ function RecordFieldInput({
     return (
       <div className="pb-field record-field full">
         <span>{label}</span>
-        <RelationPicker field={field} value={value} collections={collections} token={token} project={project} onChange={onChange} />
+        <RelationPicker
+          field={field}
+          value={value}
+          collections={collections}
+          collection={ownerCollection}
+          draft={draft}
+          token={token}
+          project={project}
+          onChange={onChange}
+        />
       </div>
     );
   }
@@ -7873,6 +7888,42 @@ function renderRelationCell(record: RecordItem, field: Field, collections: Colle
 }
 
 
+// Work out whether this relation can be scoped by another value already chosen
+// on the same form. If `payments` points at both `patients` and `invoices`, and
+// `invoices` itself has a `patient` relation, then once a patient is chosen the
+// invoice list can be narrowed to that patient's invoices — otherwise a payment
+// can be attached to one patient while pointing at another patient's invoice.
+//
+// Only an unambiguous link is used: exactly one sibling relation whose target
+// the picker's own target points back at. Anything ambiguous is left unscoped
+// rather than guessing wrong.
+function inferRelationScope(
+  field: Field,
+  draft: RecordItem,
+  collection: Collection,
+  collections: Collection[],
+): { field: string; value: string; siblingField: string; targetLabel: string } | null {
+  const targetName = typeof field.options?.collection === "string" ? field.options.collection : "";
+  const target = collections.find((c) => c.name === targetName);
+  if (!target) return null;
+
+  const matches: { field: string; value: string; siblingField: string; targetLabel: string }[] = [];
+  for (const sibling of collection.fields) {
+    if (sibling.name === field.name || sibling.type !== "relation" || sibling.hidden) continue;
+    const siblingTarget = typeof sibling.options?.collection === "string" ? sibling.options.collection : "";
+    if (!siblingTarget) continue;
+    const value = draft[sibling.name];
+    if (typeof value !== "string" || !value) continue;
+    // does the picker's target have a relation to the same collection?
+    const links = target.fields.filter(
+      (f) => f.type === "relation" && !f.hidden && f.options?.collection === siblingTarget && !fieldIsMultiple(f),
+    );
+    if (links.length !== 1) continue;
+    matches.push({ field: links[0].name, value, siblingField: sibling.name, targetLabel: siblingTarget });
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
 // ── Relation picker ──────────────────────────────────────────────────────
 // Relations used to be a text box asking for a UUID, and a textarea asking for
 // one UUID per line. Both invited exactly the mistake they look like: pasting a
@@ -7883,6 +7934,8 @@ function RelationPicker({
   field,
   value,
   collections,
+  collection,
+  draft,
   token,
   project,
   onChange,
@@ -7891,6 +7944,8 @@ function RelationPicker({
   field: Field;
   value: unknown;
   collections: Collection[];
+  collection: Collection;
+  draft: RecordItem;
   token: string | null;
   project: string;
   onChange: (value: unknown) => void;
@@ -7905,6 +7960,14 @@ function RelationPicker({
     if (multiple) return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
     return typeof value === "string" && value ? [value] : [];
   }, [value, multiple]);
+
+  const scope = useMemo(
+    () => inferRelationScope(field, draft, collection, collections),
+    [field, draft, collection, collections],
+  );
+  const [scopeOff, setScopeOff] = useState(false);
+  const activeScope = scopeOff ? null : scope;
+  const [scopeLabel, setScopeLabel] = useState("");
 
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -7954,6 +8017,7 @@ function RelationPicker({
           perPage: 25,
           search: searchable ? query : "",
           skipTotal: true,
+          filter: activeScope ? JSON.stringify({ [activeScope.field]: { _eq: activeScope.value } }) : "",
         });
         if (cancelled) return;
         setOptions(response.items);
@@ -7975,7 +8039,17 @@ function RelationPicker({
       cancelled = true;
       window.clearTimeout(handle);
     };
-  }, [open, query, token, project, targetName, target, displayField, searchable]);
+  }, [open, query, token, project, targetName, target, displayField, searchable, activeScope]);
+
+  // Name the thing we are scoped to, so the constraint is visible rather than
+  // silently shrinking the list.
+  useEffect(() => {
+    if (!scope || !token) return;
+    const scopeTarget = collections.find((c) => c.name === scope.targetLabel);
+    getRecord(token, project, scope.targetLabel, scope.value)
+      .then((record) => setScopeLabel(relationLabelFor(record, scopeTarget)))
+      .catch(() => setScopeLabel(scope.value.slice(0, 8) + "…"));
+  }, [scope, token, project, collections]);
 
   if (!targetName) {
     return <div className="pb-inline-alert danger">This relation has no target collection configured.</div>;
@@ -8040,10 +8114,28 @@ function RelationPicker({
       )}
       {open && !disabled ? (
         <div className="pb-relation-list" role="listbox">
+          {scope ? (
+            <div className="pb-relation-scope">
+              {activeScope ? (
+                <>
+                  Showing only {targetName} for <b>{scopeLabel || "the selected record"}</b>
+                  <button type="button" onClick={() => setScopeOff(true)}>Show all</button>
+                </>
+              ) : (
+                <>
+                  Showing all {targetName}, including ones for other {scope.targetLabel}
+                  <button type="button" onClick={() => setScopeOff(false)}>Scope again</button>
+                </>
+              )}
+            </div>
+          ) : null}
           {loading ? <div className="pb-relation-empty">Loading…</div> : null}
           {error ? <div className="pb-relation-empty danger">{error}</div> : null}
           {!loading && !error && filtered.length === 0 ? (
-            <div className="pb-relation-empty">No matching records in {targetName}.</div>
+            <div className="pb-relation-empty">
+              No matching records in {targetName}
+              {activeScope ? " for the selected " + activeScope.targetLabel : ""}.
+            </div>
           ) : null}
           {filtered.map((item) => {
             const id = String(item.id);

@@ -4323,3 +4323,17 @@ button:disabled {
 .pb-relation-empty { padding: 10px 11px; font-size: 13px; opacity: .7; }
 .pb-relation-empty.danger { color: var(--danger-color, #c0392b); opacity: 1; }
 .pb-relation-hint { padding: 9px 11px; font-size: 12px; opacity: .7; border-top: 1px solid rgb(127 127 127 / .14); }
+
+/* The contextual scope must be visible: a list that silently shrank would be
+   as confusing as one that offers unrelated records. */
+.pb-relation-scope {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 11px; font-size: 12.5px;
+  border-bottom: 1px solid rgb(127 127 127 / .14);
+  background: rgb(127 127 127 / .06);
+}
+.pb-relation-scope button {
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+  color: inherit; opacity: .75; font-size: 12.5px;
+}
+.pb-relation-scope button:hover { opacity: 1; }
