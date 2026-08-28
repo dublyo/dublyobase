@@ -735,3 +735,96 @@ func TestImportedCollectionRejectsRules(t *testing.T) {
 		t.Fatalf("rules on imported collection: want 422, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestDecimalSortsNumerically: casting decimal to ::text in the SELECT list
+// created an output alias that shadows the real column, and SQL resolves a bare
+// ORDER BY name against the output alias first — so money sorted
+// lexicographically (95, 450, 400, 2885, 220) while looking perfectly fine.
+func TestDecimalSortsNumerically(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"invoices","type":"base","fields":[
+			{"name":"total","type":"decimal","options":{"precision":18,"scale":3}},
+			{"name":"qty","type":"number","options":{"onlyInt":true}}]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	for _, v := range []string{"95.000", "450.000", "400.000", "2885.000", "220.000"} {
+		postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/invoices/records", slug), token,
+			fmt.Sprintf(`{"total":%q,"qty":1}`, v))
+	}
+	rec = getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/invoices/records?sort=-total", slug), token)
+	var body struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(body.Items))
+	for _, it := range body.Items {
+		got = append(got, fmt.Sprint(it["total"]))
+	}
+	want := []string{"2885.000", "450.000", "400.000", "220.000", "95.000"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("sort=-total = %v, want %v (lexicographic order means the text cast leaked)", got, want)
+	}
+	// and the wire value is still the exact decimal string
+	if _, ok := body.Items[0]["total"].(string); !ok {
+		t.Fatalf("total came back as %T, want an exact string", body.Items[0]["total"])
+	}
+}
+
+// TestConstraintViolationsAreNot500: checks and foreign keys added by the
+// constraints feature surfaced as "internal server error", which tells the
+// caller nothing about which rule their record broke.
+func TestConstraintViolationsAreNot500(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+
+	postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"parents","type":"base","fields":[{"name":"name","type":"text"}]}`)
+	rec := postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections", slug), token,
+		`{"name":"lines","type":"base","fields":[
+			{"name":"parent","type":"relation","options":{"collection":"parents","onDelete":"restrict"}},
+			{"name":"qty","type":"number","options":{"onlyInt":true}}],
+		  "options":{"checks":[{"name":"qty_positive","expression":"qty > 0"}]}}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create lines: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/parents/records", slug), token, `{"name":"p"}`)
+	var parent map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &parent)
+	pid := fmt.Sprint(parent["id"])
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/lines/records", slug), token,
+		fmt.Sprintf(`{"parent":%q,"qty":1}`, pid))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("seed line: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// check violation on insert AND update must be 4xx and name the rule
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/lines/records", slug), token,
+		fmt.Sprintf(`{"parent":%q,"qty":0}`, pid))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("check on insert: want 422, got %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "qty_positive") {
+		t.Fatalf("check error does not name the rule: %s", rec.Body.String())
+	}
+	// deleting a referenced parent is a conflict, not a 500
+	rec = deleteJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/parents/records/%s", slug, pid), token, "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete referenced: want 409, got %d %s", rec.Code, rec.Body.String())
+	}
+	// referencing something that does not exist is a validation error
+	rec = postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/collections/lines/records", slug), token,
+		`{"parent":"11111111-2222-3333-4444-555555555555","qty":1}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("bad reference: want 422, got %d %s", rec.Code, rec.Body.String())
+	}
+}

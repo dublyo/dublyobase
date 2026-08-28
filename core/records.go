@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/mail"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
@@ -1070,12 +1072,17 @@ func recordSelectExpr(collection *Collection, column string) string {
 		if field.Name != column {
 			continue
 		}
-		switch field.Type {
-		case "decimal":
-			// text keeps every digit; pgtype.Numeric would too, but the cast
-			// makes the contract explicit and survives odd typmods.
-			return expr + "::text"
-		case "number":
+		// decimal is deliberately NOT cast here. Casting it to text produced an
+		// output column alias that shadows the real column, and SQL resolves a
+		// bare ORDER BY name against the output alias first — so `sort=-total`
+		// ordered money lexicographically (95, 450, 400, 2885, 220). The exact
+		// string still reaches the client: normalizeDBValue renders
+		// pgtype.Numeric digit-for-digit.
+		if field.Type == "number" {
+			// An imported numeric column mapped to `number` would otherwise
+			// scan as pgtype.Numeric and be emitted as a string while writes
+			// go through float64. A double-precision alias still sorts
+			// numerically, so this cast is safe for ORDER BY.
 			return expr + "::double precision"
 		}
 		break
@@ -1410,7 +1417,49 @@ func mapRecordDBError(err error) error {
 		return ErrRLSDenied
 	case "23505":
 		return fmt.Errorf("%w: duplicate unique field value", ErrRecordConflict)
+	case "23514":
+		// A collection check the operator authored. Naming it is the whole
+		// point — "internal server error" tells them nothing about which rule
+		// their record broke.
+		return fmt.Errorf("%w: %s", ErrValidation, constraintMessage(err))
+	case "23503":
+		// One code, two very different situations. Postgres distinguishes them
+		// in the message prefix: "update or delete on table …" means the row
+		// being removed is still pointed at; "insert or update on table …"
+		// means the reference itself is bad. (The friendlier "is still
+		// referenced from" text lives in Detail, which is not surfaced because
+		// it echoes key values.)
+		if strings.HasPrefix(pgErrMessage(err), "update or delete on table") {
+			return fmt.Errorf("%w: record is still referenced by other records", ErrRecordConflict)
+		}
+		return fmt.Errorf("%w: referenced record does not exist", ErrValidation)
+	case "23502":
+		return fmt.Errorf("%w: %s", ErrValidation, constraintMessage(err))
 	default:
 		return err
 	}
+}
+
+// constraintMessage renders a violated constraint in the operator's own terms.
+// Dublyobase-owned constraints carry a dbo_ck_<collection>_<name> prefix, so the
+// name they typed in the editor is recovered rather than echoed with plumbing.
+func constraintMessage(err error) string {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return "record violates a database constraint"
+	}
+	name := pgErr.ConstraintName
+	if idx := strings.Index(name, "dbo_ck_"); idx == 0 {
+		rest := strings.TrimPrefix(name, "dbo_ck_")
+		if _, after, ok := strings.Cut(rest, "_"); ok {
+			return fmt.Sprintf("record violates the %q rule on this collection", after)
+		}
+	}
+	if pgErr.ColumnName != "" {
+		return fmt.Sprintf("field %q violates a database constraint", pgErr.ColumnName)
+	}
+	if name != "" {
+		return fmt.Sprintf("record violates constraint %q", name)
+	}
+	return "record violates a database constraint"
 }
