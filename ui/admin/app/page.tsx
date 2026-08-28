@@ -3666,6 +3666,9 @@ function RecordModal({
 }) {
   const parsed = parseRecordDraft(recordJSON);
   const draft = parsed.ok ? parsed.value : {};
+  // Computed once for the whole form: every picker constrains itself from the
+  // same set of anchors, and each anchor record is fetched only once.
+  const anchors = useRelationAnchors(draft, collection, collections, token, project);
   const updateDraft = (field: Field, value: unknown) => {
     const next = { ...(parsed.ok ? parsed.value : {}) };
     if (value === undefined) {
@@ -3702,7 +3705,8 @@ function RecordModal({
                   editing={Boolean(selectedRecordId)}
                   collections={collections}
                   ownerCollection={collection}
-                  draft={draft}
+                  anchors={anchors}
+                  selfId={selectedRecordId}
                   token={token}
                   project={project}
                   onChange={(value) => updateDraft(field, value)}
@@ -3740,7 +3744,8 @@ function RecordFieldInput({
   onChange,
   collections,
   ownerCollection,
-  draft,
+  anchors,
+  selfId,
   token,
   project,
 }: {
@@ -3750,7 +3755,8 @@ function RecordFieldInput({
   onChange: (value: unknown) => void;
   collections: Collection[];
   ownerCollection: Collection;
-  draft: RecordItem;
+  anchors: RelationAnchor[];
+  selfId: string;
   token: string | null;
   project: string;
 }) {
@@ -3814,7 +3820,8 @@ function RecordFieldInput({
           value={value}
           collections={collections}
           collection={ownerCollection}
-          draft={draft}
+          anchors={anchors}
+          selfId={selfId}
           token={token}
           project={project}
           onChange={onChange}
@@ -7888,40 +7895,158 @@ function renderRelationCell(record: RecordItem, field: Field, collections: Colle
 }
 
 
-// Work out whether this relation can be scoped by another value already chosen
-// on the same form. If `payments` points at both `patients` and `invoices`, and
-// `invoices` itself has a `patient` relation, then once a patient is chosen the
-// invoice list can be narrowed to that patient's invoices — otherwise a payment
-// can be attached to one patient while pointing at another patient's invoice.
+// ── Relational context ──────────────────────────────────────────────────
+// A form is a set of relation fields, and the schema is a directed graph, so
+// the values already chosen constrain the ones still to be chosen. Rather than
+// special-casing directions, everything reduces to ANCHORS: a collection plus a
+// record id that this form is known to be about.
 //
-// Only an unambiguous link is used: exactly one sibling relation whose target
-// the picker's own target points back at. Anything ambiguous is left unscoped
-// rather than guessing wrong.
-function inferRelationScope(
-  field: Field,
+//   explicit  a relation field on this form that already has a value
+//   derived   a relation value read FROM an explicit anchor's own record
+//
+// Choosing an invoice on a payment yields an explicit `invoices` anchor, and
+// reading that invoice's own `patient` yields a derived `patients` anchor — so
+// the patient field can then be narrowed even though `patients` has no relation
+// back to `invoices`. The same machinery scopes an order's addresses in an
+// ecommerce schema, or a project's tasks in a tracker; nothing here knows what
+// a patient or an invoice is.
+type RelationAnchor = {
+  collection: string;
+  value: string;
+  sourceField: string;
+  viaCollection?: string;
+};
+
+function singleRelationFields(collection?: Collection): Field[] {
+  if (!collection) return [];
+  return collection.fields.filter(
+    (f) => f.type === "relation" && !f.hidden && typeof f.options?.collection === "string" && !fieldIsMultiple(f),
+  );
+}
+
+// Links from `collection` to `targetName`. Used to decide both reachability and
+// ambiguity: more than one link means the schema does not say which is meant,
+// and guessing would be worse than not scoping.
+function linksTo(collection: Collection | undefined, targetName: string): Field[] {
+  return singleRelationFields(collection).filter((f) => f.options?.collection === targetName);
+}
+
+function useRelationAnchors(
   draft: RecordItem,
   collection: Collection,
   collections: Collection[],
-): { field: string; value: string; siblingField: string; targetLabel: string } | null {
-  const targetName = typeof field.options?.collection === "string" ? field.options.collection : "";
-  const target = collections.find((c) => c.name === targetName);
-  if (!target) return null;
+  token: string | null,
+  project: string,
+): RelationAnchor[] {
+  const explicit = useMemo<RelationAnchor[]>(() => {
+    const out: RelationAnchor[] = [];
+    for (const field of singleRelationFields(collection)) {
+      const value = draft[field.name];
+      const target = typeof field.options?.collection === "string" ? field.options.collection : "";
+      if (typeof value === "string" && value && target) {
+        out.push({ collection: target, value, sourceField: field.name });
+      }
+    }
+    return out;
+  }, [draft, collection]);
 
-  const matches: { field: string; value: string; siblingField: string; targetLabel: string }[] = [];
-  for (const sibling of collection.fields) {
-    if (sibling.name === field.name || sibling.type !== "relation" || sibling.hidden) continue;
-    const siblingTarget = typeof sibling.options?.collection === "string" ? sibling.options.collection : "";
-    if (!siblingTarget) continue;
-    const value = draft[sibling.name];
-    if (typeof value !== "string" || !value) continue;
-    // does the picker's target have a relation to the same collection?
-    const links = target.fields.filter(
-      (f) => f.type === "relation" && !f.hidden && f.options?.collection === siblingTarget && !fieldIsMultiple(f),
+  const [derived, setDerived] = useState<RelationAnchor[]>([]);
+  const key = explicit.map((a) => `${a.collection}:${a.value}`).sort().join("|");
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!token || explicit.length === 0) {
+      setDerived([]);
+      return;
+    }
+    (async () => {
+      const out: RelationAnchor[] = [];
+      for (const anchor of explicit) {
+        const anchorCollection = collections.find((c) => c.name === anchor.collection);
+        if (!anchorCollection) continue;
+        try {
+          const record = await getRecord(token, project, anchor.collection, anchor.value);
+          for (const field of singleRelationFields(anchorCollection)) {
+            const value = record[field.name];
+            const target = typeof field.options?.collection === "string" ? field.options.collection : "";
+            if (typeof value === "string" && value && target) {
+              out.push({ collection: target, value, sourceField: field.name, viaCollection: anchor.collection });
+            }
+          }
+        } catch {
+          // an anchor we cannot read simply contributes nothing
+        }
+      }
+      if (!cancelled) setDerived(out);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, token, project, collections]);
+
+  return useMemo(() => {
+    // Explicit anchors win over derived ones for the same collection: what the
+    // operator picked outranks what was inferred on their behalf.
+    const seen = new Set(explicit.map((a) => a.collection));
+    return [...explicit, ...derived.filter((a) => !seen.has(a.collection))];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [explicit, derived]);
+}
+
+type RelationConstraint = {
+  filter: string;
+  reasons: string[];
+};
+
+// Turn the anchors into a filter for one picker. Two shapes:
+//
+//   identity  an anchor IS a record of the collection being picked, so the
+//             answer is already determined — offer only that record
+//   link      the collection being picked has exactly one relation to an
+//             anchor's collection, so filter by it
+//
+// A self-referencing field (an appointment's recurrence parent) also excludes
+// the record being edited, which no schema fact can express.
+function buildRelationConstraint(
+  field: Field,
+  targetName: string,
+  anchors: RelationAnchor[],
+  collections: Collection[],
+  ownerCollection: Collection,
+  selfId: string,
+): RelationConstraint | null {
+  const target = collections.find((c) => c.name === targetName);
+  const clauses: Record<string, unknown>[] = [];
+  const reasons: string[] = [];
+
+  const identity = anchors.find((a) => a.collection === targetName && a.sourceField !== field.name);
+  if (identity) {
+    clauses.push({ id: { _eq: identity.value } });
+    reasons.push(
+      identity.viaCollection
+        ? `determined by the selected ${identity.viaCollection}`
+        : `must match the selected ${identity.sourceField}`,
     );
-    if (links.length !== 1) continue;
-    matches.push({ field: links[0].name, value, siblingField: sibling.name, targetLabel: siblingTarget });
+  } else {
+    for (const anchor of anchors) {
+      const links = linksTo(target, anchor.collection);
+      if (links.length !== 1) continue;
+      clauses.push({ [links[0].name]: { _eq: anchor.value } });
+      reasons.push(
+        anchor.viaCollection
+          ? `for the ${anchor.collection} of the selected ${anchor.viaCollection}`
+          : `for the selected ${anchor.sourceField}`,
+      );
+    }
   }
-  return matches.length === 1 ? matches[0] : null;
+
+  if (targetName === ownerCollection.name && selfId) {
+    clauses.push({ id: { _neq: selfId } });
+  }
+  if (clauses.length === 0) return null;
+  const filter = clauses.length === 1 ? clauses[0] : { _and: clauses };
+  return { filter: JSON.stringify(filter), reasons };
 }
 
 // ── Relation picker ──────────────────────────────────────────────────────
@@ -7935,7 +8060,8 @@ function RelationPicker({
   value,
   collections,
   collection,
-  draft,
+  anchors,
+  selfId,
   token,
   project,
   onChange,
@@ -7945,7 +8071,8 @@ function RelationPicker({
   value: unknown;
   collections: Collection[];
   collection: Collection;
-  draft: RecordItem;
+  anchors: RelationAnchor[];
+  selfId: string;
   token: string | null;
   project: string;
   onChange: (value: unknown) => void;
@@ -7962,12 +8089,11 @@ function RelationPicker({
   }, [value, multiple]);
 
   const scope = useMemo(
-    () => inferRelationScope(field, draft, collection, collections),
-    [field, draft, collection, collections],
+    () => buildRelationConstraint(field, targetName, anchors, collections, collection, selfId),
+    [field, targetName, anchors, collections, collection, selfId],
   );
   const [scopeOff, setScopeOff] = useState(false);
   const activeScope = scopeOff ? null : scope;
-  const [scopeLabel, setScopeLabel] = useState("");
 
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -8017,7 +8143,7 @@ function RelationPicker({
           perPage: 25,
           search: searchable ? query : "",
           skipTotal: true,
-          filter: activeScope ? JSON.stringify({ [activeScope.field]: { _eq: activeScope.value } }) : "",
+          filter: activeScope ? activeScope.filter : "",
         });
         if (cancelled) return;
         setOptions(response.items);
@@ -8040,16 +8166,6 @@ function RelationPicker({
       window.clearTimeout(handle);
     };
   }, [open, query, token, project, targetName, target, displayField, searchable, activeScope]);
-
-  // Name the thing we are scoped to, so the constraint is visible rather than
-  // silently shrinking the list.
-  useEffect(() => {
-    if (!scope || !token) return;
-    const scopeTarget = collections.find((c) => c.name === scope.targetLabel);
-    getRecord(token, project, scope.targetLabel, scope.value)
-      .then((record) => setScopeLabel(relationLabelFor(record, scopeTarget)))
-      .catch(() => setScopeLabel(scope.value.slice(0, 8) + "…"));
-  }, [scope, token, project, collections]);
 
   if (!targetName) {
     return <div className="pb-inline-alert danger">This relation has no target collection configured.</div>;
@@ -8114,16 +8230,16 @@ function RelationPicker({
       )}
       {open && !disabled ? (
         <div className="pb-relation-list" role="listbox">
-          {scope ? (
+          {scope && scope.reasons.length > 0 ? (
             <div className="pb-relation-scope">
               {activeScope ? (
                 <>
-                  Showing only {targetName} for <b>{scopeLabel || "the selected record"}</b>
+                  Showing only {targetName} <b>{scope.reasons.join(" and ")}</b>
                   <button type="button" onClick={() => setScopeOff(true)}>Show all</button>
                 </>
               ) : (
                 <>
-                  Showing all {targetName}, including ones for other {scope.targetLabel}
+                  Showing all {targetName}, ignoring the rest of this form
                   <button type="button" onClick={() => setScopeOff(false)}>Scope again</button>
                 </>
               )}
@@ -8134,7 +8250,7 @@ function RelationPicker({
           {!loading && !error && filtered.length === 0 ? (
             <div className="pb-relation-empty">
               No matching records in {targetName}
-              {activeScope ? " for the selected " + activeScope.targetLabel : ""}.
+              {activeScope && activeScope.reasons.length ? " " + activeScope.reasons.join(" and ") : ""}.
             </div>
           ) : null}
           {filtered.map((item) => {
