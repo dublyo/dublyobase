@@ -3,6 +3,7 @@ package apis
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -915,5 +916,129 @@ func TestExpandIsBatched(t *testing.T) {
 		"/api/projects/%s/collections/posts/records/%s?expand=author", slug, withAuthor), token)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"expand"`) {
 		t.Fatalf("single expand: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestCSVExport covers the two shapes a person actually asks for: the rows they
+// are looking at, and a correct summary. The summary matters most — a flat join
+// over two one-to-many relations inflates every total by fan-out, and the
+// resulting numbers look entirely plausible.
+func TestCSVExport(t *testing.T) {
+	app, _ := newIntegrationApp(t)
+	srv := NewServer(app)
+	token := setupAdmin(t, srv.Handler, "admin@example.com")
+	slug := createProjectForCollections(t, srv.Handler, token)
+	post := func(path, body string) *httptest.ResponseRecorder {
+		return postJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/%s", slug, path), token, body)
+	}
+	idOf := func(r *httptest.ResponseRecorder) string {
+		var m map[string]any
+		json.Unmarshal(r.Body.Bytes(), &m)
+		return fmt.Sprint(m["id"])
+	}
+
+	post("collections", `{"name":"clients","type":"base","fields":[{"name":"full_name","type":"text","searchable":true}]}`)
+	post("collections", `{"name":"orders","type":"base","fields":[
+		{"name":"ref","type":"text"},
+		{"name":"client","type":"relation","options":{"collection":"clients","displayField":"full_name"}},
+		{"name":"stage","type":"text"},
+		{"name":"total","type":"decimal","options":{"precision":18,"scale":3}}]}`)
+
+	// an Arabic name, because Excel silently mangles UTF-8 without a BOM
+	amal := idOf(post("collections/clients/records", `{"full_name":"أمل الصباح"}`))
+	bo := idOf(post("collections/clients/records", `{"full_name":"Bo Nielsen"}`))
+	for _, row := range []struct{ ref, client, stage, total string }{
+		{"O-1", amal, "won", "100.100"},
+		{"O-2", amal, "won", "200.200"},
+		{"O-3", bo, "lost", "50.050"},
+	} {
+		if r := post("collections/orders/records", fmt.Sprintf(
+			`{"ref":%q,"client":%q,"stage":%q,"total":%q}`, row.ref, row.client, row.stage, row.total)); r.Code != http.StatusCreated {
+			t.Fatalf("seed %s: %d %s", row.ref, r.Code, r.Body.String())
+		}
+	}
+
+	get := func(path string) *httptest.ResponseRecorder {
+		return getJSON(srv.Handler, fmt.Sprintf("/api/projects/%s/%s", slug, path), token)
+	}
+
+	// ── record export ──
+	rec := get("collections/orders/records/export?fields=ref,client,total&sort=ref")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export: %d %s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Fatalf("content-type = %q", ct)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Disposition"), "attachment") {
+		t.Fatalf("missing attachment disposition: %q", rec.Header().Get("Content-Disposition"))
+	}
+	body := rec.Body.String()
+	if !strings.HasPrefix(body, "\xEF\xBB\xBF") {
+		t.Fatal("missing UTF-8 BOM — Excel renders Arabic as mojibake without it")
+	}
+	rows, err := csv.NewReader(strings.NewReader(strings.TrimPrefix(body, "\xEF\xBB\xBF"))).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(rows[0], ","); got != "ref,client,total" {
+		t.Fatalf("header = %q", got)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("got %d rows, want header + 3", len(rows))
+	}
+	// the relation is a readable label, not a uuid, and the Arabic survived
+	if rows[1][1] != "أمل الصباح" {
+		t.Fatalf("relation cell = %q, want the client's name", rows[1][1])
+	}
+	if rows[1][2] != "100.100" {
+		t.Fatalf("decimal cell = %q, want the exact string", rows[1][2])
+	}
+	// raw ids on request
+	rec = get("collections/orders/records/export?fields=ref,client&relations=id&sort=ref")
+	if !strings.Contains(rec.Body.String(), amal) {
+		t.Fatal("relations=id should emit the raw id")
+	}
+	// the filter is honoured, so the file matches the view
+	rec = get(`collections/orders/records/export?fields=ref&filter={"stage":{"_eq":"won"}}`)
+	rows, _ = csv.NewReader(strings.NewReader(strings.TrimPrefix(rec.Body.String(), "\xEF\xBB\xBF"))).ReadAll()
+	if len(rows) != 3 {
+		t.Fatalf("filtered export has %d rows, want header + 2", len(rows))
+	}
+
+	// ── aggregate export: the fan-out-safe one ──
+	rec = get("collections/orders/records/aggregate/export?aggregate=sum:total,count:*&groupBy=stage")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("aggregate export: %d %s", rec.Code, rec.Body.String())
+	}
+	rows, err = csv.NewReader(strings.NewReader(strings.TrimPrefix(rec.Body.String(), "\xEF\xBB\xBF"))).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byStage := map[string][]string{}
+	for _, row := range rows[1:] {
+		byStage[row[0]] = row
+	}
+	header := rows[0]
+	sumAt := -1
+	for i, h := range header {
+		if h == "sum_total" {
+			sumAt = i
+		}
+	}
+	if sumAt < 0 {
+		t.Fatalf("no sum_total column: %v", header)
+	}
+	// 100.100 + 200.200 must be exactly 300.300
+	if got := byStage["won"][sumAt]; got != "300.300" {
+		t.Fatalf("won sum = %q, want 300.300", got)
+	}
+	if got := byStage["lost"][sumAt]; got != "50.050" {
+		t.Fatalf("lost sum = %q, want 50.050", got)
+	}
+	// a bad aggregate must fail as JSON, before any CSV is committed
+	rec = get("collections/orders/records/aggregate/export?aggregate=sum:ref")
+	if rec.Code < 400 || strings.HasPrefix(rec.Header().Get("Content-Type"), "text/csv") {
+		t.Fatalf("invalid aggregate should error as JSON, got %d %s", rec.Code, rec.Header().Get("Content-Type"))
 	}
 }

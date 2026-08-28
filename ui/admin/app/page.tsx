@@ -84,6 +84,7 @@ import {
   createMCPToken,
   createProject,
   createRecord,
+  downloadRecordsCSV,
   getRecord,
   createWebhook,
   deleteCollection,
@@ -1152,6 +1153,28 @@ export default function AdminApp() {
     }
   }
 
+  // Exports what is on screen: the same filter, search, sort and page size the
+  // list is using, so the file matches the view rather than the whole table.
+  async function exportRecordsCSV() {
+    if (!token || !selectedProject || !selectedCollectionModel) return;
+    setBusy(true);
+    try {
+      const search = selectedCollectionModel.fields.some((field) => field.searchable && canSearchField(field))
+        ? recordSearch
+        : "";
+      await downloadRecordsCSV(token, selectedProject, selectedCollectionModel.name, {
+        filter: recordFilter,
+        search,
+        sort: "-created",
+      });
+      showNotice("success", `Exported ${selectedCollectionModel.name} as CSV`);
+    } catch (error) {
+      handleError(error);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveCollectionSettings() {
     if (!token || !selectedProject || !selectedCollectionModel) return;
     setBusy(true);
@@ -1921,6 +1944,7 @@ export default function AdminApp() {
           onOpenCreateCollection={() => setCollectionModal("create")}
           onOpenCollectionSettings={() => selectedCollectionModel && setCollectionModal("settings")}
           onOpenAPIPreview={() => selectedCollectionModel && setAPIPreviewOpen(true)}
+          onExportCSV={exportRecordsCSV}
           onOpenNewRecord={() => {
             setSelectedRecordId("");
             setRecordJSON("{}");
@@ -2436,6 +2460,7 @@ function CollectionsWorkspace({
   onOpenCreateCollection,
   onOpenCollectionSettings,
   onOpenAPIPreview,
+  onExportCSV,
   onOpenNewRecord,
   onEditRecord,
   onDeleteRecord,
@@ -2459,6 +2484,7 @@ function CollectionsWorkspace({
   onOpenCreateCollection: () => void;
   onOpenCollectionSettings: () => void;
   onOpenAPIPreview: () => void;
+  onExportCSV: () => void;
   onOpenNewRecord: () => void;
   onEditRecord: (record: RecordItem) => void;
   onDeleteRecord: (record: RecordItem) => void;
@@ -2503,6 +2529,10 @@ function CollectionsWorkspace({
             ) : null}
           </div>
           <div className="pb-header-primary-btns">
+            <button type="button" className="pb-btn outline" onClick={onExportCSV} disabled={!selectedCollection} title="Download the rows currently shown, as CSV">
+              <Download className="h-4 w-4" />
+              <span>Export CSV</span>
+            </button>
             <button type="button" className="pb-btn outline api-preview-btn" onClick={onOpenAPIPreview} disabled={!selectedCollection}>
               <Code2 className="h-4 w-4" />
               <span>API preview</span>

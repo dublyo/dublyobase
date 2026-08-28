@@ -321,3 +321,84 @@ func splitAggregateParam(values []string) []string {
 	}
 	return out
 }
+
+// exportRecords streams the collection as CSV, honouring the same filter,
+// search, sort and field projection as the record list so the file matches the
+// view it came from. It runs under the caller's role, so the export can never
+// contain a row the caller could not read.
+func (s *server) exportRecords(w http.ResponseWriter, r *http.Request) {
+	auth, ok := s.resolveRecordAuth(w, r)
+	if !ok {
+		return
+	}
+	query := r.URL.Query()
+	filter := query.Get("filter")
+	if filter == "" {
+		filter = directusFilterQuery(r)
+	}
+	name := r.PathValue("name")
+	opts := core.RecordExportOptions{
+		Filter:        filter,
+		Search:        query.Get("search"),
+		Sort:          query.Get("sort"),
+		Fields:        query.Get("fields"),
+		Limit:         queryInt(r, "limit", 0),
+		RelationsAsID: strings.EqualFold(query.Get("relations"), "id"),
+	}
+	// Headers must be set before the first byte: once rows start streaming the
+	// status is already committed and an error cannot be reported as one.
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q",
+		fmt.Sprintf("%s-%s.csv", name, time.Now().UTC().Format("20060102-150405"))))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	if _, err := core.ExportRecordsCSV(r.Context(), s.app.Pool, auth, name, opts, w); err != nil {
+		// If nothing has been written yet this still produces a clean error;
+		// once streaming has begun the client sees a truncated file, which is
+		// why the row cap exists.
+		writeCoreError(w, err)
+		return
+	}
+}
+
+// exportAggregate streams a grouped aggregate as CSV. Totals are computed in
+// Postgres, so a report spanning two one-to-many relations cannot be inflated
+// by the fan-out a flat join would produce.
+func (s *server) exportAggregate(w http.ResponseWriter, r *http.Request) {
+	auth, ok := s.resolveRecordAuth(w, r)
+	if !ok {
+		return
+	}
+	query := r.URL.Query()
+	filter := query.Get("filter")
+	if filter == "" {
+		filter = directusFilterQuery(r)
+	}
+	groupBy := splitAggregateParam(query["groupBy"])
+	if len(groupBy) == 0 {
+		groupBy = splitAggregateParam(query["group_by"])
+	}
+	name := r.PathValue("name")
+	input := core.AggregateInput{
+		Aggregates: splitAggregateParam(query["aggregate"]),
+		GroupBy:    groupBy,
+		Filter:     filter,
+		Search:     query.Get("search"),
+		Limit:      queryInt(r, "limit", 0),
+	}
+	// Validate before committing to a 200 and a download.
+	if _, err := core.AggregateRecords(r.Context(), s.app.Pool, auth, name, input); err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q",
+		fmt.Sprintf("%s-summary-%s.csv", name, time.Now().UTC().Format("20060102-150405"))))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if _, err := core.ExportAggregateCSV(r.Context(), s.app.Pool, auth, name, input, w); err != nil {
+		writeCoreError(w, err)
+		return
+	}
+}

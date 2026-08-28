@@ -321,6 +321,27 @@ Aggregates accept the same filter forms as the record list, including the
 bracket form (`filter[stage][_eq]=won`). `min`/`max` are rejected on boolean,
 UUID and relation fields, which have no Postgres aggregate.
 
+### CSV export
+
+```text
+GET /api/projects/{slug}/collections/{name}/records/export
+GET /api/projects/{slug}/collections/{name}/records/aggregate/export
+```
+
+Both stream CSV under the caller's role, so an export can never contain a row
+the caller could not read. The record export accepts the same `filter`
+(including the bracket form), `search`, `sort` and `fields` as the record list,
+so the file matches the view it came from; relation columns are rendered as
+readable labels, or as raw ids with `relations=id`. Files begin with a UTF-8
+BOM because Excel otherwise assumes the system codepage and renders non-Latin
+text as mojibake.
+
+Prefer the aggregate export for reports. Summing across two one-to-many
+relations with a flat join multiplies each row by the other side — a patient
+with one 2,885 payment and four appointments totals 11,540 — and the result
+looks entirely plausible. The aggregate endpoint groups in PostgreSQL, so it is
+not subject to that fan-out.
+
 ### Cross-row invariants
 
 A `CHECK` constraint only sees the row being written, so two kinds of rule need

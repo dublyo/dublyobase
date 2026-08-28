@@ -342,6 +342,39 @@ export function listRecords(token: string, project: string, collection: string, 
   );
 }
 
+// The export endpoints return a file, not JSON, so they bypass `request` and
+// its JSON decoding. The bearer token cannot travel in a plain link, so the
+// response is fetched and handed to the browser as a blob.
+export async function downloadRecordsCSV(
+  token: string,
+  project: string,
+  collection: string,
+  params: Record<string, string>,
+  path: "export" | "aggregate/export" = "export",
+) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value.trim()) query.set(key, value.trim());
+  }
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection)}/records/${path}?${query}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({}));
+    throw new ApiError(response.status, errorBody.error ?? "request_failed", errorBody.message ?? response.statusText);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${collection}-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 export function getRecord(token: string, project: string, collection: string, id: string) {
   return request<RecordItem>(
     `/api/projects/${encodeURIComponent(project)}/collections/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`,
