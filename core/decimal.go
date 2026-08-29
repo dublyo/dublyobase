@@ -174,3 +174,47 @@ func formatExactNumeric(n pgtype.Numeric) any {
 	}
 	return out
 }
+
+// decimalScales maps a collection's decimal columns to their declared scale.
+//
+// pgx reports a zero numeric as Int=0, Exp=0 whatever the column's scale is —
+// the binary format for zero carries no digits, so the scale is not in the
+// value to recover. Every other value keeps its exponent, so without this a
+// numeric(12,6) column read back "0" for zero and "0.500000" for everything
+// else, breaking the fixed-scale shape a money column is supposed to have.
+func decimalScales(collection *Collection) map[string]int {
+	if collection == nil {
+		return nil
+	}
+	var out map[string]int
+	for _, field := range collection.Fields {
+		if field.Type != "decimal" {
+			continue
+		}
+		_, scale := decimalOptions(field)
+		if scale <= 0 {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]int)
+		}
+		out[field.Name] = scale
+	}
+	return out
+}
+
+// padDecimalScale restores the trailing zeros the driver dropped.
+func padDecimalScale(value any, scale int) any {
+	text, ok := value.(string)
+	if !ok || scale <= 0 || text == "" {
+		return value
+	}
+	dot := strings.IndexByte(text, '.')
+	if dot < 0 {
+		return text + "." + strings.Repeat("0", scale)
+	}
+	if missing := scale - (len(text) - dot - 1); missing > 0 {
+		return text + strings.Repeat("0", missing)
+	}
+	return text
+}

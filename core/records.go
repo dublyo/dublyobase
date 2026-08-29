@@ -100,7 +100,7 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 			limitPos,
 			offsetPos,
 		)
-		records, err := queryRecords(ctx, tx, query, columns, args...)
+		records, err := queryRecords(ctx, tx, query, columns, decimalScales(collection), args...)
 		if err != nil {
 			return err
 		}
@@ -160,7 +160,7 @@ func createRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collecti
 			recordSelectList(collection, columns),
 		)
 	}
-	return queryOneRecord(ctx, tx, query, columns, payload.Values...)
+	return queryOneRecord(ctx, tx, query, columns, decimalScales(collection), payload.Values...)
 }
 
 // assertRecordVersion locks the row and compares its current version. The
@@ -203,7 +203,7 @@ func getRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collection 
 		return nil, err
 	}
 	query := fmt.Sprintf(`select %s from %s where %s`, recordSelectList(collection, columns), table, where)
-	return queryOneRecord(ctx, tx, query, columns, whereArgs...)
+	return queryOneRecord(ctx, tx, query, columns, decimalScales(collection), whereArgs...)
 }
 
 func GetRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
@@ -375,7 +375,7 @@ func getRecordsByIDs(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, 
 
 	out := make(map[string]Record, len(valid))
 	err = withRecordTxForCollection(ctx, pool, auth, collection, "view", func(tx pgx.Tx) error {
-		rows, err := queryRecords(ctx, tx, query, columns, valid)
+		rows, err := queryRecords(ctx, tx, query, columns, decimalScales(collection), valid)
 		if err != nil {
 			return err
 		}
@@ -492,7 +492,7 @@ func updateRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collecti
 		where,
 		recordSelectList(collection, columns),
 	)
-	return queryOneRecord(ctx, tx, query, columns, args...)
+	return queryOneRecord(ctx, tx, query, columns, decimalScales(collection), args...)
 }
 
 func DeleteRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
@@ -535,7 +535,7 @@ func deleteRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collecti
 		return nil, err
 	}
 	query := fmt.Sprintf(`delete from %s where %s returning %s`, table, where, recordSelectList(collection, columns))
-	return queryOneRecord(ctx, tx, query, columns, whereArgs...)
+	return queryOneRecord(ctx, tx, query, columns, decimalScales(collection), whereArgs...)
 }
 
 func recordCollection(ctx context.Context, pool *pgxpool.Pool, projectSlug string, name string) (*Collection, error) {
@@ -1459,7 +1459,7 @@ func validateRecordKey(collection *Collection, id string) error {
 	}
 }
 
-func queryOneRecord(ctx context.Context, tx pgx.Tx, query string, columns []string, args ...any) (Record, error) {
+func queryOneRecord(ctx context.Context, tx pgx.Tx, query string, columns []string, scales map[string]int, args ...any) (Record, error) {
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, mapRecordDBError(err)
@@ -1471,7 +1471,7 @@ func queryOneRecord(ctx context.Context, tx pgx.Tx, query string, columns []stri
 		}
 		return nil, ErrRecordNotFound
 	}
-	record, err := scanRecordValues(rows, columns)
+	record, err := scanRecordValues(rows, columns, scales)
 	if err != nil {
 		return nil, err
 	}
@@ -1481,7 +1481,7 @@ func queryOneRecord(ctx context.Context, tx pgx.Tx, query string, columns []stri
 	return record, mapRecordDBError(rows.Err())
 }
 
-func queryRecords(ctx context.Context, tx pgx.Tx, query string, columns []string, args ...any) ([]Record, error) {
+func queryRecords(ctx context.Context, tx pgx.Tx, query string, columns []string, scales map[string]int, args ...any) ([]Record, error) {
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, mapRecordDBError(err)
@@ -1489,7 +1489,7 @@ func queryRecords(ctx context.Context, tx pgx.Tx, query string, columns []string
 	defer rows.Close()
 	var records []Record
 	for rows.Next() {
-		record, err := scanRecordValues(rows, columns)
+		record, err := scanRecordValues(rows, columns, scales)
 		if err != nil {
 			return nil, err
 		}
@@ -1498,7 +1498,7 @@ func queryRecords(ctx context.Context, tx pgx.Tx, query string, columns []string
 	return records, mapRecordDBError(rows.Err())
 }
 
-func scanRecordValues(rows pgx.Rows, columns []string) (Record, error) {
+func scanRecordValues(rows pgx.Rows, columns []string, scales map[string]int) (Record, error) {
 	values, err := rows.Values()
 	if err != nil {
 		return nil, err
@@ -1508,7 +1508,11 @@ func scanRecordValues(rows pgx.Rows, columns []string) (Record, error) {
 		if i >= len(values) {
 			return nil, fmt.Errorf("%w: record scan mismatch", ErrSchemaDrift)
 		}
-		record[column] = normalizeDBValue(values[i])
+		value := normalizeDBValue(values[i])
+		if scale, ok := scales[column]; ok {
+			value = padDecimalScale(value, scale)
+		}
+		record[column] = value
 	}
 	// the version is appended after the projected columns
 	if len(values) > len(columns) {

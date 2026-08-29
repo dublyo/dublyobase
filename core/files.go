@@ -190,7 +190,7 @@ func UpdateRecordFileField(ctx context.Context, pool *pgxpool.Pool, auth *Record
 			quoteIdent(field.Name),
 			selectList(columns),
 		)
-		record, err := queryOneRecord(ctx, tx, update, columns, value, recordID)
+		record, err := queryOneRecord(ctx, tx, update, columns, decimalScales(collection), value, recordID)
 		if err != nil {
 			return err
 		}
