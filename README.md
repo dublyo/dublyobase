@@ -609,8 +609,20 @@ avoid logging those URLs.
 - Keep `AUTH_DEV_TOKENS=false` outside development.
 - Use HTTPS in production and set `APP_URL` to the public HTTPS URL.
 - Scope MCP tokens narrowly and revoke them when no longer needed.
-- Prefer project-scoped backups for app tenants and full backups for instance
-  administrators.
+- **A project-scoped backup is not a recovery artifact.** It contains the
+  project's schema, rows and policies, but none of the `_dbo` metadata that
+  registers the project and defines its collections, so restoring one into a
+  fresh instance leaves tables Dublyobase does not know exist. Use a full backup
+  for disaster recovery; use project backups to move or inspect a tenant's data.
+- **A restore does not carry roles or grants.** Roles live in the cluster rather
+  than the database, so `pg_dump` never writes them, and the restore runs with
+  `--no-privileges`. Every RLS policy names a role and calls a function in
+  `_dbo`, so a fresh restore creates no policies at all — `pg_restore` reports
+  those as errors it ignored and still exits 0. Row-level security stays enabled
+  on the tables, so this fails closed rather than open. On the next boot the
+  server detects the missing roles and rebuilds the roles, grants and policies
+  from `_dbo` before serving; the log records this per project. Restoring into a
+  cluster where the roles already exist is unaffected.
 - Cron and webhook targets may not reach private, loopback, or link-local
   addresses. The check runs twice on purpose: once when the job is saved, which
   resolves the hostname so a name pointing inward is caught immediately, and

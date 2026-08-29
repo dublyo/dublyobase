@@ -68,6 +68,15 @@ func runServe() error {
 			os.Exit(1)
 		}
 	}
+	// A restored backup carries every row but none of the cluster's roles, so
+	// the policies naming them fail to create and the instance comes up holding
+	// its data with no security attached to it. Repair that before serving.
+	if cfg.MigrateOnStart {
+		if err := core.ReconcileProjectSecurity(ctx, pool, log); err != nil {
+			log.Error("project security reconciliation failed", "err", err)
+			os.Exit(1)
+		}
+	}
 	if err := core.SeedAdmin(ctx, pool, cfg, log); err != nil {
 		// With migrations disabled the schema may not exist yet; that must
 		// not take the server down, but it must be visible.
