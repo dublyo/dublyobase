@@ -323,6 +323,28 @@ func syncCollectionConstraints(ctx context.Context, tx pgx.Tx, project *Project,
 			return mapConstraintError(err, idx.Name)
 		}
 	}
+	// A text search compiles to `... like '%term%'`, a leading wildcard no btree
+	// index can serve, so every search read the whole table. A GIN trigram index
+	// on the same expression makes that query fast without changing what it
+	// means or how it is written.
+	if trigramAvailable(ctx, tx) {
+		for _, field := range collection.Fields {
+			if !fieldTrigramIndexable(field) {
+				continue
+			}
+			name := "dbo_ix_" + collection.Name + "_" + field.Name + "_trgm"
+			desiredIdx[name] = struct{}{}
+			if _, err := tx.Exec(ctx, fmt.Sprintf(`drop index if exists %s`, quoteIdent(project.SchemaName, name))); err != nil {
+				return err
+			}
+			stmt := fmt.Sprintf(`create index %s on %s using gin ((%s) gin_trgm_ops)`,
+				quoteIdent(name), table, searchTextExpr(recordColumnSQL(collection, field.Name)))
+			if _, err := tx.Exec(ctx, stmt); err != nil {
+				return mapConstraintError(err, field.Name+" search index")
+			}
+		}
+	}
+
 	for name := range existingIdx {
 		if _, keep := desiredIdx[name]; !keep {
 			if _, err := tx.Exec(ctx, fmt.Sprintf(`drop index if exists %s`, quoteIdent(project.SchemaName, name))); err != nil {
@@ -386,4 +408,30 @@ func mapConstraintError(err error, name string) error {
 	default:
 		return err
 	}
+}
+
+// trigramAvailable reports whether pg_trgm can be used, installing it if the
+// database has it packaged and the role is allowed to.
+//
+// Unlike the exclusion constraints, which refuse to save without btree_gist
+// because they are a correctness guarantee, this only makes search faster. A
+// role that cannot create extensions should still be able to save a collection,
+// so the attempt runs inside a savepoint and a failure just means no index.
+func trigramAvailable(ctx context.Context, tx pgx.Tx) bool {
+	var installed bool
+	if err := tx.QueryRow(ctx, `select exists(select 1 from pg_extension where extname = 'pg_trgm')`).Scan(&installed); err != nil {
+		return false
+	}
+	if installed {
+		return true
+	}
+	if _, err := tx.Exec(ctx, `savepoint dbo_trgm`); err != nil {
+		return false
+	}
+	if _, err := tx.Exec(ctx, `create extension if not exists pg_trgm`); err != nil {
+		_, _ = tx.Exec(ctx, `rollback to savepoint dbo_trgm`)
+		return false
+	}
+	_, _ = tx.Exec(ctx, `release savepoint dbo_trgm`)
+	return true
 }

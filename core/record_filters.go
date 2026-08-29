@@ -97,7 +97,7 @@ func compileRecordSearch(raw string, collection *Collection, base int) (*SQLExpr
 				parts = append(parts, fmt.Sprintf("%s = %s", column, builder.arg(b)))
 			}
 		default:
-			parts = append(parts, fmt.Sprintf("lower(coalesce(%s::text, '')) like %s", column, builder.arg("%"+strings.ToLower(search)+"%")))
+			parts = append(parts, fmt.Sprintf("%s like %s", searchTextExpr(column), builder.arg("%"+strings.ToLower(search)+"%")))
 		}
 	}
 	if len(parts) == 0 {
@@ -344,6 +344,29 @@ func filterableRecordField(collection *Collection, name string) (Field, bool) {
 		}
 	}
 	return Field{}, false
+}
+
+// searchTextExpr is the expression a text search compares against. The trigram
+// index is built on this exact expression, so the two must stay identical — an
+// index on anything else is simply never used, and the search silently goes back
+// to scanning the table.
+func searchTextExpr(column string) string {
+	return fmt.Sprintf("lower(coalesce(%s::text, ''))", column)
+}
+
+// fieldTrigramIndexable reports whether a trigram index is worth building for a
+// field. Search casts every type to text, but only the free-text types benefit;
+// indexing a uuid or a timestamp that way costs writes and saves nothing.
+func fieldTrigramIndexable(field Field) bool {
+	if !field.Searchable || !fieldCanSearch(field) {
+		return false
+	}
+	switch field.Type {
+	case "text", "editor", "email", "url", "select":
+		return true
+	default:
+		return false
+	}
 }
 
 func fieldCanSearch(field Field) bool {
