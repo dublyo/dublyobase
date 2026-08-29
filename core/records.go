@@ -71,9 +71,18 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 	if err != nil {
 		return nil, err
 	}
-	filter, err := CompileRecordListFilter(opts.Filter, opts.Search, collection)
+	relations, err := filterRelationsFor(ctx, pool, auth, collection, opts.Filter)
 	if err != nil {
 		return nil, err
+	}
+	filter, err := CompileRecordListFilterWithRelations(opts.Filter, opts.Search, collection, relations)
+	if err != nil {
+		return nil, err
+	}
+	// The subqueries a relation filter builds qualify the outer columns, so the
+	// outer table has to carry the alias they expect.
+	if relations != nil {
+		table += " as " + quoteIdent(filterRootAlias)
 	}
 	// The query vector is a bind parameter, never interpolated, and its
 	// placeholder is numbered after the filter's own arguments.

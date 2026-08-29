@@ -2,12 +2,15 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -19,13 +22,20 @@ const (
 
 type recordFilterBuilder struct {
 	collection *Collection
+	relations  *FilterRelations
 	args       []any
 	base       int
 	predicates int
 }
 
 func CompileRecordListFilter(filter string, search string, collection *Collection) (*SQLExpression, error) {
-	filterExpr, err := compileRecordFilter(filter, collection)
+	return CompileRecordListFilterWithRelations(filter, search, collection, nil)
+}
+
+// CompileRecordListFilterWithRelations additionally allows dotted keys that
+// walk relations, e.g. "conversation.workspace.plan".
+func CompileRecordListFilterWithRelations(filter string, search string, collection *Collection, relations *FilterRelations) (*SQLExpression, error) {
+	filterExpr, err := compileRecordFilterWithRelations(filter, collection, relations)
 	if err != nil {
 		return nil, err
 	}
@@ -37,6 +47,10 @@ func CompileRecordListFilter(filter string, search string, collection *Collectio
 }
 
 func compileRecordFilter(raw string, collection *Collection) (*SQLExpression, error) {
+	return compileRecordFilterWithRelations(raw, collection, nil)
+}
+
+func compileRecordFilterWithRelations(raw string, collection *Collection, relations *FilterRelations) (*SQLExpression, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return &SQLExpression{}, nil
@@ -60,7 +74,7 @@ func compileRecordFilter(raw string, collection *Collection) (*SQLExpression, er
 	if len(body) == 0 {
 		return &SQLExpression{}, nil
 	}
-	builder := &recordFilterBuilder{collection: collection}
+	builder := &recordFilterBuilder{collection: collection, relations: relations}
 	sql, err := builder.compileObject(body, "and", 0)
 	if err != nil {
 		return nil, err
@@ -197,6 +211,9 @@ func (b *recordFilterBuilder) compileLogicalArray(operator string, value any, de
 }
 
 func (b *recordFilterBuilder) compileField(rawName string, rawValue any, depth int) (string, error) {
+	if strings.Contains(rawName, ".") {
+		return b.compileRelationPath(rawName, rawValue, depth)
+	}
 	name := NormalizeIdentifier(rawName)
 	field, ok := filterableRecordField(b.collection, name)
 	if !ok {
@@ -227,11 +244,14 @@ func (b *recordFilterBuilder) compileField(rawName string, rawValue any, depth i
 }
 
 func (b *recordFilterBuilder) compilePredicate(field Field, operator string, value any) (string, error) {
+	return b.compilePredicateColumn(recordColumnSQL(b.collection, field.Name), field, operator, value)
+}
+
+func (b *recordFilterBuilder) compilePredicateColumn(column string, field Field, operator string, value any) (string, error) {
 	b.predicates++
 	if b.predicates > maxRecordFilterPredicates {
 		return "", fmt.Errorf("%w: JSON filter has too many predicates", ErrInvalidFilter)
 	}
-	column := recordColumnSQL(b.collection, field.Name)
 	if field.Type == "decimal" {
 		// Handled before normalizeFilterJSONValue, which would turn a
 		// json.Number into float64 and reintroduce the rounding that decimal
@@ -538,4 +558,60 @@ func parseSearchBool(search string) (bool, bool) {
 	default:
 		return false, false
 	}
+}
+
+// filterRelationsFor prepares relation resolution, but only when the filter
+// actually contains a dotted key: walking the schema costs a query per related
+// collection and most filters never need it.
+func filterRelationsFor(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collection *Collection, filter string) (*FilterRelations, error) {
+	if !filterMentionsRelationPath(filter) {
+		return nil, nil
+	}
+	reachable, err := reachableCollections(ctx, pool, auth, collection)
+	if err != nil {
+		return nil, err
+	}
+	return &FilterRelations{
+		Collections: reachable,
+		Table:       func(c *Collection) (string, error) { return recordTable(auth, c) },
+	}, nil
+}
+
+// filterMentionsRelationPath reports whether any key in the filter is dotted.
+// It is a cheap scan of the raw JSON rather than a parse, so a filter that
+// never walks a relation costs nothing.
+func filterMentionsRelationPath(filter string) bool {
+	trimmed := strings.TrimSpace(filter)
+	if trimmed == "" || !strings.Contains(trimmed, ".") {
+		return false
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &body); err != nil {
+		return strings.Contains(trimmed, ".")
+	}
+	return objectHasDottedKey(body, 0)
+}
+
+func objectHasDottedKey(node any, depth int) bool {
+	if depth > maxRecordFilterDepth {
+		return false
+	}
+	switch value := node.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if strings.Contains(key, ".") && !strings.HasPrefix(key, "_") {
+				return true
+			}
+			if objectHasDottedKey(child, depth+1) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range value {
+			if objectHasDottedKey(child, depth+1) {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -459,6 +459,30 @@ a uniqueness collision) naming the rule, not a `500`.
 Adding `computed` to a field that already exists rebuilds the column, so it is
 only applied when the request opts into dropping and recreating fields.
 
+### Filtering through relations
+
+A filter key may walk relations with a dotted path, so "every ticket whose
+organization is on the free plan" is one request rather than fetching the ids
+first:
+
+```text
+GET .../collections/tickets/records?filter={"team.org.plan":{"_eq":"free"}}
+```
+
+Each hop compiles to a nested `EXISTS`, and every segment before the last must
+be a declared relation field — a filter can only reach tables the schema already
+links to, never an arbitrary one. Paths are capped at four hops, since each is
+another subquery. Any leaf operator works, and relation filters combine with
+ordinary ones.
+
+The subqueries run as the same database role as the outer query, so row-level
+security applies to the related tables too. Filtering on a table the caller
+cannot read matches nothing rather than revealing it, and negating the filter
+does not invert that into a full listing.
+
+Sorting does not yet follow relations; `sort` still takes fields on the
+collection itself.
+
 ### Vector fields and similarity search
 
 A `vector` field stores an embedding and is searched by distance, which covers
