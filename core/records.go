@@ -1573,6 +1573,17 @@ func formatUUIDBytes(b [16]byte) string {
 	)
 }
 
+// castErrorMessage returns the database's own explanation of a failed cast,
+// which already names the type and the value, falling back to a generic line if
+// the driver gave us nothing useful.
+func castErrorMessage(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && strings.TrimSpace(pgErr.Message) != "" {
+		return pgErr.Message
+	}
+	return "value does not match the field type"
+}
+
 func mapRecordDBError(err error) error {
 	if err == nil {
 		return nil
@@ -1580,6 +1591,13 @@ func mapRecordDBError(err error) error {
 	switch pgErrCode(err) {
 	case "42501":
 		return ErrRLSDenied
+	// A value the caller supplied did not cast to the column's type — a relation
+	// filtered against "", a number against a word, a malformed timestamp. These
+	// arrive straight from user input, so an unfilled search box bound to a
+	// filter used to return 500. Postgres is the authority on what casts, and
+	// its message names the type and the offending value.
+	case "22P02", "22007", "22008", "22003", "22001":
+		return fmt.Errorf("%w: %s", ErrValidation, castErrorMessage(err))
 	case "23505":
 		return fmt.Errorf("%w: duplicate unique field value", ErrRecordConflict)
 	case "23P01":
