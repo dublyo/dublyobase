@@ -31,16 +31,16 @@ func TestPadDecimalScale(t *testing.T) {
 	}
 }
 
-func TestDecimalScalesReadsFieldOptions(t *testing.T) {
+func TestColumnFormatsReadsFieldOptions(t *testing.T) {
 	c := &Collection{Fields: []Field{
 		{Name: "cost", Type: "decimal", Options: map[string]any{"precision": float64(12), "scale": float64(6)}},
 		{Name: "qty", Type: "number"},
 		{Name: "note", Type: "text"},
 		{Name: "plain", Type: "decimal"},
 	}}
-	got := decimalScales(c)
-	if got["cost"] != 6 {
-		t.Errorf("cost scale = %d, want 6", got["cost"])
+	got := columnFormats(c)
+	if got["cost"].scale != 6 {
+		t.Errorf("cost scale = %d, want 6", got["cost"].scale)
 	}
 	if _, ok := got["qty"]; ok {
 		t.Error("number field should not get a decimal scale")
@@ -48,10 +48,10 @@ func TestDecimalScalesReadsFieldOptions(t *testing.T) {
 	if _, ok := got["note"]; ok {
 		t.Error("text field should not get a decimal scale")
 	}
-	if got["plain"] != defaultDecimalScale {
-		t.Errorf("decimal without options = %d, want the default %d", got["plain"], defaultDecimalScale)
+	if got["plain"].scale != defaultDecimalScale {
+		t.Errorf("decimal without options = %d, want the default %d", got["plain"].scale, defaultDecimalScale)
 	}
-	if decimalScales(nil) != nil {
+	if columnFormats(nil) != nil {
 		t.Error("nil collection should give no scales")
 	}
 }

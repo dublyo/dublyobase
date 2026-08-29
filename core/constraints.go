@@ -345,6 +345,33 @@ func syncCollectionConstraints(ctx context.Context, tx pgx.Tx, project *Project,
 		}
 	}
 
+	// A vector column is useless without an index: nearest-neighbour search over
+	// a sequential scan is exactly the full scan people adopt pgvector to avoid.
+	if collectionHasVectorField(collection) && vectorAvailable(ctx, tx) {
+		for _, field := range collection.Fields {
+			if field.Type != "vector" {
+				continue
+			}
+			dims, metric := vectorOptions(field)
+			spec, ok := vectorMetrics[metric]
+			// HNSW cannot index past its dimension ceiling. The column still
+			// works, so this skips the index rather than refusing the column.
+			if !ok || dims > maxIndexableVectorDims {
+				continue
+			}
+			name := "dbo_ix_" + collection.Name + "_" + field.Name + "_hnsw"
+			desiredIdx[name] = struct{}{}
+			if _, err := tx.Exec(ctx, fmt.Sprintf(`drop index if exists %s`, quoteIdent(project.SchemaName, name))); err != nil {
+				return err
+			}
+			stmt := fmt.Sprintf(`create index %s on %s using hnsw (%s %s)`,
+				quoteIdent(name), table, recordColumnSQL(collection, field.Name), spec.opClass)
+			if _, err := tx.Exec(ctx, stmt); err != nil {
+				return mapConstraintError(err, field.Name+" vector index")
+			}
+		}
+	}
+
 	for name := range existingIdx {
 		if _, keep := desiredIdx[name]; !keep {
 			if _, err := tx.Exec(ctx, fmt.Sprintf(`drop index if exists %s`, quoteIdent(project.SchemaName, name))); err != nil {

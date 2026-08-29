@@ -33,7 +33,7 @@ installs get the latest tested main build.
 
 - Base, auth, and view collection types.
 - REST endpoints for collection and record CRUD.
-- Field types: text, rich editor, password, number, decimal, bool, date,
+- Field types: text, rich editor, password, number, decimal, vector, bool, date,
   autodate, email, URL, select, JSON, relation, and file.
 - `decimal` fields are real `numeric(precision,scale)` columns carried over the
   wire as JSON strings, so money and quantities stay exact. Use them instead of
@@ -239,7 +239,7 @@ can also be managed from the admin panel after setup.
 | `CORS_ORIGINS` | No | `APP_URL` origin | Comma-separated allowed origins. Runtime admin and project CORS can be managed in the panel. |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error`. |
 | `LOG_FORMAT` | No | `json` | `json` or `text`. |
-| `ENABLE_PGVECTOR` | No | `false` | Enables pgvector-related migrations when configured. |
+| `ENABLE_PGVECTOR` | No | `false` | Reserved. Vector fields detect pgvector themselves; see below. |
 | `CRON_ALLOW_PRIVATE_TARGETS` | No | `false` | Lets cron jobs call private, loopback, and link-local addresses. Off by default so a job URL cannot be pointed at cloud metadata or a service bound to localhost. Turn it on only if you deliberately cron an internal service. |
 
 ### Recovering a locked-out admin
@@ -296,6 +296,7 @@ admin's existing sessions, and records the reset in the audit log. Pass
 | `DELETE /api/projects/{slug}/collections/{name}` | Delete a collection. |
 | `GET /api/projects/{slug}/collections/{name}/records` | List records. |
 | `POST /api/projects/{slug}/collections/{name}/records` | Create a record. |
+| `POST /api/projects/{slug}/collections/{name}/records/search` | Nearest-neighbour search over a vector field. |
 | `GET /api/projects/{slug}/collections/{name}/records/{id}` | Get a record. |
 | `PATCH /api/projects/{slug}/collections/{name}/records/{id}` | Update a record. |
 | `DELETE /api/projects/{slug}/collections/{name}/records/{id}` | Delete a record. |
@@ -457,6 +458,44 @@ a uniqueness collision) naming the rule, not a `500`.
 
 Adding `computed` to a field that already exists rebuilds the column, so it is
 only applied when the request opts into dropping and recreating fields.
+
+### Vector fields and similarity search
+
+A `vector` field stores an embedding and is searched by distance, which covers
+the retrieval half of a RAG pipeline. Dublyobase does not generate embeddings —
+you write them, from whichever model you use.
+
+```json
+{ "name": "embedding", "type": "vector",
+  "options": { "dimensions": 1536, "metric": "cosine" } }
+```
+
+`metric` is `cosine` (default), `l2`, or `inner_product`. Each vector field gets
+an HNSW index built for its own metric, so ordering by a different distance
+would silently fall back to scanning the table. Dimensions above pgvector's
+indexing ceiling of 2000 still store and search, just without the index.
+
+Write the value as a JSON array and read it back as one. The dimension count is
+checked before the write reaches the database, so a wrong-length embedding names
+the field and both counts instead of surfacing a driver error.
+
+Search is a POST, because a 1536-number embedding does not belong in a URL:
+
+```text
+POST /api/projects/{slug}/collections/{name}/records/search
+{ "field": "embedding", "vector": [0.01, -0.2, ...], "limit": 10,
+  "filter": {"published": {"_eq": true}} }
+```
+
+It runs through the ordinary list path, so the same row-level security, filters,
+projection and paging apply as on any other read — a similarity search cannot
+return rows the caller could not otherwise see.
+
+pgvector has to be available to the database. The bundled `docker-compose.yml`
+uses stock `postgres:16-alpine`, which does not ship it; use an image that does
+(for example `pgvector/pgvector:pg16`) if you want vector fields. Where it is
+missing, creating a vector field is refused with that reason rather than failing
+obscurely, and every other field type is unaffected.
 
 ### Cross-row invariants
 

@@ -206,7 +206,7 @@ func ExportRows(
 		}
 		defer rows.Close()
 		for rows.Next() {
-			record, err := scanRecordValues(rows, baseColumns, decimalScales(collection))
+			record, err := scanRecordValues(rows, baseColumns, columnFormats(collection))
 			if err != nil {
 				return err
 			}

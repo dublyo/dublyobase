@@ -471,3 +471,63 @@ func (s *server) markDelivered(ctx context.Context, auth *core.RecordAuth, colle
 		_ = core.MarkOutboxPublished(markCtx, s.app.Pool, auth.Project.SchemaName, outboxID)
 	}
 }
+
+type vectorSearchRequest struct {
+	Field     string    `json:"field"`
+	Vector    []float64 `json:"vector"`
+	Limit     int       `json:"limit"`
+	Page      int       `json:"page"`
+	Filter    string    `json:"filter"`
+	Fields    string    `json:"fields"`
+	Expand    string    `json:"expand"`
+	SkipTotal bool      `json:"skipTotal"`
+}
+
+// searchRecordsByVector runs a nearest-neighbour search.
+//
+// It is a POST because the query vector is the payload: an embedding is
+// commonly 1536 numbers, which no URL should be asked to carry. Everything
+// else routes through the ordinary list path, so the same row-level security,
+// filters and paging apply.
+func (s *server) searchRecordsByVector(w http.ResponseWriter, r *http.Request) {
+	auth, ok := s.resolveRecordAuth(w, r)
+	if !ok {
+		return
+	}
+	var req vectorSearchRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Field) == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "field is required")
+		return
+	}
+	if len(req.Vector) == 0 {
+		writeError(w, http.StatusBadRequest, "validation_error", "vector is required")
+		return
+	}
+	perPage := req.Limit
+	if perPage <= 0 {
+		perPage = 25
+	}
+	page := req.Page
+	if page <= 0 {
+		page = 1
+	}
+	opts := core.RecordListOptions{
+		Page:       page,
+		PerPage:    perPage,
+		Filter:     req.Filter,
+		Fields:     req.Fields,
+		Expand:     req.Expand,
+		SkipTotal:  req.SkipTotal,
+		NearField:  req.Field,
+		NearVector: req.Vector,
+	}
+	result, err := core.ListRecords(r.Context(), s.app.Pool, auth, r.PathValue("name"), opts)
+	if err != nil {
+		writeCoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}

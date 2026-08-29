@@ -175,32 +175,59 @@ func formatExactNumeric(n pgtype.Numeric) any {
 	return out
 }
 
-// decimalScales maps a collection's decimal columns to their declared scale.
+// columnFormat says how one column's scanned value must be shaped before it
+// reaches the client. Two types need it: a decimal, whose scale the driver drops
+// when the value is zero, and a vector, which arrives as pgvector's text form.
+type columnFormat struct {
+	kind  string
+	scale int
+}
+
+// columnFormats maps the columns of a collection that need reshaping.
 //
 // pgx reports a zero numeric as Int=0, Exp=0 whatever the column's scale is —
 // the binary format for zero carries no digits, so the scale is not in the
 // value to recover. Every other value keeps its exponent, so without this a
 // numeric(12,6) column read back "0" for zero and "0.500000" for everything
 // else, breaking the fixed-scale shape a money column is supposed to have.
-func decimalScales(collection *Collection) map[string]int {
+//
+// A vector column has no registered pgx type, so it scans as the string
+// "[1,0.5,0]"; clients wrote an array and should read one back.
+func columnFormats(collection *Collection) map[string]columnFormat {
 	if collection == nil {
 		return nil
 	}
-	var out map[string]int
-	for _, field := range collection.Fields {
-		if field.Type != "decimal" {
-			continue
-		}
-		_, scale := decimalOptions(field)
-		if scale <= 0 {
-			continue
-		}
+	var out map[string]columnFormat
+	add := func(name string, f columnFormat) {
 		if out == nil {
-			out = make(map[string]int)
+			out = make(map[string]columnFormat)
 		}
-		out[field.Name] = scale
+		out[name] = f
+	}
+	for _, field := range collection.Fields {
+		switch field.Type {
+		case "decimal":
+			if _, scale := decimalOptions(field); scale > 0 {
+				add(field.Name, columnFormat{kind: "decimal", scale: scale})
+			}
+		case "vector":
+			add(field.Name, columnFormat{kind: "vector"})
+		}
 	}
 	return out
+}
+
+// applyColumnFormat reshapes one scanned value for output.
+func applyColumnFormat(value any, format columnFormat) any {
+	switch format.kind {
+	case "decimal":
+		return padDecimalScale(value, format.scale)
+	case "vector":
+		if text, ok := value.(string); ok {
+			return formatVectorValue(text)
+		}
+	}
+	return value
 }
 
 // padDecimalScale restores the trailing zeros the driver dropped.

@@ -203,6 +203,16 @@ func createCollectionTable(ctx context.Context, tx pgx.Tx, schemaName string, ta
 		}
 		columns = append(columns, fmt.Sprintf(`%s %s`, quoteIdent(field.Name), ddl))
 	}
+	// A vector column cannot be declared before the extension that defines the
+	// type exists, and the index sync that would install it runs later.
+	for _, field := range fields {
+		if field.Type == "vector" {
+			if !vectorAvailable(ctx, tx) {
+				return fmt.Errorf("%w: vector fields require the pgvector extension, which this database does not have available", ErrValidation)
+			}
+			break
+		}
+	}
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`create table %s (%s)`, table, strings.Join(columns, ", "))); err != nil {
 		return err
 	}

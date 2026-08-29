@@ -37,6 +37,7 @@ var supportedFieldTypes = map[string]struct{}{
 	"select":   {},
 	"text":     {},
 	"url":      {},
+	"vector":   {},
 }
 
 const maxSafeJSONInt int64 = 1<<53 - 1
@@ -121,6 +122,10 @@ func validateFieldOptions(field Field) error {
 		}
 	case "decimal":
 		if err := validateDecimalOptions(field); err != nil {
+			return err
+		}
+	case "vector":
+		if err := validateVectorOptions(field); err != nil {
 			return err
 		}
 	case "text", "url", "password":
@@ -298,6 +303,10 @@ func ColumnDDL(field Field) (string, error) {
 	case "decimal":
 		precision, scale := decimalOptions(field)
 		columnType = fmt.Sprintf("numeric(%d,%d)", precision, scale)
+	case "vector":
+		dims, _ := vectorOptions(field)
+		// Qualified because the record search_path excludes public on purpose.
+		columnType = fmt.Sprintf("public.vector(%d)", dims)
 	case "bool":
 		columnType = "boolean"
 	case "date", "autodate":

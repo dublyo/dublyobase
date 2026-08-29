@@ -154,6 +154,7 @@ func NewServer(app *core.App) *http.Server {
 	mux.Handle("PATCH /api/projects/{slug}/collections/{name}", s.requireAdminReady(http.HandlerFunc(s.updateCollection)))
 	mux.Handle("DELETE /api/projects/{slug}/collections/{name}", s.requireAdminReady(http.HandlerFunc(s.deleteCollection)))
 	mux.HandleFunc("GET /api/projects/{slug}/collections/{name}/records/export", s.exportRecords)
+	mux.HandleFunc("POST /api/projects/{slug}/collections/{name}/records/search", s.searchRecordsByVector)
 	mux.HandleFunc("GET /api/projects/{slug}/collections/{name}/records/aggregate/export", s.exportAggregate)
 	mux.HandleFunc("GET /api/projects/{slug}/collections/{name}/records/aggregate", s.aggregateRecords)
 	mux.HandleFunc("GET /api/projects/{slug}/collections/{name}/records", s.listRecords)

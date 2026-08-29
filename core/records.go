@@ -33,6 +33,12 @@ type RecordListOptions struct {
 	Fields    string
 	Expand    string
 	SkipTotal bool
+
+	// NearField and NearVector ask for nearest-neighbour order. They ride the
+	// normal list path so a similarity search inherits the same row-level
+	// security, filters, projection and paging as any other read.
+	NearField  string
+	NearVector []float64
 }
 
 type RecordListResult struct {
@@ -69,6 +75,18 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 	if err != nil {
 		return nil, err
 	}
+	// The query vector is a bind parameter, never interpolated, and its
+	// placeholder is numbered after the filter's own arguments.
+	var nearArg any
+	if opts.NearField != "" {
+		field, literal, expr, err := compileVectorOrder(collection, opts.NearField, opts.NearVector, len(filter.Args)+1)
+		if err != nil {
+			return nil, err
+		}
+		_ = field
+		nearArg = literal
+		orderBy = expr
+	}
 	where := ""
 	if filter.SQL != "" {
 		where = " where " + filter.SQL
@@ -88,6 +106,9 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 		}
 
 		args := append([]any{}, filter.Args...)
+		if nearArg != nil {
+			args = append(args, nearArg)
+		}
 		limitPos := len(args) + 1
 		args = append(args, opts.PerPage)
 		offsetPos := len(args) + 1
@@ -100,7 +121,7 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 			limitPos,
 			offsetPos,
 		)
-		records, err := queryRecords(ctx, tx, query, columns, decimalScales(collection), args...)
+		records, err := queryRecords(ctx, tx, query, columns, columnFormats(collection), args...)
 		if err != nil {
 			return err
 		}
@@ -160,7 +181,7 @@ func createRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collecti
 			recordSelectList(collection, columns),
 		)
 	}
-	return queryOneRecord(ctx, tx, query, columns, decimalScales(collection), payload.Values...)
+	return queryOneRecord(ctx, tx, query, columns, columnFormats(collection), payload.Values...)
 }
 
 // assertRecordVersion locks the row and compares its current version. The
@@ -203,7 +224,7 @@ func getRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collection 
 		return nil, err
 	}
 	query := fmt.Sprintf(`select %s from %s where %s`, recordSelectList(collection, columns), table, where)
-	return queryOneRecord(ctx, tx, query, columns, decimalScales(collection), whereArgs...)
+	return queryOneRecord(ctx, tx, query, columns, columnFormats(collection), whereArgs...)
 }
 
 func GetRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
@@ -375,7 +396,7 @@ func getRecordsByIDs(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, 
 
 	out := make(map[string]Record, len(valid))
 	err = withRecordTxForCollection(ctx, pool, auth, collection, "view", func(tx pgx.Tx) error {
-		rows, err := queryRecords(ctx, tx, query, columns, decimalScales(collection), valid)
+		rows, err := queryRecords(ctx, tx, query, columns, columnFormats(collection), valid)
 		if err != nil {
 			return err
 		}
@@ -492,7 +513,7 @@ func updateRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collecti
 		where,
 		recordSelectList(collection, columns),
 	)
-	return queryOneRecord(ctx, tx, query, columns, decimalScales(collection), args...)
+	return queryOneRecord(ctx, tx, query, columns, columnFormats(collection), args...)
 }
 
 func DeleteRecord(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, collectionName string, id string) (Record, error) {
@@ -535,7 +556,7 @@ func deleteRecordInTx(ctx context.Context, tx pgx.Tx, auth *RecordAuth, collecti
 		return nil, err
 	}
 	query := fmt.Sprintf(`delete from %s where %s returning %s`, table, where, recordSelectList(collection, columns))
-	return queryOneRecord(ctx, tx, query, columns, decimalScales(collection), whereArgs...)
+	return queryOneRecord(ctx, tx, query, columns, columnFormats(collection), whereArgs...)
 }
 
 func recordCollection(ctx context.Context, pool *pgxpool.Pool, projectSlug string, name string) (*Collection, error) {
@@ -904,6 +925,8 @@ func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {
 		return v, nil
 	case "decimal":
 		return normalizeDecimalInput(field, raw)
+	case "vector":
+		return normalizeVectorInput(field, raw)
 	case "number":
 		var v float64
 		if err := json.Unmarshal(raw, &v); err != nil || math.IsInf(v, 0) || math.IsNaN(v) {
@@ -1315,6 +1338,8 @@ func valuePlaceholder(field Field, pos int) string {
 		return p + "::double precision"
 	case "decimal":
 		return p + "::numeric"
+	case "vector":
+		return p + "::public.vector"
 	case "bool":
 		return p + "::boolean"
 	case "date":
@@ -1459,7 +1484,7 @@ func validateRecordKey(collection *Collection, id string) error {
 	}
 }
 
-func queryOneRecord(ctx context.Context, tx pgx.Tx, query string, columns []string, scales map[string]int, args ...any) (Record, error) {
+func queryOneRecord(ctx context.Context, tx pgx.Tx, query string, columns []string, formats map[string]columnFormat, args ...any) (Record, error) {
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, mapRecordDBError(err)
@@ -1471,7 +1496,7 @@ func queryOneRecord(ctx context.Context, tx pgx.Tx, query string, columns []stri
 		}
 		return nil, ErrRecordNotFound
 	}
-	record, err := scanRecordValues(rows, columns, scales)
+	record, err := scanRecordValues(rows, columns, formats)
 	if err != nil {
 		return nil, err
 	}
@@ -1481,7 +1506,7 @@ func queryOneRecord(ctx context.Context, tx pgx.Tx, query string, columns []stri
 	return record, mapRecordDBError(rows.Err())
 }
 
-func queryRecords(ctx context.Context, tx pgx.Tx, query string, columns []string, scales map[string]int, args ...any) ([]Record, error) {
+func queryRecords(ctx context.Context, tx pgx.Tx, query string, columns []string, formats map[string]columnFormat, args ...any) ([]Record, error) {
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, mapRecordDBError(err)
@@ -1489,7 +1514,7 @@ func queryRecords(ctx context.Context, tx pgx.Tx, query string, columns []string
 	defer rows.Close()
 	var records []Record
 	for rows.Next() {
-		record, err := scanRecordValues(rows, columns, scales)
+		record, err := scanRecordValues(rows, columns, formats)
 		if err != nil {
 			return nil, err
 		}
@@ -1498,7 +1523,7 @@ func queryRecords(ctx context.Context, tx pgx.Tx, query string, columns []string
 	return records, mapRecordDBError(rows.Err())
 }
 
-func scanRecordValues(rows pgx.Rows, columns []string, scales map[string]int) (Record, error) {
+func scanRecordValues(rows pgx.Rows, columns []string, formats map[string]columnFormat) (Record, error) {
 	values, err := rows.Values()
 	if err != nil {
 		return nil, err
@@ -1509,8 +1534,8 @@ func scanRecordValues(rows pgx.Rows, columns []string, scales map[string]int) (R
 			return nil, fmt.Errorf("%w: record scan mismatch", ErrSchemaDrift)
 		}
 		value := normalizeDBValue(values[i])
-		if scale, ok := scales[column]; ok {
-			value = padDecimalScale(value, scale)
+		if format, ok := formats[column]; ok {
+			value = applyColumnFormat(value, format)
 		}
 		record[column] = value
 	}
