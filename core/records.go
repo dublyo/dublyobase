@@ -1638,6 +1638,11 @@ func mapRecordDBError(err error) error {
 		// point — "internal server error" tells them nothing about which rule
 		// their record broke.
 		return fmt.Errorf("%w: %s", ErrValidation, constraintMessage(err))
+	// 23001 is restrict_violation: a RESTRICT foreign key refusing to let a
+	// referenced row go. PostgreSQL 18 raises it where 16 raised 23503 for the
+	// same delete, so both codes have to mean the same thing here.
+	case "23001":
+		return fmt.Errorf("%w: record is still referenced by other records", ErrRecordConflict)
 	case "23503":
 		// One code, two very different situations. Postgres distinguishes them
 		// in the message prefix: "update or delete on table …" means the row

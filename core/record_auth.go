@@ -205,5 +205,9 @@ func withRecordTxFull(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth,
 	if err := fn(tx); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	// Not every constraint fails on the statement that breaks it. A deferred
+	// constraint, and on some versions a foreign key, reports at COMMIT
+	// instead, and an unmapped commit error reaches the client as a 500 rather
+	// than the 409 or 422 the same violation produces mid-statement.
+	return mapRecordDBError(tx.Commit(ctx))
 }
