@@ -3,12 +3,14 @@ package core
 import (
 	"context"
 	"encoding"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -72,7 +74,7 @@ func ExecuteAdminSQL(ctx context.Context, pool *pgxpool.Pool, adminID string, pr
 
 	rows, err := tx.Query(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, mapAdminSQLError(err)
 	}
 	fields := rows.FieldDescriptions()
 	result := &AdminSQLResult{
@@ -102,7 +104,7 @@ func ExecuteAdminSQL(ctx context.Context, pool *pgxpool.Pool, adminID string, pr
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, mapAdminSQLError(err)
 	}
 	tag := rows.CommandTag()
 	result.Command = tag.String()
@@ -162,6 +164,36 @@ func validateAdminSQL(query string) (string, error) {
 		return "", fmt.Errorf("%w: role switching is not allowed from the admin SQL console", ErrValidation)
 	}
 	return query, nil
+}
+
+// mapAdminSQLError surfaces what the database said. A console that answers a
+// typo with "internal server error" gives the operator no way to tell a mistake
+// in their own query from a fault in the server, which is most of the value of
+// having a console at all. The caller is an authenticated admin running
+// arbitrary SQL, so the message, hint and position leak nothing they could not
+// already reach.
+func mapAdminSQLError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return err
+	}
+	detail := pgErr.Message
+	if detail == "" {
+		detail = pgErr.Code
+	}
+	if pgErr.Position > 0 {
+		detail = fmt.Sprintf("%s (at position %d)", detail, pgErr.Position)
+	}
+	if pgErr.Hint != "" {
+		detail = fmt.Sprintf("%s — %s", detail, pgErr.Hint)
+	}
+	if pgErr.Code == "42501" {
+		return fmt.Errorf("%w: %s", ErrRLSDenied, detail)
+	}
+	return fmt.Errorf("%w: %s", ErrValidation, detail)
 }
 
 func sqlConsoleValue(value any) any {
