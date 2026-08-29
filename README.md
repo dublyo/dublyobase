@@ -516,10 +516,11 @@ projection and paging apply as on any other read — a similarity search cannot
 return rows the caller could not otherwise see.
 
 pgvector has to be available to the database. The bundled `docker-compose.yml`
-uses stock `postgres:16-alpine`, which does not ship it; use an image that does
-(for example `pgvector/pgvector:pg16`) if you want vector fields. Where it is
-missing, creating a vector field is refused with that reason rather than failing
-obscurely, and every other field type is unaffected.
+and the Dublyo deploy template both use `pgvector/pgvector`, which is the
+official Postgres image plus the extension, so vector fields work on a fresh
+install. Against a database that does not have it — including stock
+`postgres:*` images — creating a vector field is refused with that reason rather
+than failing obscurely, and every other field type is unaffected.
 
 ### Cross-row invariants
 

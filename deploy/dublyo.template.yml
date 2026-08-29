@@ -33,7 +33,7 @@ env_vars:
 compose: |
   services:
     db:
-      image: postgres:${PG_VERSION}-alpine
+      image: pgvector/pgvector:pg${PG_VERSION}
       restart: unless-stopped
       environment:
         - POSTGRES_USER=dublyobase

@@ -1,5 +1,11 @@
 # Local / self-host stack: Postgres + dublyobase. Two services, no nginx, no Redis.
-# Choose your Postgres major by changing the db image tag (16/17/18-alpine).
+# Choose your Postgres major by changing the db image tag (pg16/pg17/pg18).
+#
+# The image is pgvector/pgvector rather than stock postgres because `vector`
+# fields need that extension and it is not in the official image. It is the
+# official postgres image plus pgvector, so everything else is unchanged; swap
+# in postgres:16-alpine if you would rather have the smaller image and no
+# vector support.
 #
 # PGDATA is pinned explicitly because the postgres:18 image moved its volume
 # layout (/var/lib/postgresql, PGDATA=/var/lib/postgresql/18/docker) — without
@@ -7,7 +13,7 @@
 # in an anonymous volume and loses it on stack recreate.
 services:
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: dublyobase
