@@ -44,6 +44,7 @@ export type FieldType =
   | "password"
   | "number"
   | "decimal"
+  | "vector"
   | "bool"
   | "date"
   | "email"

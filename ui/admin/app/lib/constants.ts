@@ -1,4 +1,4 @@
-import { Activity, Archive, Bell, BookOpen, Boxes, Braces, BriefcaseBusiness, Calendar, CalendarCheck2, CreditCard, Database, Eye, FileText, Folder, Globe, Hash, Image, Layers3, Link2, List, Mail, MapPin, MessageSquare, Package, PencilLine, Settings, Share2, ShieldCheck, ShoppingCart, Star, Table2, Tag, ToggleLeft, Type, User, Users } from "lucide-react";
+import { Activity, Archive, Sparkles, Bell, BookOpen, Boxes, Braces, BriefcaseBusiness, Calendar, CalendarCheck2, CreditCard, Database, Eye, FileText, Folder, Globe, Hash, Image, Layers3, Link2, List, Mail, MapPin, MessageSquare, Package, PencilLine, Settings, Share2, ShieldCheck, ShoppingCart, Star, Table2, Tag, ToggleLeft, Type, User, Users } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { FieldType } from "../../src/lib/types";
 import type { CollectionDraft, InsightsRangeHours, RuleDraft } from "./view-types";
@@ -11,7 +11,7 @@ export const SQL_HISTORY_KEY = "dublyobase.sqlHistory.v1";
 
 export const recordPageSizes = [10, 25, 100, 250, 500] as const;
 
-export const fieldTypes: FieldType[] = ["text", "editor", "password", "number", "decimal", "bool", "date", "autodate", "email", "url", "select", "json", "relation", "file"];
+export const fieldTypes: FieldType[] = ["text", "editor", "password", "number", "decimal", "vector", "bool", "date", "autodate", "email", "url", "select", "json", "relation", "file"];
 
 export const reservedDataFieldNames = new Set(["cmax", "cmin", "created", "ctid", "id", "information_schema", "oid", "public", "tableoid", "updated", "xmax", "xmin"]);
 
@@ -27,6 +27,7 @@ export const fieldTypeChoices: FieldTypeChoice[] = [
   { type: "editor", label: "Rich editor", icon: PencilLine },
   { type: "number", label: "Number", icon: Hash },
   { type: "decimal", label: "Decimal (exact)", icon: Hash },
+  { type: "vector", label: "Vector (embedding)", icon: Sparkles },
   { type: "bool", label: "Bool", icon: ToggleLeft },
   { type: "email", label: "Email", icon: Mail },
   { type: "url", label: "URL", icon: Link2 },

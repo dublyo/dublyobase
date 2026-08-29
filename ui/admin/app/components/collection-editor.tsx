@@ -601,6 +601,49 @@ export function FieldOptionsEditor({ field, collections, onChange, readOnly }: {
         </label>
       </div>
     );
+  } else if (field.type === "vector") {
+    const metric = stringOptionValue(field.options, "metric") || "cosine";
+    return (
+      <div className="pb-field-options">
+        <p className="pb-field-hint">
+          Stores an embedding as a Postgres <code>vector</code> and indexes it for nearest-neighbour
+          search. Dublyobase does not generate embeddings; write them from whichever model you use,
+          then search with <code>POST .../records/search</code>.
+        </p>
+        <div className="pb-field-grid">
+          <label>
+            <span>Dimensions</span>
+            <input
+              type="number"
+              min={1}
+              max={16000}
+              value={numberOptionValue(field.options, "dimensions")}
+              onChange={(event) => onChange(setNumberFieldOption(field, "dimensions", event.target.value))}
+              placeholder="1536"
+              disabled={readOnly}
+            />
+          </label>
+          <label>
+            <span>Distance</span>
+            <select
+              value={metric}
+              onChange={(event) => onChange(setStringFieldOption(field, "metric", event.target.value))}
+              disabled={readOnly}
+            >
+              <option value="cosine">cosine</option>
+              <option value="l2">l2 (euclidean)</option>
+              <option value="inner_product">inner product</option>
+            </select>
+          </label>
+        </div>
+        <p className="pb-field-hint">
+          Dimensions must match your model exactly &mdash; 1536 for OpenAI text-embedding-3-small,
+          768 for many sentence-transformers. The index is built for the distance chosen here, so
+          searching by a different one would fall back to scanning the table. Above 2000 dimensions
+          the column still works but cannot be indexed.
+        </p>
+      </div>
+    );
   } else if (field.type === "decimal") {
     return (
       <div className="pb-field-options">

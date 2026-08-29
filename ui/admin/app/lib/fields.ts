@@ -1,4 +1,4 @@
-import { Braces, Calendar, CalendarCheck2, Hash, Image, KeyRound, Link2, List, Mail, PencilLine, Share2, ToggleLeft, Type } from "lucide-react";
+import { Braces, Sparkles, Calendar, CalendarCheck2, Hash, Image, KeyRound, Link2, List, Mail, PencilLine, Share2, ToggleLeft, Type } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { Collection, Field, FieldType, RecordItem } from "../../src/lib/types";
 import type { RelationCardinality } from "./view-types";
@@ -112,6 +112,8 @@ export function fieldTypeIcon(type: FieldType): LucideIcon {
       return KeyRound;
     case "number":
       return Hash;
+    case "vector":
+      return Sparkles;
     case "bool":
       return ToggleLeft;
     case "date":
@@ -204,6 +206,15 @@ export function defaultOptionsForType(type: FieldType, options: Record<string, u
       ...withNumber("max"),
       ...withString("pattern"),
       ...(type === "password" ? withNumber("cost") : {}),
+    };
+  }
+  if (type === "vector") {
+    // Same trap as decimal: without this branch the editor would collect
+    // dimensions and metric and then drop them on save.
+    return {
+      ...sourceOptions,
+      ...withNumber("dimensions"),
+      ...withString("metric"),
     };
   }
   if (type === "decimal") {

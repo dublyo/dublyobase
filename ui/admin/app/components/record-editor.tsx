@@ -3,7 +3,7 @@
 import { login, me } from "../../src/lib/api";
 import type { Collection, Field } from "../../src/lib/types";
 import { collectionPrimaryKeyFieldName, collectionStandardSystemColumns, pascalCase, sampleRecordPayload, sampleUpdatePayload } from "../lib/collections";
-import { canSearchField, fieldIsMultiple, formatJSONInput, isRecordFormField, optionValues, parseRecordDraft, sanitizeEditorHTML, toDateTimeLocal } from "../lib/fields";
+import { canSearchField, fieldIsMultiple, formatJSONInput, isRecordFormField, numberOptionValue, optionValues, parseRecordDraft, sanitizeEditorHTML, toDateTimeLocal } from "../lib/fields";
 import type { RelationAnchor, View } from "../lib/view-types";
 import { RelationPicker, useRelationAnchors } from "./relation-picker";
 import { CollectionIcon } from "./ui";
@@ -143,11 +143,16 @@ export function RecordFieldInput({
       </label>
     );
   }
-  if (field.type === "json") {
+  if (field.type === "json" || field.type === "vector") {
     return (
       <label className="pb-field record-field full">
         <span>{label}</span>
         <JSONFieldEditor value={value} onChange={onChange} />
+        {field.type === "vector" ? (
+          <span className="pb-field-hint">
+            {numberOptionValue(field.options, "dimensions") || "?"} numbers, e.g. [0.021, -0.114, …]
+          </span>
+        ) : null}
       </label>
     );
   }
