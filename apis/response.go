@@ -98,6 +98,11 @@ func coreErrorResponse(err error) (int, string, string, map[string]any) {
 		return http.StatusConflict, "upload_conflict", "upload session is not open", nil
 	case errors.Is(err, core.ErrChecksumMismatch):
 		return http.StatusUnprocessableEntity, "checksum_mismatch", "checksum does not match uploaded bytes", nil
+	case errors.Is(err, core.ErrTimeout):
+		// 503 rather than 500: the request was fine and the server is simply
+		// busy, so a client should back off and retry rather than treat it as a
+		// fault.
+		return http.StatusServiceUnavailable, "timeout", err.Error(), nil
 	case errors.Is(err, core.ErrRLSDenied):
 		return http.StatusForbidden, "rls_denied", "record access denied by RLS", map[string]any{"policy": "record_access"}
 	case errors.Is(err, core.ErrValidation):

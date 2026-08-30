@@ -1669,6 +1669,17 @@ func mapRecordDBError(err error) error {
 		// point — "internal server error" tells them nothing about which rule
 		// their record broke.
 		return fmt.Errorf("%w: %s", ErrValidation, constraintMessage(err))
+	// 57014 is query_canceled: the statement hit the timeout every record
+	// request sets. That happens when the server is busy, not because the
+	// request was wrong or the process is broken, so it must not be reported as
+	// an internal error — a caller seeing 500 has no reason to retry, and a
+	// caller seeing a timeout has every reason to.
+	case "57014":
+		return ErrTimeout
+	// 53300 is too_many_connections, and 53200 out_of_memory: also load, also
+	// worth retrying.
+	case "53300", "53200":
+		return fmt.Errorf("%w: the database is at capacity", ErrTimeout)
 	// 23001 is restrict_violation: a RESTRICT foreign key refusing to let a
 	// referenced row go. PostgreSQL 18 raises it where 16 raised 23503 for the
 	// same delete, so both codes have to mean the same thing here.
@@ -1717,3 +1728,7 @@ func constraintMessage(err error) string {
 	}
 	return "record violates a database constraint"
 }
+
+// MapRecordDBErrorForTest exposes the database error mapping to tests in other
+// packages; the mapping decides status codes, so it is worth asserting on.
+func MapRecordDBErrorForTest(err error) error { return mapRecordDBError(err) }
