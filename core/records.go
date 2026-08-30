@@ -67,11 +67,13 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 	if err != nil {
 		return nil, err
 	}
-	orderBy, err := orderByClause(collection, opts.Sort)
+	// Resolution has to happen before the order clause, because sorting can walk
+	// relations too.
+	relations, err := filterRelationsFor(ctx, pool, auth, collection, opts.Filter+" "+opts.Sort)
 	if err != nil {
 		return nil, err
 	}
-	relations, err := filterRelationsFor(ctx, pool, auth, collection, opts.Filter)
+	orderBy, err := orderByClause(collection, opts.Sort, relations)
 	if err != nil {
 		return nil, err
 	}
@@ -79,8 +81,8 @@ func ListRecords(ctx context.Context, pool *pgxpool.Pool, auth *RecordAuth, coll
 	if err != nil {
 		return nil, err
 	}
-	// The subqueries a relation filter builds qualify the outer columns, so the
-	// outer table has to carry the alias they expect.
+	// The subqueries a relation filter or sort builds qualify the outer columns,
+	// so the outer table has to carry the alias they expect.
 	if relations != nil {
 		table += " as " + quoteIdent(filterRootAlias)
 	}
@@ -664,7 +666,7 @@ func projectionColumns(collection *Collection, projection string) ([]string, err
 	return columns, nil
 }
 
-func orderByClause(collection *Collection, raw string) (string, error) {
+func orderByClause(collection *Collection, raw string, relations *FilterRelations) (string, error) {
 	pkField := collectionPrimaryKeyField(collection)
 	if strings.TrimSpace(raw) == "" {
 		if collectionStandardSystemColumns(collection) {
@@ -687,6 +689,23 @@ func orderByClause(collection *Collection, raw string) (string, error) {
 		if strings.HasPrefix(part, "-") {
 			dir = "desc"
 			part = strings.TrimPrefix(part, "-")
+		}
+		// A dotted key sorts by a field on a related row, the same paths filters
+		// walk. It compiles to a correlated subquery, which runs under the same
+		// role, so a row the caller cannot read sorts as null rather than
+		// leaking its value.
+		if strings.Contains(part, ".") {
+			expr, err := relationOrderExpr(collection, part, relations)
+			if err != nil {
+				return "", err
+			}
+			key := part + ":" + dir
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			parts = append(parts, expr+" "+dir)
+			continue
 		}
 		name := NormalizeIdentifier(part)
 		if _, ok := allowed[name]; !ok {
@@ -849,6 +868,9 @@ func isAuthUsersHiddenField(collection *Collection, name string) bool {
 func normalizeRecordValue(field Field, raw json.RawMessage) (any, error) {
 	if FieldIsComputed(field) {
 		return nil, fmt.Errorf("%w: field %q is computed by the database and cannot be written", ErrValidation, field.Name)
+	}
+	if FieldIsRollup(field) {
+		return nil, fmt.Errorf("%w: field %q is a rollup maintained by the database and cannot be written", ErrValidation, field.Name)
 	}
 	if string(raw) == "null" {
 		if fieldCanBeNull(field) {

@@ -68,6 +68,9 @@ func ValidateFields(fields []Field) error {
 			return fmt.Errorf("%w: duplicate field %q", ErrValidation, fields[i].Name)
 		}
 		seen[fields[i].Name] = struct{}{}
+		if err := validateRollupField(fields[i]); err != nil {
+			return err
+		}
 		if _, ok := supportedFieldTypes[fields[i].Type]; !ok {
 			return fmt.Errorf("%w: unsupported field type %q", ErrValidation, fields[i].Type)
 		}

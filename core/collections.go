@@ -156,6 +156,9 @@ func CreateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 	if err := syncCollectionPolicies(ctx, tx, project, collection); err != nil {
 		return nil, err
 	}
+	if err := syncCollectionRollups(ctx, tx, project, collection); err != nil {
+		return nil, err
+	}
 	if err := syncCollectionConstraints(ctx, tx, project, collection); err != nil {
 		return nil, err
 	}
@@ -606,6 +609,9 @@ func UpdateCollection(ctx context.Context, pool *pgxpool.Pool, adminID string, p
 		}
 	} else {
 		if err := syncCollectionPolicies(ctx, tx, project, &next); err != nil {
+			return nil, err
+		}
+		if err := syncCollectionRollups(ctx, tx, project, &next); err != nil {
 			return nil, err
 		}
 		if err := syncCollectionConstraints(ctx, tx, project, &next); err != nil {

@@ -3,6 +3,8 @@ package apis
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/dublyo/dublyobase/core"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -42,7 +43,14 @@ func deleteJSON(handler http.Handler, path string, token string, body string) *h
 
 func createProjectForCollections(t *testing.T, handler http.Handler, token string) string {
 	t.Helper()
-	slug := fmt.Sprintf("p%d", time.Now().UnixNano()%1_000_000_000)
+	// Each test gets its own database, but roles live in the cluster and outlive
+	// it, so a slug derived only from the clock eventually collides with a role
+	// left by an earlier run and the project refuses to provision.
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		t.Fatal(err)
+	}
+	slug := "p" + hex.EncodeToString(suffix[:])
 	rec := postJSON(handler, "/admin/api/projects", token, fmt.Sprintf(`{"slug":%q,"name":"Collections"}`, slug))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create project: want 201, got %d: %s", rec.Code, rec.Body.String())

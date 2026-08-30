@@ -108,7 +108,7 @@ func ValidateExportOptions(ctx context.Context, pool *pgxpool.Pool, auth *Record
 	if _, err := exportPaths(collection, reachable, opts.Fields); err != nil {
 		return err
 	}
-	if _, err := orderByClause(collection, opts.Sort); err != nil {
+	if _, err := orderByClause(collection, opts.Sort, nil); err != nil {
 		return err
 	}
 	_, err = CompileRecordListFilter(opts.Filter, opts.Search, collection)
@@ -147,7 +147,7 @@ func ExportRows(
 	if err != nil {
 		return 0, err
 	}
-	orderBy, err := orderByClause(collection, opts.Sort)
+	orderBy, err := orderByClause(collection, opts.Sort, nil)
 	if err != nil {
 		return 0, err
 	}

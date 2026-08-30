@@ -607,9 +607,14 @@ func filterMentionsRelationPath(filter string) bool {
 	if trimmed == "" || !strings.Contains(trimmed, ".") {
 		return false
 	}
+	// The caller may hand us the filter and the sort together; a dotted sort key
+	// needs the same resolution, and it is not JSON.
+	if !strings.HasPrefix(trimmed, "{") {
+		return true
+	}
 	var body map[string]any
 	if err := json.Unmarshal([]byte(trimmed), &body); err != nil {
-		return strings.Contains(trimmed, ".")
+		return true
 	}
 	return objectHasDottedKey(body, 0)
 }

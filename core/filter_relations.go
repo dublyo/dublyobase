@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -157,4 +158,46 @@ func (b *recordFilterBuilder) compilePredicateOn(alias string, collection *Colle
 		return "", nil
 	}
 	return "(" + strings.Join(parts, " and ") + ")", nil
+}
+
+// relationOrderExpr compiles a dotted sort key into a correlated subquery that
+// yields the related row's value.
+//
+// A subquery keeps the outer row count unchanged, which a join would not: an
+// order that walked a multi-value relation by joining would repeat rows.
+func relationOrderExpr(collection *Collection, raw string, relations *FilterRelations) (string, error) {
+	builder := &recordFilterBuilder{collection: collection, relations: relations}
+	hops, leafCollection, leafField, err := builder.resolveFilterPath(raw)
+	if err != nil {
+		if errors.Is(err, ErrInvalidFilter) {
+			return "", fmt.Errorf("%w: unknown sort field %q", ErrValidation, raw)
+		}
+		return "", err
+	}
+	if len(hops) == 0 {
+		return "", fmt.Errorf("%w: unknown sort field %q", ErrValidation, raw)
+	}
+
+	// Innermost first: select the leaf value, then wrap outwards.
+	alias := fmt.Sprintf("dbo_ord%d", len(hops))
+	expr := aliasColumnSQL(alias, leafCollection, leafField.Name)
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := hops[i]
+		childAlias := fmt.Sprintf("dbo_ord%d", i+1)
+		parent := filterRootAlias
+		parentCollection := collection
+		if i > 0 {
+			parent = fmt.Sprintf("dbo_ord%d", i)
+			parentCollection = hops[i-1].target
+		}
+		parentColumn := aliasColumnSQL(parent, parentCollection, hop.field.Name)
+		childKey := aliasColumnSQL(childAlias, hop.target, collectionPrimaryKeyField(hop.target))
+		join := fmt.Sprintf("%s = %s", childKey, parentColumn)
+		if fieldIsMultiple(hop.field) {
+			join = fmt.Sprintf("%s = any(%s)", childKey, parentColumn)
+		}
+		expr = fmt.Sprintf("(select %s from %s as %s where %s limit 1)",
+			expr, hop.targetName, quoteIdent(childAlias), join)
+	}
+	return expr, nil
 }

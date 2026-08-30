@@ -124,10 +124,10 @@ func TestProjectionAndSortValidation(t *testing.T) {
 	if _, err := projectionColumns(c, "internal_note"); !errors.Is(err, ErrValidation) {
 		t.Fatalf("hidden projection err = %v, want ErrValidation", err)
 	}
-	if _, err := orderByClause(c, "-created,title"); err != nil {
+	if _, err := orderByClause(c, "-created,title", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := orderByClause(c, "bad"); !errors.Is(err, ErrValidation) {
+	if _, err := orderByClause(c, "bad", nil); !errors.Is(err, ErrValidation) {
 		t.Fatalf("bad sort err = %v", err)
 	}
 }

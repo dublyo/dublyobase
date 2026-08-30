@@ -450,6 +450,13 @@ unique indexes over one or more fields.
 }
 ```
 
+A comparison against a null column is null, not false, and a `CHECK` passes
+unless it evaluates to false — so `usage_count <= usage_limit` enforces nothing
+on rows where `usage_limit` is null. That is SQL's rule rather than
+Dublyobase's, and the fix is to say what should happen:
+`usage_limit = null || usage_count <= usage_limit`. Both `&&`/`||` and SQL's
+`and`/`or` are accepted.
+
 Expressions here are compiled more strictly than API rules: they live inside
 DDL, so a `@request` reference, a subquery, or a call to `now()` is refused
 rather than silently evaluated. Arithmetic over a `decimal` stays exact — it is
@@ -521,6 +528,49 @@ official Postgres image plus the extension, so vector fields work on a fresh
 install. Against a database that does not have it — including stock
 `postgres:*` images — creating a vector field is refused with that reason rather
 than failing obscurely, and every other field type is unaffected.
+
+### Rollups
+
+A rollup field is the running aggregate of a related collection: an order's line
+subtotal, a product's review count, a customer's lifetime spend.
+
+```json
+{ "name": "line_subtotal", "type": "decimal",
+  "options": { "precision": 12, "scale": 4,
+    "rollup": { "collection": "order_line_items", "field": "order",
+                "aggregate": "sum", "source": "total" } } }
+```
+
+`aggregate` is `sum`, `count`, `avg`, `min` or `max`; `source` is the child field
+being aggregated and is not needed for `count`. An optional `where` restricts
+which children count, using the same expression language as a check.
+
+It is maintained rather than checked. A constraint that merely rejected a
+disagreeing total would leave every caller to compute the total correctly first,
+which is the work they wanted the database to do. A trigger on the child table
+writes the value, so inserting, updating, deleting or re-parenting a child all
+correct it — moving a line from one order to another fixes both orders. Adding a
+rollup to a collection that already has rows backfills it. The API rejects any
+attempt to write the field, exactly as it does for a computed column.
+
+`sum` and `count` of nothing are zero, so those columns default to zero and a
+parent with no children reads `0` rather than null. `avg`, `min` and `max` of
+nothing are genuinely unknown and stay null.
+
+### Sorting through relations
+
+`sort` accepts the same dotted paths as filters, so products can be ordered by
+their category's name, or by their category's brand:
+
+```text
+GET .../collections/products/records?sort=cat.brand.name
+```
+
+Each hop compiles to a correlated subquery rather than a join, so the row count
+is unchanged even when the path walks a multi-value relation. Ordering follows
+PostgreSQL's own null placement — ascending puts rows with no related record
+last, descending puts them first — which is what a plain column sort already
+does.
 
 ### Cross-row invariants
 
