@@ -259,6 +259,28 @@ func (b *recordFilterBuilder) compilePredicateColumn(column string, field Field,
 		return b.compileDecimalPredicate(column, operator, value)
 	}
 	value = normalizeFilterJSONValue(value)
+	// A multi-value field is an array column. Comparing it to a single value
+	// with = made Postgres try to parse that value as an array literal, and the
+	// caller got "malformed array literal" — a database internal, for a filter
+	// that reads perfectly reasonably. On an array these mean membership.
+	if fieldIsMultiple(field) {
+		switch operator {
+		case "_eq", "_neq":
+			if value == nil {
+				if operator == "_eq" {
+					return column + " is null", nil
+				}
+				return column + " is not null", nil
+			}
+			member := b.arg(value) + multiValueElementCast(field) + " = any(" + column + ")"
+			if operator == "_neq" {
+				return "not coalesce(" + member + ", false)", nil
+			}
+			return member, nil
+		case "_in", "_nin":
+			return b.compileMultiValueListPredicate(column, field, operator, value)
+		}
+	}
 	switch operator {
 	case "_eq":
 		if value == nil {
@@ -614,4 +636,39 @@ func objectHasDottedKey(node any, depth int) bool {
 		}
 	}
 	return false
+}
+
+// multiValueElementCast returns the cast an element of an array column needs,
+// e.g. "::uuid" for a multi-relation, so the bound text lands as the right type.
+func multiValueElementCast(field Field) string {
+	if field.Type == "relation" {
+		return "::uuid"
+	}
+	if cast := postgresPlaceholderCast(fieldSourceType(field)); cast != "" {
+		return "::" + strings.TrimSuffix(cast, "[]")
+	}
+	return ""
+}
+
+// compileMultiValueListPredicate asks whether an array column overlaps a list.
+func (b *recordFilterBuilder) compileMultiValueListPredicate(column string, field Field, operator string, value any) (string, error) {
+	items, ok := value.([]any)
+	if !ok {
+		return "", fmt.Errorf("%w: %s expects a list", ErrInvalidFilter, operator)
+	}
+	if len(items) == 0 {
+		if operator == "_nin" {
+			return "true", nil
+		}
+		return "false", nil
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, b.arg(normalizeFilterJSONValue(item))+multiValueElementCast(field)+" = any("+column+")")
+	}
+	joined := "(" + strings.Join(parts, " or ") + ")"
+	if operator == "_nin" {
+		return "not coalesce(" + joined + ", false)", nil
+	}
+	return joined, nil
 }
