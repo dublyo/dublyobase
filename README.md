@@ -240,6 +240,8 @@ can also be managed from the admin panel after setup.
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error`. |
 | `LOG_FORMAT` | No | `json` | `json` or `text`. |
 | `ENABLE_PGVECTOR` | No | `false` | Reserved. Vector fields detect pgvector themselves; see below. |
+| `DATABASE_MAX_CONNS` | No | `25` | Connection pool ceiling. Every request holds a connection for its transaction, so this is the practical limit on concurrent queries. pgx's own default is `max(4, numCPU)`, which caps an instance at roughly six requests a second. Raise it for a busy instance, keeping the total across all instances under the server's `max_connections`. A `pool_max_conns` in `DATABASE_URL` overrides this. |
+| `DATABASE_MIN_CONNS` | No | `2` | Connections kept open when idle. |
 | `CRON_ALLOW_PRIVATE_TARGETS` | No | `false` | Lets cron jobs call private, loopback, and link-local addresses. Off by default so a job URL cannot be pointed at cloud metadata or a service bound to localhost. Turn it on only if you deliberately cron an internal service. |
 
 ### Recovering a locked-out admin

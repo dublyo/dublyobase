@@ -33,6 +33,7 @@ func Connect(ctx context.Context, cfg *Config, log *slog.Logger) (*pgxpool.Pool,
 		// pgconn redacts the connection string in parse errors
 		return nil, fmt.Errorf("invalid DATABASE_URL: %w", err)
 	}
+	applyPoolLimits(poolCfg, rawURL, cfg, log)
 
 	deadline := time.Now().Add(60 * time.Second)
 	upgradedSSL := false
@@ -122,5 +123,33 @@ func upgradeSSLMode(raw string) (string, bool) {
 		return u.String(), true
 	default:
 		return raw, false
+	}
+}
+
+// applyPoolLimits sizes the connection pool.
+//
+// pgx defaults MaxConns to max(4, numCPU). That is a reasonable default for a
+// program that queries occasionally and a poor one for a server: every request
+// holds a connection for the length of its transaction, so a pool of four caps
+// the instance at about four concurrent queries regardless of the hardware
+// under it.
+//
+// An operator who put pool_max_conns in DATABASE_URL meant it, so that is left
+// alone; this only replaces the library default.
+func applyPoolLimits(poolCfg *pgxpool.Config, rawURL string, cfg *Config, log *slog.Logger) {
+	if cfg == nil || poolCfg == nil {
+		return
+	}
+	if !strings.Contains(rawURL, "pool_max_conns") && cfg.DatabaseMaxConns > 0 {
+		poolCfg.MaxConns = cfg.DatabaseMaxConns
+	}
+	if !strings.Contains(rawURL, "pool_min_conns") && cfg.DatabaseMinConns > 0 {
+		poolCfg.MinConns = cfg.DatabaseMinConns
+	}
+	if poolCfg.MinConns > poolCfg.MaxConns {
+		poolCfg.MinConns = poolCfg.MaxConns
+	}
+	if log != nil {
+		log.Info("database pool sized", "max_conns", poolCfg.MaxConns, "min_conns", poolCfg.MinConns)
 	}
 }

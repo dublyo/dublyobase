@@ -15,6 +15,12 @@ import (
 type StorageType string
 
 const (
+	// Chosen to leave ample room under a stock PostgreSQL max_connections of
+	// 100 even with several instances against one database, while being enough
+	// that a single instance is not the bottleneck.
+	defaultDatabaseMaxConns = 25
+	defaultDatabaseMinConns = 2
+
 	StorageLocal StorageType = "local"
 	StorageS3    StorageType = "s3"
 )
@@ -73,6 +79,20 @@ type Config struct {
 	LogFormat string // LOG_FORMAT (json|text)
 
 	EnablePgvector bool // ENABLE_PGVECTOR (default false)
+
+	// DATABASE_MAX_CONNS / DATABASE_MIN_CONNS size the connection pool.
+	//
+	// pgx defaults MaxConns to max(4, numCPU), which is a client default rather
+	// than a server one: every API request holds a connection for the length of
+	// its transaction, so a pool of four caps the whole instance at roughly four
+	// concurrent queries no matter how much hardware is underneath. Left at the
+	// default this measured a flat ceiling of about six requests a second while
+	// latency grew linearly with load.
+	//
+	// An explicit pool_max_conns in DATABASE_URL always wins; these only supply
+	// a better default.
+	DatabaseMaxConns int32
+	DatabaseMinConns int32
 
 	// CRON_ALLOW_PRIVATE_TARGETS (default false). Cron jobs may otherwise not
 	// reach private or loopback addresses, which stops a job URL being used to
@@ -154,6 +174,8 @@ func LoadConfig() (*Config, error) {
 
 		EnablePgvector:          boolVar("ENABLE_PGVECTOR", false),
 		CronAllowPrivateTargets: boolVar("CRON_ALLOW_PRIVATE_TARGETS", false),
+		DatabaseMaxConns:        int32(intVar("DATABASE_MAX_CONNS", defaultDatabaseMaxConns)),
+		DatabaseMinConns:        int32(intVar("DATABASE_MIN_CONNS", defaultDatabaseMinConns)),
 
 		SMTPHost:     strings.TrimSpace(os.Getenv("SMTP_HOST")),
 		SMTPPort:     env("SMTP_PORT", "587"),
