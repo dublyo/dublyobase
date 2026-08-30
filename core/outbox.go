@@ -157,6 +157,17 @@ func OutboxProjects(ctx context.Context, pool *pgxpool.Pool) ([]Project, error) 
 // realtime fanout and webhook enqueue live there.
 type OutboxPublisher func(ctx context.Context, project Project, event OutboxEvent) error
 
+const (
+	// sweepBatchSize is how many events one claim takes. Small enough that a
+	// failure loses little work, large enough not to be chatty.
+	sweepBatchSize = 200
+	// maxSweepBatches and sweepTimeBudget bound one project's turn, so a large
+	// backlog drains quickly without starving the other projects or the rest of
+	// the ops worker.
+	maxSweepBatches = 50
+	sweepTimeBudget = 20 * time.Second
+)
+
 // SweepOutbox delivers events the request that created them never marked done —
 // which in practice means the process died between COMMIT and publish. It runs
 // on the ops worker, coordinated by an advisory lock so several replicas do not
@@ -183,24 +194,47 @@ func SweepOutbox(ctx context.Context, pool *pgxpool.Pool, log Logger, publish Ou
 		return err
 	}
 	for _, project := range projects {
-		events, err := ClaimPendingOutbox(ctx, pool, project.SchemaName, minAge, 200)
-		if err != nil {
-			log.Warn("outbox claim failed", "project", project.Slug, "err", err)
-			continue
-		}
-		for _, event := range events {
-			if err := publish(ctx, project, event); err != nil {
-				_, _ = pool.Exec(ctx, fmt.Sprintf(`update %s set last_error = $1 where id = $2`,
-					quoteIdent(project.SchemaName, outboxTable)), err.Error(), event.ID)
-				log.Warn("outbox publish failed", "project", project.Slug, "event", event.ID, "err", err)
-				continue
+		// Keep draining while there is a backlog, rather than taking one batch
+		// per tick and leaving the rest. A bulk import writes one event per
+		// row, so a single load can leave hundreds of thousands behind; at one
+		// batch a minute that took the better part of a day to clear, and the
+		// table stayed large the whole time. The budget still bounds the work
+		// so a backlog cannot monopolise the worker.
+		swept := 0
+		deadline := time.Now().Add(sweepTimeBudget)
+		for batch := 0; batch < maxSweepBatches; batch++ {
+			events, err := ClaimPendingOutbox(ctx, pool, project.SchemaName, minAge, sweepBatchSize)
+			if err != nil {
+				log.Warn("outbox claim failed", "project", project.Slug, "err", err)
+				break
 			}
-			if err := MarkOutboxPublished(ctx, pool, project.SchemaName, event.ID); err != nil {
-				log.Warn("outbox mark failed", "project", project.Slug, "event", event.ID, "err", err)
+			if len(events) == 0 {
+				break
+			}
+			failed := false
+			for _, event := range events {
+				if err := publish(ctx, project, event); err != nil {
+					_, _ = pool.Exec(ctx, fmt.Sprintf(`update %s set last_error = $1 where id = $2`,
+						quoteIdent(project.SchemaName, outboxTable)), err.Error(), event.ID)
+					log.Warn("outbox publish failed", "project", project.Slug, "event", event.ID, "err", err)
+					failed = true
+					continue
+				}
+				if err := MarkOutboxPublished(ctx, pool, project.SchemaName, event.ID); err != nil {
+					log.Warn("outbox mark failed", "project", project.Slug, "event", event.ID, "err", err)
+				}
+			}
+			swept += len(events)
+			// Draining continues only while delivery is working. A failed event
+			// stays unpublished, so carrying on would re-claim it and spend all
+			// ten of its attempts inside this one sweep — the retries are meant
+			// to be spread across ticks so a downstream has time to recover.
+			if failed || ctx.Err() != nil || time.Now().After(deadline) {
+				break
 			}
 		}
-		if len(events) > 0 {
-			log.Info("outbox swept undelivered events", "project", project.Slug, "count", len(events))
+		if swept > 0 {
+			log.Info("outbox swept undelivered events", "project", project.Slug, "count", swept)
 		}
 		if _, err := PruneOutbox(ctx, pool, project.SchemaName, 7*24*time.Hour); err != nil {
 			log.Warn("outbox prune failed", "project", project.Slug, "err", err)
