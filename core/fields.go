@@ -189,6 +189,14 @@ func validateFieldOptions(field Field) error {
 		if collection == "" {
 			return fmt.Errorf("%w: relation field %q requires options.collection", ErrValidation, field.Name)
 		}
+		if !relationIsEnforced(field) {
+			if boolOption(field.Options, "cascadeDelete") || stringFromAny(field.Options["onDelete"]) != "" {
+				return fmt.Errorf("%w: relation field %q is unenforced, so options.onDelete has nothing to act on", ErrValidation, field.Name)
+			}
+			if fieldIsMultiple(field) {
+				return fmt.Errorf("%w: relation field %q is multi-value, which never had a foreign key to disable", ErrValidation, field.Name)
+			}
+		}
 		if err := ValidateDataIdentifier("relation collection", collection); err != nil {
 			return err
 		}

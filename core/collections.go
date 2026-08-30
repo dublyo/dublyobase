@@ -345,6 +345,17 @@ func relationForeignKeySpec(ctx context.Context, tx pgx.Tx, project *Project, so
 	if collectionPrimaryKeyType(target) != defaultRecordPrimaryKeyType {
 		return nil, nil
 	}
+	// An unenforced relation keeps the column, and with it expand, relation
+	// filters and sorting, but creates no foreign key. It exists because
+	// migrating an application whose schema already holds references the
+	// database never enforced — a Laravel `integer('customer_id')` with no
+	// `->foreign()` is the usual case — would otherwise fail on import against
+	// rows that are already dangling. The target collection is still resolved,
+	// so a typo is caught here rather than becoming a column that expands to
+	// nothing.
+	if !relationIsEnforced(field) {
+		return nil, nil
+	}
 	targetSchema, targetTable, err := collectionPhysicalTable(project, target)
 	if err != nil {
 		return nil, err
@@ -1115,4 +1126,19 @@ func getCollectionTx(ctx context.Context, tx pgx.Tx, projectID string, name stri
 		name,
 	)
 	return scanCollection(row)
+}
+
+// relationIsEnforced reports whether a relation should carry a foreign key.
+// Enforcement is the default: a reference the database does not check is a
+// reference that eventually points at nothing.
+func relationIsEnforced(field Field) bool {
+	raw, ok := field.Options["enforced"]
+	if !ok {
+		return true
+	}
+	enforced, ok := raw.(bool)
+	if !ok {
+		return true
+	}
+	return enforced
 }

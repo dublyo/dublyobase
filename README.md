@@ -529,6 +529,31 @@ install. Against a database that does not have it — including stock
 `postgres:*` images — creating a vector field is refused with that reason rather
 than failing obscurely, and every other field type is unaffected.
 
+### Unenforced relations
+
+A relation creates a real foreign key, which is almost always what you want. An
+application being migrated from elsewhere may already hold references its old
+database never checked — a Laravel `integer('customer_id')` with no
+`->foreign()` is the common case — and importing those rows against a real
+constraint fails on the ones that are already dangling.
+
+```json
+{ "name": "customer", "type": "relation",
+  "options": { "collection": "customers", "enforced": false } }
+```
+
+The column, and everything built on it, is unchanged: `expand`, relation
+filters and relation sorting all work, because they read the column rather than
+the constraint. What is gone is the guarantee. Deleting the target leaves the
+reference pointing at nothing, and nothing will tell you.
+
+The target collection is still resolved when the field is saved, so a typo is
+caught rather than becoming a column that expands to nothing. `onDelete` is
+refused, since there is no constraint for it to act on.
+
+Prefer a real relation. Reach for this to get a legacy dataset in, then clean
+the data and turn enforcement on.
+
 ### Rollups
 
 A rollup field is the running aggregate of a related collection: an order's line
