@@ -21,12 +21,15 @@ type App struct {
 	// realtime fanout and webhook enqueue live there; core only decides when.
 	OutboxPublish OutboxPublisher
 
+	// RequestLogs records access logs off the request path.
+	RequestLogs *RequestLogWriter
+
 	ready atomic.Bool
 }
 
 // NewApp constructs an App from an already-connected pool.
 func NewApp(cfg *Config, pool *pgxpool.Pool, log *slog.Logger) *App {
-	return &App{Config: cfg, Pool: pool, Log: log}
+	return &App{Config: cfg, Pool: pool, Log: log, RequestLogs: NewRequestLogWriter(pool)}
 }
 
 // SetReady marks the app ready to serve traffic (after migrations complete).

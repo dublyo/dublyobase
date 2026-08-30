@@ -2,7 +2,6 @@ package apis
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -78,9 +77,11 @@ func (s *server) persistRequestLog(r *http.Request, status int, dur time.Duratio
 	if requestID == "" {
 		requestID = r.Header.Get("Cf-Ray")
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Second)
-	defer cancel()
-	if err := core.InsertRequestLog(ctx, s.app.Pool, core.RequestLogEvent{
+	// Handed to the background writer rather than inserted here: this runs
+	// inside the handler, so a synchronous insert made every request wait for a
+	// write it does not depend on, and under load those writes reached their
+	// timeout and added it to requests that had already answered.
+	s.app.RequestLogs.Record(core.RequestLogEvent{
 		ProjectSlug: projectSlug,
 		Method:      r.Method,
 		Path:        r.URL.Path,
@@ -93,9 +94,7 @@ func (s *server) persistRequestLog(r *http.Request, status int, dur time.Duratio
 			"origin":  r.Header.Get("Origin"),
 			"referer": r.Header.Get("Referer"),
 		},
-	}); err != nil {
-		s.app.Log.Warn("request log insert failed", "err", err)
-	}
+	})
 }
 
 func shouldSkipRequestLog(p string) bool {

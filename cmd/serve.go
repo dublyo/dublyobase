@@ -109,6 +109,9 @@ func runServe() error {
 			log.Warn("shutdown incomplete", "err", err)
 		}
 		<-serveErr // ListenAndServe has returned ErrServerClosed
+		// Requests are queued for logging rather than written inline, so the
+		// last few would be lost if the process left without draining them.
+		app.RequestLogs.Close()
 		return nil
 	case err := <-serveErr:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
