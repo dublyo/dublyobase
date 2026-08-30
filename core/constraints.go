@@ -19,6 +19,12 @@ import (
 // non-immutable functions — so even if this compiler were bypassed, a
 // subquery or a call to now() would be refused at CREATE TABLE time.
 
+// maxPostgresIdentifier is Postgres's NAMEDATALEN-1. An identifier longer than
+// this is silently truncated rather than rejected, so two generated names that
+// differ only past the limit become the same object — and because the sync
+// drops by name before creating, the second one destroys the first.
+const maxPostgresIdentifier = 63
+
 const (
 	maxComputedExpressionBytes = 1024
 	maxCollectionChecks        = 24
@@ -214,6 +220,9 @@ func ValidateCollectionConstraints(collection *Collection) error {
 			return fmt.Errorf("%w: duplicate check %q", ErrValidation, check.Name)
 		}
 		seen[check.Name] = struct{}{}
+		if err := assertGeneratedNameFits("check", check.Name, "dbo_ck_"+collection.Name+"_"+check.Name); err != nil {
+			return err
+		}
 		if _, err := compileImmutableExpr(check.Expression, collection, "check"); err != nil {
 			return err
 		}
@@ -231,6 +240,9 @@ func ValidateCollectionConstraints(collection *Collection) error {
 			return fmt.Errorf("%w: duplicate index %q", ErrValidation, idx.Name)
 		}
 		names[idx.Name] = struct{}{}
+		if err := assertGeneratedNameFits("index", idx.Name, "dbo_ix_"+collection.Name+"_"+idx.Name); err != nil {
+			return err
+		}
 		if len(idx.Fields) == 0 {
 			return fmt.Errorf("%w: index %q needs at least one field", ErrValidation, idx.Name)
 		}
@@ -461,4 +473,22 @@ func trigramAvailable(ctx context.Context, tx pgx.Tx) bool {
 	}
 	_, _ = tx.Exec(ctx, `release savepoint dbo_trgm`)
 	return true
+}
+
+// assertGeneratedNameFits refuses a name whose generated database identifier
+// would be truncated.
+//
+// Postgres truncates rather than errors, so two names differing only past the
+// limit collapse into one identifier. The sync drops by name before creating,
+// so the second definition silently destroys the first — a collection asking
+// for a three-column unique key and a second unique key ended up with only the
+// second, and rows the first would have allowed were rejected by a constraint
+// nobody asked for.
+func assertGeneratedNameFits(kind, name, generated string) error {
+	if len(generated) <= maxPostgresIdentifier {
+		return nil
+	}
+	over := len(generated) - maxPostgresIdentifier
+	return fmt.Errorf("%w: %s name %q is %d character(s) too long once combined with the collection name — PostgreSQL truncates identifiers at %d, which would silently merge it with another",
+		ErrValidation, kind, name, over, maxPostgresIdentifier)
 }
