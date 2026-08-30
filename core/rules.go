@@ -198,9 +198,18 @@ func (l *ruleLexer) scanIdent() (ruleToken, error) {
 		return ruleToken{kind: tokBool, text: text}, nil
 	case "null":
 		return ruleToken{kind: tokNull, text: text}, nil
-	default:
-		return ruleToken{kind: tokIdent, text: text}, nil
 	}
+	// A check expression becomes a SQL CHECK constraint and reads like SQL, so
+	// people reach for `and` and `or` rather than `&&` and `||`. Both spellings
+	// mean the same thing here; rejecting the SQL one taught nothing and the
+	// error just said "unexpected token \"and\"".
+	switch strings.ToLower(text) {
+	case "and":
+		return ruleToken{kind: tokAnd, text: text}, nil
+	case "or":
+		return ruleToken{kind: tokOr, text: text}, nil
+	}
+	return ruleToken{kind: tokIdent, text: text}, nil
 }
 
 func isIdentStart(ch byte) bool {
