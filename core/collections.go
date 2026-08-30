@@ -332,6 +332,14 @@ func relationForeignKeySpec(ctx context.Context, tx pgx.Tx, project *Project, so
 	}
 	target, err := getCollectionTx(ctx, tx, project.ID, targetName)
 	if err != nil {
+		// A relation pointing at something that is not there is a fault in the
+		// request being made, not a missing resource at the URL — answering 404
+		// with a bare "collection not found" said neither which field nor which
+		// target, which is unhelpful when a schema is created in bulk.
+		if errors.Is(err, ErrCollectionNotFound) {
+			return nil, fmt.Errorf("%w: relation field %q points at collection %q, which does not exist",
+				ErrValidation, field.Name, targetName)
+		}
 		return nil, err
 	}
 	if collectionPrimaryKeyType(target) != defaultRecordPrimaryKeyType {
